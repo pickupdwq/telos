@@ -1,0 +1,32 @@
+{
+  "default_executor_profile": "deepseek_official",
+  "supervisor": {
+    "provider": "openai",
+    "models": ["gpt-6-astra"]
+  },
+  "profiles": {
+    "deepseek_official": {
+      "provider": "deepseek",
+      "model": "deepseek-flash",
+      "reasoning_effort": "max"
+    },
+    "ark_coding_plan": {
+      "provider": "ark",
+      "model": "glm-5.3-flash",
+      "reasoning_effort": "max"
+    },
+    "openai_executor": {
+      "provider": "openai",
+      "model": "gpt-6.1-sol",
+      "reasoning_effort": "xhigh"
+    }
+  },
+  "threshold": 90,
+  "max_rounds": 5,
+  "max_turns": 20,
+  "job_timeout": 600,
+  "http_timeout": 180,
+  "exam_max_tokens": 8192,
+  "exam_format_attempts": 3,
+  "experience_enabled": true
+}

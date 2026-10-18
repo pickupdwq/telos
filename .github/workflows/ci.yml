@@ -1,0 +1,63 @@
+name: CI
+
+on:
+  push:
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: ci-${{ github.workflow }}-${{ github.ref }}
+  cancel-in-progress: true
+
+jobs:
+  installer:
+    runs-on: ubuntu-latest
+    timeout-minutes: 10
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Installer regression
+        run: python3 -m unittest discover -s tests -v
+      - name: Generated tool documentation
+        run: |
+          python3 scripts/render_tools.py
+          git diff --exit-code -- docs/tools.md docs/tools.schema.json
+
+  macos-runtime:
+    runs-on: macos-latest
+    timeout-minutes: 20
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install dedicated CLI
+        run: npm install --prefix "$HOME/.local/share/telos-cli" @openai/codex@0.163.0
+      - name: Runtime regression (local models only)
+        run: |
+          mkdir -p .artifacts
+          python3 runtime/verify_all.py .artifacts/regression.json
+      - name: Fresh-install and native callback smoke test
+        run: |
+          python3 install.py --prefix "$PWD/.artifacts/installed" --bin-dir "$PWD/.artifacts/bin"
+          python3 runtime/verify.py --install-dir "$PWD/.artifacts/installed" --report .artifacts/installation.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: local-verification
+          path: |
+            .artifacts/regression.json
+            .artifacts/installation.json
+          if-no-files-found: ignore
+          retention-days: 7

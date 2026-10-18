@@ -1,0 +1,14 @@
+__pycache__/
+*.py[cod]
+.venv/
+node_modules/
+.artifacts/
+.DS_Store
+*.log
+.env
+.env.*
+runtime/config.json
+credentials.json
+install-manifest.json
+telos-verification.json
+worker-env-probe.json

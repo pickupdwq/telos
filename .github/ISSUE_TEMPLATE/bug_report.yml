@@ -1,0 +1,32 @@
+name: Bug report / 问题反馈
+description: Report a reproducible issue without secrets or private task data.
+labels: []
+body:
+  - type: markdown
+    attributes:
+      value: "For security vulnerabilities, follow SECURITY.md. 不要提交密钥或未脱敏的任务数据。"
+  - type: input
+    id: versions
+    attributes:
+      label: Versions / 版本
+      description: Telos commit, macOS, Python and Codex CLI versions.
+    validations:
+      required: true
+  - type: textarea
+    id: reproduction
+    attributes:
+      label: Reproduction / 复现步骤
+      description: Minimal steps using a non-sensitive repository and fake credentials where possible.
+    validations:
+      required: true
+  - type: textarea
+    id: behavior
+    attributes:
+      label: Expected and actual behavior / 预期与实际行为
+    validations:
+      required: true
+  - type: textarea
+    id: evidence
+    attributes:
+      label: Redacted evidence / 脱敏证据
+      description: Relevant error text; exclude keys, private paths, source and evaluation material.

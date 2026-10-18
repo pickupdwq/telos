@@ -1,0 +1,30 @@
+{
+  "repo": "/absolute/path/to/a-clean-demo-repository",
+  "task": "Implement add(a, b) in calc.py for Python integers; preserve arbitrary precision.",
+  "context": "This is an educational example of supervisor-only contract fields. Never copy reference answers or check code into executor messages.",
+  "executor_profile": "deepseek_official",
+  "reasoning_effort": "max",
+  "questions": [
+    {
+      "id": "implementation",
+      "prompt": "Explain how your implementation preserves Python integer precision.",
+      "reference": "Use integer arithmetic directly, without conversion to float or a fixed-width representation.",
+      "points": 60,
+      "minimum": 50
+    },
+    {
+      "id": "boundaries",
+      "prompt": "Describe the cases your implementation must handle and the contract's type scope.",
+      "reference": "Positive/negative integers, zero and arbitrary-size integers. The contract does not require coercing other types.",
+      "points": 40
+    }
+  ],
+  "checks": [
+    {
+      "id": "integer-behavior",
+      "argv": ["{python}", "-c", "import calc; assert calc.add(2, 3) == 5; assert calc.add(-7, 2) == -5; assert calc.add(0, 0) == 0; assert calc.add(10**100, 1) == 10**100 + 1"],
+      "timeout_seconds": 30,
+      "network": false
+    }
+  ]
+}
