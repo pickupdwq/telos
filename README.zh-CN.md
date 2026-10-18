@@ -13,7 +13,20 @@ Telos 是运行在本机的 Codex MCP 桥接程序。原来的 GPT 旗舰对话�
 
 整个流程只有两类模型角色。每个任务只有一个执行者，审核与验收始终由原大总管负责。项目模式可以调度多个任务，每个任务有自己的执行者。
 
-![Telos 架构图：大总管、执行者、真实检查、同会话闭卷问卷、大总管验收与已验证经验](docs/assets/architecture-zh.png)
+## 系统架构
+
+[![Telos 分层架构：控制入口、任务编排、隔离执行、证据门禁与已验证经验](docs/assets/architecture-zh.png)](docs/assets/architecture-zh.png)
+
+图中按职责划分本地运行时的逻辑模块。只有大总管和执行者是模型角色，其余方框表示程序模块、存储或外部推理接口。
+
+| 层次 | 核心职责 |
+| --- | --- |
+| 交互与控制入口 | MCP 工具网关、原始会话绑定、持久化完成事件与故障恢复 |
+| 任务编排平面 | 冻结合同、有限状态机（FSM）、依赖有向无环图（DAG）调度、有界重试 |
+| 执行与验证平面 | 持久化执行者会话、鉴权推理转发、文件系统隔离、绑定证据的验收门禁 |
+| 产物与经验平面 | Git 快照、私有审计记录、校验来源的经验检索 |
+
+[查看高清 PNG](docs/assets/architecture-zh.png) · [矢量 SVG](docs/assets/architecture-zh.svg) · [模块映射与协议详解](docs/architecture.md#中文说明)
 
 ## 功能
 
@@ -126,6 +139,10 @@ cd /你的/干净Git项目/绝对路径
 大总管可以使用现有 Codex 登录；OpenAI **执行者**需要单独的 API 凭据，本发布版没有将执行者请求转接到 ChatGPT/Codex 套餐。Telos 本身免费开源，模型 API 与套餐按各服务商规则计费；作业数量上限不等于费用上限。
 
 ## 验收流程
+
+[![Telos 执行时序：冻结合同、实现、真实检查、同会话闭卷、大总管评分及通过或返工](docs/assets/lifecycle-zh.png)](docs/assets/lifecycle-zh.png)
+
+[查看高清 PNG](docs/assets/lifecycle-zh.png) · [矢量 SVG](docs/assets/lifecycle-zh.svg)
 
 1. 大总管冻结需求、私有参考答案、题目分值和可执行检查。
 2. 所选执行者在独立 Git worktree 中实现任务。

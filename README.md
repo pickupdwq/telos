@@ -13,7 +13,20 @@ Telos is a local MCP bridge for Codex. Your original GPT flagship conversation a
 
 There are two model roles. Each task has one executor; the original supervisor owns review and acceptance. Project mode can schedule several tasks with separate executors.
 
-![Telos architecture: supervisor, executor, executable checks, same-thread closed-book exam, supervisor acceptance and verified experience](docs/assets/architecture-en.png)
+## System architecture
+
+[![Telos layered architecture: control surface, orchestration, isolated execution, evidence gates and verified experience](docs/assets/architecture-en.png)](docs/assets/architecture-en.png)
+
+The diagram maps logical capabilities within the local runtime. Only the supervisor and executor are model roles; the other boxes are program modules, storage or external inference interfaces.
+
+| Layer | Main responsibilities |
+| --- | --- |
+| Control surface | MCP tool gateway, original-thread ownership, durable completion events and recovery |
+| Orchestration plane | Immutable contracts, a finite-state machine (FSM), dependency DAG scheduling and bounded retries |
+| Execution & verification plane | Persistent executor sessions, authenticated inference relay, filesystem isolation and evidence-bound acceptance |
+| Artifact & experience plane | Git snapshots, private audit records and provenance-checked lesson retrieval |
+
+[Full-size PNG](docs/assets/architecture-en.png) · [Vector SVG](docs/assets/architecture-en.svg) · [Module map and protocol details](docs/architecture.md)
 
 ## What it does
 
@@ -126,6 +139,10 @@ Profiles live in `~/.local/share/telos/config.json`. Each task freezes its provi
 The supervisor may use your Codex login. The OpenAI **executor** uses a separate API credential; this release does not route executor requests through your ChatGPT/Codex subscription. Telos itself is free software, while provider inference and subscriptions may incur charges. Job limits are not monetary spending caps.
 
 ## How acceptance works
+
+[![Telos execution protocol: frozen contract, work, executable checks, same-thread exam, supervisor grading and acceptance or repair](docs/assets/lifecycle-en.png)](docs/assets/lifecycle-en.png)
+
+[Full-size PNG](docs/assets/lifecycle-en.png) · [Vector SVG](docs/assets/lifecycle-en.svg)
 
 1. The supervisor freezes requirements, private references, question scores and executable checks.
 2. The selected executor implements the task in its own Git worktree.
