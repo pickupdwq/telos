@@ -58,6 +58,17 @@ Local verification has been run on Apple Silicon, macOS 27.0.1, Python 3.13 and 
 
 The installer creates a **fresh installation**. It refuses to overwrite an existing Telos directory, launcher or MCP registration. Existing local deployments should keep their current installation until a migration is planned; cloning this repository does not upgrade them.
 
+### Ask Codex to install
+
+You can paste this into another Codex CLI session. Include the repository URL so Codex can find the correct project and installation instructions:
+
+> Install Telos from https://github.com/pickupdwq/telos by following its README. Check dependencies, use the tested dedicated Codex CLI 0.163.0, register MCP, and run the offline installation verification. Preserve existing configuration and do not overwrite an existing installation. I will enter the DeepSeek key myself in the hidden local terminal prompt described in the README. Report the verification results and remind me to reopen Codex after registration.
+
+- **Another CLI session on the same Mac, using the same Codex configuration:** reuse the existing installation. Reopen Codex and use `/mcp` to confirm that Telos is loaded.
+- **Another machine:** it must be able to access this repository and meet the macOS, Python 3.12+ and dedicated CLI requirements above. Configure your own provider credentials and run the installation verification on that machine.
+
+On **2026-10-18**, all six installer tests and a fresh-directory installation with offline verification passed on the Mac environment listed above. Checks covered the MCP handshake, 24 tools, trusted session binding, acceptance gates, native CLI callbacks and executor credential isolation. These checks use local model stubs; real API credentials, network access, other CLI versions and automatic return to a real Desktop conversation require separate validation. See [testing](docs/testing.md) for reproducible commands.
+
 ### 1. Clone and install the dedicated CLI
 
 ```sh
