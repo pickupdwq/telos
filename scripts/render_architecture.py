@@ -71,16 +71,16 @@ class Canvas:
                      linestyle=(0, (5, 4)) if dashed else "-", zorder=1)
         self.arrow(points[-2], points[-1], color, dashed)
 
-    def card(self, x, y, width, height, tag, title, lines, module, role="runtime"):
-        self.box(x, y, width, height)
+    def card(self, x, y, width, height, tag, title, lines, footer, role="runtime"):
+        self.box(x, y, width, height, edge=role)
         self.ax.plot([x+23, x+72], [y+23, y+23], color=THEME[role], linewidth=3, zorder=4)
-        self.text(x+86, y+23, tag, 12.5, role, width=width-110, bold=True)
-        self.text(x+23, y+70, title, 23, "ink", width=width-46, bold=True)
+        self.text(x+86, y+23, tag, 14, role, width=width-110, bold=True)
+        self.text(x+23, y+70, title, 26, "ink", width=width-46, bold=True)
         for i, line in enumerate(lines):
-            self.text(x+23, y+118+i*35, line, 17.5, width=width-46)
+            self.text(x+23, y+118+i*37, line, 20.5, width=width-46)
         self.ax.plot([x+23, x+width-23], [y+height-42, y+height-42],
                      color=THEME["border"], linewidth=.8, zorder=4)
-        self.text(x+23, y+height-20, module, 12.5, "muted", mono=True, width=width-46)
+        self.text(x+23, y+height-20, footer, 15.5, role, width=width-46)
 
     def layer(self, number, y, title, subtitle):
         self.text(80, y, number, 17, "muted", mono=True)
@@ -122,119 +122,81 @@ class Canvas:
 
 SYSTEM = {
     "en": {
-        "title": "Architecture for verifiable AI execution",
-        "subtitle": "Two model roles. A deterministic control plane. Acceptance bound to source and evidence.",
-        "legend": ["GPT supervisor", "Executor session", "Local runtime", "Artifacts & provenance"],
-        "layers": [
-            ("CONTROL SURFACE", "MCP / ORIGINAL THREAD OWNERSHIP"),
-            ("ORCHESTRATION PLANE", "CONTRACTS / STATE / DEPENDENCIES"),
-            ("EXECUTION & VERIFICATION PLANE", "ISOLATION / INFERENCE / POLICY"),
-            ("ARTIFACT & EXPERIENCE PLANE", "LOCAL FILES / GIT / PROVENANCE"),
+        "title": "One supervisor. Evidence before acceptance.",
+        "subtitle": "Your original chat stays in control. Telos coordinates execution and enforces the gates.",
+        "roles": [
+            ("MODEL ROLE 01", "GPT supervisor", ["Freeze goals, scope and checks", "Review evidence and grade"], "Skill guides planning and review", "supervisor"),
+            ("LOCAL MCP RUNTIME", "Telos bridge", ["Dispatch work; track progress", "Enforce scope and acceptance"], "Program logic, not another model", "runtime"),
+            ("MODEL ROLE 02", "Task executor", ["Work: scoped tools + worktree", "Exam: same thread, no tools"], "Fixed model, endpoint and effort", "executor"),
         ],
-        "cards": [
-            ("MODEL ROLE 01", "GPT supervisor", ["Original flagship conversation", "Plans, reviews source and scores", "Sole authority for final acceptance"], "supervisor.py", "supervisor"),
-            ("MCP INTERFACE", "Tool gateway", ["stdio / JSON-RPC · 24 MCP tools", "Trusted threadId binds the owner", "open · send · evaluate · grade"], "telos.py", "runtime"),
-            ("ASYNC CONTROL", "Completion & recovery", ["Native CLI queue / Desktop IPC*", "Durable outbox + event receipts", "Idempotent actions; reconciliation"], "codex_rpc.py / desktop_rpc.py", "runtime"),
-            ("IMMUTABLE CONTRACT", "Contract & model policy", ["Private questions, references, checks", "Frozen provider / model / effort", "SHA-256 contract integrity check"], "telos.py / providers.py", "runtime"),
-            ("FINITE-STATE MACHINE", "Task lifecycle controller", ["Persisted phases + process tracking", "Bounded retries; default 5 rounds", "pause / resume / cancel controls"], "telos.py / processes.py", "runtime"),
-            ("DEPENDENCY DAG", "Project scheduler", ["Dependencies + allowed write paths", "Up to 3 concurrent model jobs", "Scratch integration + project gate"], "projects.py", "runtime"),
-            ("MODEL ROLE 02", "Persistent executor", ["One frozen binding per task", "WORK: tools + isolated worktree", "EXAM: same thread, tools=[]", "No new source, references or checks"], "executor.py / closed_book.py", "executor"),
-            ("INFERENCE BOUNDARY", "Authenticated relay", ["Local token; upstream keys in bridge", "Fixed HTTPS Responses endpoint", "DeepSeek / Ark / OpenAI / custom", "Exam request + response validation"], "isolation.py / providers.py", "runtime"),
-            ("POLICY ENFORCEMENT", "Evidence & acceptance", ["Pinned commit → executable checks", "Supervisor scores; program enforces", "Default ≥90 + critical minima", "No blockers; hashes unchanged"], "telos.py / check_runtime.py", "runtime"),
-            ("WORKSPACE ARTIFACTS", "Git worktree & snapshots", ["Per-task worktrees / isolated homes", "Pinned commits + test snapshots", "Verified archives before cleanup"], "~/.cache/telos/ / storage.py", "artifact"),
-            ("PRIVATE EVIDENCE", "State & audit records", ["Contracts, packets, events, receipts", "Commit / contract_hash / packet_id", "JSON state + filesystem locks"], "~/.local/state/telos/", "artifact"),
-            ("VERIFIED EXPERIENCE", "Provenance & retrieval", ["Promote only after acceptance", "Repository + path-scoped selection", "≤3 lessons / 6,000 characters"], "experience.py", "artifact"),
+        "return": "Events + evidence → original chat",
+        "capabilities": "WHAT THE LOCAL RUNTIME ENFORCES",
+        "scope_note": "One executor per task · project scheduling",
+        "controls": [
+            ("SCOPE & ORCHESTRATION", "Task boundaries", ["Frozen scope, checks and model", "Single / parallel / phased", "Code, API and page audits"], "Scoped work; read-only audit source", "runtime"),
+            ("EFFICIENCY & RECOVERY", "Usage and control", ["Preflight before model calls", "Compact results; full evidence", "Request and token budgets"], "Durable events; pause / resume / cancel", "runtime"),
+            ("INFERENCE RELAY", "Model access", ["DeepSeek · Ark · OpenAI", "Local: Responses / Chat", "Many addresses; one active"], "Credentials stay in the bridge", "runtime"),
         ],
-        "reuse": "Verified public lessons → future work context",
-        "events": "completion events",
-        "boundary": "CROSS-CUTTING TRUST BOUNDARIES",
-        "boundaries": [
-            ("FILESYSTEM", "macOS Seatbelt", "Scoped reads / writes"),
-            ("EXAM PROTOCOL", "No tool execution", "Same work history retained"),
-            ("CREDENTIALS", "Keys stay in bridge", "Shell excludes relay tokens"),
-            ("DELIVERY", "Accepted commit", "Merge / push / deploy separately"),
-        ],
-        "notes": [
-            "Logical modules of one local Python application; remote inference providers are external dependencies.",
-            "* Desktop IPC is version-dependent; real Desktop automatic return has not yet been verified.",
-            "Experience is evidence-backed retrieval. No weight training, vector database or extra reviewer model.",
-        ],
+        "state": "LOCAL STATE   /   Git snapshots · private evidence · usage and receipts · verified public lessons",
+        "gate": "ACCEPTANCE GATE / ORIGINAL SUPERVISOR DECIDES",
+        "sequence": "Checks → same-thread exam → supervisor review",
+        "criteria": "All checks pass · ≥90 by default · critical minima · no blockers · source and evidence match",
+        "output": "Accepted code / audit evidence + reusable lessons. Merge, push and deploy are separate actions.",
+        "foot": "Two model roles. macOS sandbox isolation. Model endpoints are external to the Telos runtime.",
     },
     "zh": {
-        "title": "面向可验证 AI 执行的分层架构",
-        "subtitle": "两类模型角色 · 确定性控制平面 · 源码、证据与最终验收绑定",
-        "legend": ["GPT 大总管", "执行者会话", "本地运行时", "产物与来源记录"],
-        "layers": [
-            ("交互与控制入口", "MCP / ORIGINAL THREAD OWNERSHIP"),
-            ("任务编排平面", "CONTRACTS / STATE / DEPENDENCIES"),
-            ("执行与验证平面", "ISOLATION / INFERENCE / POLICY"),
-            ("产物与经验平面", "LOCAL FILES / GIT / PROVENANCE"),
+        "title": "大总管掌控任务，证据决定验收",
+        "subtitle": "保留原始对话作为大总管；Telos 负责协调执行，并强制落实边界与验收规则。",
+        "roles": [
+            ("MODEL ROLE 01", "GPT 大总管", ["理解需求，冻结范围与检查", "审核源码、证据并逐题评分"], "Skill 指导规划、走查与验收", "supervisor"),
+            ("LOCAL MCP RUNTIME", "Telos 桥接程序", ["分派任务，跟踪执行进度", "约束权限，落实验收门禁"], "由程序协调，不增加模型角色", "runtime"),
+            ("MODEL ROLE 02", "任务执行者", ["工作：受限工具 + 独立工作区", "闭卷：同一会话，禁止工具"], "固定入口、模型与推理强度", "executor"),
         ],
-        "cards": [
-            ("MODEL ROLE 01", "GPT 大总管", ["原始 GPT 旗舰对话与身份绑定", "需求规划 · 源码审核 · 逐题评分", "最终验收权始终保留在原会话"], "supervisor.py", "supervisor"),
-            ("MCP INTERFACE", "工具网关与会话绑定", ["stdio / JSON-RPC · 24 个 MCP 工具", "可信 threadId 绑定原始调用者", "open · send · evaluate · grade"], "telos.py", "runtime"),
-            ("ASYNC CONTROL", "完成回传与恢复", ["CLI 原生队列 / Desktop IPC*", "持久化发件箱 + 事件回执", "操作幂等 · 状态核对 · 故障恢复"], "codex_rpc.py / desktop_rpc.py", "runtime"),
-            ("IMMUTABLE CONTRACT", "冻结合同与服务商策略", ["私有问卷、参考答案及可执行检查", "固定服务商 / 模型 / 推理强度", "SHA-256 合同完整性校验"], "telos.py / providers.py", "runtime"),
-            ("FINITE-STATE MACHINE", "任务生命周期控制器", ["阶段状态持久化 + 子进程跟踪", "有界重试 · 默认最多 5 轮评估", "暂停 / 恢复 / 取消"], "telos.py / processes.py", "runtime"),
-            ("DEPENDENCY DAG", "项目依赖图调度器", ["依赖拓扑 + 可修改路径约束", "最多 3 个并发模型作业", "独立工作区集成 + 整体验收门禁"], "projects.py", "runtime"),
-            ("MODEL ROLE 02", "持久化执行者会话", ["每项任务固定一个执行者绑定", "WORK：工具 + 隔离 Git 工作区", "EXAM：恢复同会话，tools=[]", "不追加源码、参考答案或检查结果"], "executor.py / closed_book.py", "executor"),
-            ("INFERENCE BOUNDARY", "鉴权推理转发层", ["临时令牌 · 上游密钥仅由桥接层持有", "固定 HTTPS Responses 接口", "DeepSeek / 火山 / OpenAI / 自定义", "闭卷请求策略 + 响应完整性校验"], "isolation.py / providers.py", "runtime"),
-            ("POLICY ENFORCEMENT", "证据与验收策略门禁", ["固定提交 → 真实可执行检查", "大总管评分，程序强制执行规则", "默认 ≥90 分 + 关键题最低分", "无阻塞项，源码与证据哈希未改变"], "telos.py / check_runtime.py", "runtime"),
-            ("WORKSPACE ARTIFACTS", "Git 工作区与快照", ["每任务独立 worktree / 运行目录", "固定提交 + 验收快照", "验证归档后才允许清理工作区"], "~/.cache/telos/ / storage.py", "artifact"),
-            ("PRIVATE EVIDENCE", "私有状态与审计记录", ["合同、验收包、事件、回执", "提交 / contract_hash / packet_id", "JSON 状态文件 + 文件系统锁"], "~/.local/state/telos/", "artifact"),
-            ("VERIFIED EXPERIENCE", "带来源的经验检索", ["整体通过验收后才允许复用", "按仓库与修改路径匹配", "最多 3 条经验 / 6,000 字符"], "experience.py", "artifact"),
+        "return": "完成事件与证据回到原始对话",
+        "capabilities": "本地运行时负责落实的能力",
+        "scope_note": "每任务一个执行者 · 支持项目调度",
+        "controls": [
+            ("SCOPE & ORCHESTRATION", "任务边界与编排", ["冻结范围、检查与模型配置", "单任务 / 并行 / 分阶段", "代码、接口、页面交互与样式走查"], "开发限定写入范围；走查源码只读", "runtime"),
+            ("EFFICIENCY & RECOVERY", "用量与执行控制", ["调用模型前完成环境预检", "精简返回，完整证据可补查", "记录用量，限制请求数与 token"], "持久回传与回执；暂停 / 恢复 / 取消", "runtime"),
+            ("INFERENCE RELAY", "模型入口与转发", ["DeepSeek / 火山 / OpenAI", "本地：Responses / Chat", "可保存多个地址，仅启用一个"], "上游凭据只留在桥接程序中", "runtime"),
         ],
-        "reuse": "已验证的公开经验 → 后续任务的工作上下文",
-        "events": "完成事件回传",
-        "boundary": "跨层权限与信任边界  /  TRUST BOUNDARIES",
-        "boundaries": [
-            ("FILESYSTEM", "macOS Seatbelt", "限制文件读取与写入范围"),
-            ("EXAM PROTOCOL", "闭卷阶段禁止工具", "保留此前工作会话记忆"),
-            ("CREDENTIALS", "密钥留在桥接层", "shell 不继承转发令牌"),
-            ("DELIVERY", "产出已验收提交", "合并、推送、部署另行执行"),
-        ],
-        "notes": [
-            "这些是本地 Python 程序的逻辑模块；远端推理服务商是外部依赖，不代表分布式微服务部署。",
-            "* Desktop IPC 依赖客户端协议版本；真实桌面自动回传仍待端到端验证。",
-            "经验机制是有证据来源的检索复用，不训练模型权重，不依赖向量数据库，不增加独立复核模型。",
-        ],
+        "state": "本地状态与产物  /  Git 快照 · 私有验收证据 · 用量与事件回执 · 已验证的公开经验",
+        "gate": "验收门禁 / 原大总管拥有最终决定权",
+        "sequence": "真实检查 → 原执行者同会话闭卷 → 大总管审核评分",
+        "criteria": "检查全通过 · 默认 ≥90 分 · 关键题达标 · 无阻塞项 · 源码与证据一致",
+        "output": "产出已验收代码或走查证据，并积累公开经验。合并、推送、部署另行执行。",
+        "foot": "只有两类模型角色；工作由 macOS 沙箱隔离，模型服务位于 Telos 运行时之外。",
     },
 }
 
 
 def system_diagram(language, font=None):
     copy = SYSTEM[language]
-    c = Canvas(2110, language, font)
-    c.header("SYSTEM ARCHITECTURE / v3", copy["title"], copy["subtitle"])
-    for x, label, role in zip((80, 475, 870, 1265), copy["legend"], ("supervisor", "executor", "runtime", "artifact")):
-        c.ax.add_patch(Circle((x+7, 232), 5.5, color=THEME[role], zorder=5))
-        c.text(x+25, 232, label, 15.5, role)
-    xs, ys, heights = (80, 640, 1200), (340, 700, 1060, 1470), (245, 245, 295, 245)
-    for row, (y, height) in enumerate(zip(ys, heights)):
-        c.layer(f"0{row+1}", y-55, *copy["layers"][row])
-        for col, x in enumerate(xs):
-            c.card(x, y, 520, height, *copy["cards"][row*3+col])
-    c.arrow((605, 462), (635, 462), "supervisor", both=True)
-    c.route([(1460, 335), (1460, 323), (340, 323), (340, 335)], "runtime", dashed=True)
-    c.arrow((900, 593), (900, 688), "runtime")
-    c.arrow((605, 822), (635, 822), "runtime")
-    c.arrow((1165, 822), (1195, 822), "runtime", both=True)
-    c.arrow((605, 1207), (635, 1207), "executor", both=True)
-    c.arrow((1165, 1207), (1195, 1207), "runtime")
-    c.route([(1725, 1190), (1760, 1190), (1760, 462), (1725, 462)], "runtime", dashed=True)
-    c.text(1768, 845, copy["events"], 11.5, "runtime", rotation=90, align="center")
-    c.route([(1460, 1720), (1460, 1752), (40, 1752), (40, 822), (75, 822)], "artifact", dashed=True)
-    c.box(520, 1730, 760, 42, fill="background", edge="background", radius=5)
-    c.text(900, 1751, copy["reuse"], 14.5, "artifact", align="center", width=720)
-    c.text(80, 1810, copy["boundary"], 18, "policy", bold=True)
-    for i, (tag, title, detail) in enumerate(copy["boundaries"]):
-        x = 80+i*420
-        c.box(x, 1850, 380, 118, fill="panel_alt", radius=12)
-        c.text(x+18, 1873, tag, 11, "policy", bold=True)
-        c.text(x+18, 1909, title, 18, "ink", width=344)
-        c.text(x+18, 1944, detail, 14, "body", width=344)
-    for i, line in enumerate(copy["notes"]):
-        c.text(80, 2010+i*31, line, 13.5, "muted", width=1640)
+    c = Canvas(1470, language, font)
+    c.header("SYSTEM ARCHITECTURE", copy["title"], copy["subtitle"])
+    xs = (80, 640, 1200)
+    for x, data in zip(xs, copy["roles"]):
+        c.card(x, 260, 520, 260, *data)
+    c.arrow((605, 390), (635, 390), "supervisor")
+    c.arrow((1165, 390), (1195, 390), "executor", both=True)
+    c.route([(900, 525), (900, 570), (340, 570), (340, 525)], "runtime", dashed=True)
+    c.box(363, 548, 514, 44, fill="background", edge="background", radius=4)
+    c.text(620, 570, copy["return"], 17, "runtime", align="center", width=500)
+    c.text(80, 635, copy["capabilities"], 22, "ink", bold=True, width=1000)
+    c.text(1720, 635, copy["scope_note"], 15.5, "muted", align="right", width=620)
+    c.ax.plot([80, 1720], [665, 665], color=THEME["border"], linewidth=.8, zorder=1)
+    for x, data in zip(xs, copy["controls"]):
+        c.card(x, 700, 520, 260, *data)
+    c.box(80, 1012, 1640, 60, fill="panel_alt", edge="border", radius=12)
+    c.text(900, 1042, copy["state"], 17.5, "artifact", align="center", width=1570)
+    c.arrow((900, 1082), (900, 1130), "artifact")
+    c.box(80, 1140, 1640, 240, fill="panel_alt", edge="artifact", radius=18)
+    c.text(110, 1172, copy["gate"], 15.5, "artifact", bold=True, width=1580)
+    c.text(110, 1220, copy["sequence"], 28, "ink", bold=True, width=1580)
+    c.text(110, 1266, copy["criteria"], 20.5, width=1580)
+    c.ax.plot([110, 1690], [1298, 1298], color=THEME["border"], linewidth=.8, zorder=4)
+    c.text(110, 1338, copy["output"], 18.5, "artifact", width=1580)
+    c.text(80, 1430, copy["foot"], 16, "muted", width=1640)
     c.save("architecture")
 
 
@@ -331,8 +293,12 @@ def lifecycle_diagram(language, font=None):
 if __name__ == "__main__":
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--font", help="Chinese font family, e.g. 'Noto Sans CJK SC'")
+    parser.add_argument("--diagram", choices=("architecture", "lifecycle", "all"), default="all",
+                        help="Select the diagrams to regenerate (default: all)")
     args = parser.parse_args()
     for language in ("en", "zh"):
         selected_font = args.font if language == "zh" else None
-        system_diagram(language, selected_font)
-        lifecycle_diagram(language, selected_font)
+        if args.diagram in ("architecture", "all"):
+            system_diagram(language, selected_font)
+        if args.diagram in ("lifecycle", "all"):
+            lifecycle_diagram(language, selected_font)

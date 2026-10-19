@@ -2,13 +2,13 @@
 
 [English README](../README.md) · [中文 README](../README.zh-CN.md)
 
-[![Layered system architecture](assets/architecture-en.png)](assets/architecture-en.png)
+[![Supervisor, Telos runtime and executor with scope, usage and acceptance controls](assets/architecture-en.png)](assets/architecture-en.png)
 
 ## Roles and deployment model
 
 The original Codex conversation is the GPT supervisor. It owns task planning, private references, source review, scores and final acceptance. Telos is a deterministic local coordinator, not another model. Each task has one executor binding, frozen when the task is opened.
 
-The architecture diagram is a **logical capability map**, not a deployment of independent microservices. One local Python application coordinates Codex subprocesses, a per-job inference relay, filesystem state and Git worktrees. Model providers are external HTTPS dependencies. The lifecycle diagram below shows the execution order; the module boxes do not represent additional model participants.
+The architecture diagram is a **role and capability overview**, not a deployment of independent microservices. The companion Skill guides the supervisor; MCP tools expose the runtime that enforces the workflow. One local Python application coordinates Codex subprocesses, a per-job inference relay, filesystem state and Git worktrees. Inference comes from a configured cloud provider or local loopback service. The lifecycle diagram below shows the execution order; the runtime boxes do not represent additional model participants.
 
 ## Architecture layers
 
@@ -66,6 +66,11 @@ The CLI queue and Desktop IPC are distinct callback adapters. Desktop IPC depend
 | [closed_book.py](../runtime/closed_book.py) | Tool-free exam request/response enforcement and answer parsing |
 | [check_runtime.py](../runtime/check_runtime.py) | Private executable checks against pinned snapshots |
 | [isolation.py](../runtime/isolation.py) | Read allowlists and per-job authenticated inference relay |
+| [preflight.py](../runtime/preflight.py) | No-model CLI/Python/Git probes within the work sandbox, with isolated Python startup |
+| [usage.py](../runtime/usage.py) | Persistent usage ledger, unknown accounting and request/token budget enforcement |
+| [compact.py](../runtime/compact.py) | Bounded tool summaries with full evidence retrieval |
+| [local_executor.py](../runtime/local_executor.py), [chat_adapter.py](../runtime/chat_adapter.py) | One active named local endpoint, frozen bindings and Chat Completions adaptation |
+| [audit.py](../runtime/audit.py), [audit_probe.py](../runtime/audit_probe.py) | Read-only audit scope, bounded API/page probes and pinned report evidence |
 | [projects.py](../runtime/projects.py) | Dependency DAG, write scopes, scratch integration and final project gate |
 | [codex_rpc.py](../runtime/codex_rpc.py), [desktop_rpc.py](../runtime/desktop_rpc.py) | CLI queue and versioned Desktop IPC adapters |
 | [experience.py](../runtime/experience.py) | Provenance, verified lesson selection and disabling stale records |
@@ -76,7 +81,7 @@ The flat runtime directory is intentional: it is copied as a self-contained stan
 
 ## Trust and storage boundaries
 
-The bridge retains upstream credentials and forwards requests only to the frozen HTTPS Responses endpoint. Executor requests use an ephemeral local relay token; shell environments exclude upstream keys and relay tokens. Source worktrees, private contracts and other executors' caches have separate permissions. Explicit dependency grants are read-only. Normal command network access is disabled by default, while model traffic goes through the relay.
+The bridge retains upstream credentials and forwards requests only to the frozen model endpoint. Cloud profiles use their configured HTTPS service; local profiles use a selected loopback endpoint with Responses or Chat Completions. Saving multiple local addresses does not enable simultaneous selection: one local endpoint is active, while cloud profiles remain independently available. Executor requests use an ephemeral local relay token; shell environments exclude upstream keys and relay tokens. Source worktrees, private contracts and other executors' caches have separate permissions. Explicit dependency grants are read-only. Normal command network access is disabled by default, while model traffic goes through the relay.
 
 SSE accounting is incremental and byte-exact: only the current event is retained, capped at 16 MiB (the same bound as other accepted response bodies). Events split across arbitrary chunks, including CRLF and multiline `data:` fields, are parsed safely. An event over the cap is discarded; if that was the terminal event, usage remains unknown, the request is recorded as failed, and a configured token budget stops further paid requests. Total stream length is never buffered.
 
@@ -92,9 +97,9 @@ Failure metadata and public repair advice can be recorded as candidates. Only ac
 
 ## 中文说明
 
-[![中文分层架构图](assets/architecture-zh.png)](assets/architecture-zh.png)
+[![大总管、Telos 运行时与执行者，以及任务边界、用量和验收控制](assets/architecture-zh.png)](assets/architecture-zh.png)
 
-大总管始终是原来的 GPT 旗舰会话，负责规划、私有验收材料、源码审核、评分与最终验收。每个任务只绑定一个执行者，创建时固定服务商、模型和强度。图中展示本地 Python 程序的逻辑模块：Telos 协调 Codex 子进程、每作业推理转发、文件状态与 Git 工作区，远端模型服务商通过 HTTPS 提供推理。框图中的模块不代表额外模型，也不是独立部署的微服务。
+大总管始终是原来的 GPT 旗舰会话，负责规划、私有验收材料、源码审核、评分与最终验收。每个任务只绑定一个执行者，创建时固定服务商、模型和强度。图中展示角色与能力总览：Skill 指导大总管，MCP 工具暴露执行与验收能力；本地 Telos 程序协调 Codex 子进程、每作业推理转发、文件状态与 Git 工作区，推理由配置的云端服务商或本地回环服务提供。运行时方框不代表额外模型，也不是独立部署的微服务。
 
 ### 分层与术语
 
@@ -140,7 +145,7 @@ CLI 队列与 Desktop IPC 是不同回传适配器。Desktop IPC 依赖客户端
 
 项目模式由大总管决定单任务、并行或分阶段，最多三个作业同时运行。修改范围重叠的任务必须声明依赖；后续任务以已验收依赖提交为基线。子任务通过后在独立工作区集成，运行整体检查，再由大总管整体验收，不自动修改源分支。
 
-凭据只由宿主桥接程序持有，请求转发至冻结的 HTTPS Responses 地址。执行者使用临时转发令牌，shell 不继承密钥与令牌；命令默认禁止联网，显式授予的依赖权限为只读。私有状态与证据存于 `~/.local/state/telos/`，工作区和隔离会话位于 `~/.cache/telos/`，通过 JSON 文件与文件锁持久化。清理需要验证归档与任务状态，不单按目录年龄删除。
+凭据只由宿主桥接程序持有，请求转发至冻结的模型入口。云端配置使用对应 HTTPS 服务；本地配置使用选中的回环地址，兼容 Responses 与 Chat Completions。可保存多个本地地址，但只启用其中一个，云端配置仍可独立选择。执行者使用临时转发令牌，shell 不继承密钥与令牌；命令默认禁止联网，显式授予的依赖权限为只读。私有状态与证据存于 `~/.local/state/telos/`，工作区和隔离会话位于 `~/.cache/telos/`，通过 JSON 文件与文件锁持久化。清理需要验证归档与任务状态，不单按目录年龄删除。
 
 macOS Seatbelt 属于本地操作系统沙箱，不能提供虚拟机隔离或抵御宿主机失陷。大总管负责检查设计、私有材料保密及审核判断；验收门禁无法保证弱检查足以发现所有问题。发送给服务商的源码和任务上下文仍受相应服务条款约束。
 
@@ -148,9 +153,9 @@ macOS Seatbelt 属于本地操作系统沙箱，不能提供虚拟机隔离或�
 
 ## Diagram source / 图源
 
-Version 3.2 adds system audits to the core workflow illustrated above: `audit.py` validates public boundaries and pins report evidence; `audit_probe.py` brokers bounded HTTP/browser actions; `audit_browser.cjs` drives an explicitly supplied existing Playwright/Chromium installation. Audit artifacts live separately from read-only source and private exam materials. Final acceptance judges investigation quality, with findings and limitations preserved. See [audit workflow and boundaries](audits.md). The static core diagrams retain the original 3.1 catalog; the current generated MCP catalog has 25 tools.
+The overview includes the supervisor Skill, scoped audits, local model endpoints, preflight, compact tool returns and usage budgets. It deliberately leaves filenames and protocol details to the module map above. The separate lifecycle diagram describes the shared checks/exam/review sequence. For audit-specific evidence and acceptance, see [audit workflow and boundaries](audits.md).
 
-3.2 版本增加只读走查合同、受限接口/浏览器探针、独立证据产物和大总管逐项审核，复用原调度、回传与闭卷问答。走查验收与系统是否存在 Bug 分开；详见[系统走查](audits.md)。上方静态核心架构图保留 3.1 的工具数量，当前工具目录为 25 项。
+架构总览已包含大总管 Skill、限定范围的走查、本地模型入口、环境预检、精简工具返回和用量预算；源码文件与协议细节集中在上方模块映射中。时序图单独说明检查、闭卷、审核的共同流程；走查的取证与验收要求见[系统走查](audits.md)。
 
 | Diagram / 图 | English | 中文 |
 | --- | --- | --- |
@@ -163,10 +168,12 @@ The generator requires Matplotlib, a development-only dependency. For Chinese re
 
 ```sh
 python scripts/render_architecture.py
+# Regenerate only the bilingual architecture overview:
+python scripts/render_architecture.py --diagram architecture
 # With another installed Chinese font:
 python scripts/render_architecture.py --font "Noto Sans CJK SC"
 ```
 
-The generator checks text widths and canvas bounds before export. Preview all four PNGs after layout or wording changes; geometry checks cannot replace visual inspection.
+The generator checks text widths and canvas bounds before export. Preview each regenerated PNG both at full size and at README display width; geometry checks cannot replace visual inspection. The architecture overview is 3,240 × 2,646 pixels; the lifecycle images retain their separate layout.
 
-图中文字、布局和颜色统一维护在 Python 图源中；PNG 宽度为 3,240 像素，SVG 将文字转为轮廓以保持字体效果。中文默认使用 macOS 黑体，可用 `--font` 指定其他已安装字体。修改后重新生成并目视检查四张预览图，确认换行、间距和连接关系。
+图中文字、布局和颜色统一维护在 Python 图源中；架构总览为 3,240 × 2,646 像素，SVG 将文字转为轮廓以保持字体效果。中文默认使用 macOS 黑体，可用 `--font` 指定其他已安装字体，或用 `--diagram architecture` 仅生成中英文架构图。修改后在原尺寸及 README 展示宽度下检查每张更新的预览图，确认文字、间距和连接关系。

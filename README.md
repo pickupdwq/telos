@@ -15,16 +15,15 @@ There are two model roles. Each task has one executor; the original supervisor o
 
 ## System architecture
 
-[![Telos layered architecture: control surface, orchestration, isolated execution, evidence gates and verified experience](docs/assets/architecture-en.png)](docs/assets/architecture-en.png)
+[![Telos architecture: original GPT supervisor, local MCP bridge and task executor; scope, usage, model access and evidence-based acceptance](docs/assets/architecture-en.png)](docs/assets/architecture-en.png)
 
-The diagram maps logical capabilities within the local runtime. Only the supervisor and executor are model roles; the other boxes are program modules, storage or external inference interfaces.
+Read left to right: the original supervisor delegates through Telos to a task executor; completion events and evidence return to the same chat. The lower half shows the runtime controls and acceptance gate. Only the supervisor and executor are model roles.
 
-| Layer | Main responsibilities |
+| Part | Main responsibilities |
 | --- | --- |
-| Control surface | MCP tool gateway, original-thread ownership, durable completion events and recovery |
-| Orchestration plane | Immutable contracts, a finite-state machine (FSM), dependency DAG scheduling and bounded retries |
-| Execution & verification plane | Persistent executor sessions, authenticated inference relay, filesystem isolation and evidence-bound acceptance |
-| Artifact & experience plane | Git snapshots, private audit records and provenance-checked lesson retrieval |
+| Original supervisor + Skill | Understand requirements, freeze scope/checks, review evidence and grade |
+| Local Telos runtime | Preflight, scheduling, isolation, model relay, usage/budgets, durable callbacks and acceptance gates |
+| Task executor | Work within the assigned scope, then answer the closed-book questionnaire in the same thread |
 
 [Full-size PNG](docs/assets/architecture-en.png) · [Vector SVG](docs/assets/architecture-en.svg) · [Module map and protocol details](docs/architecture.md)
 
@@ -36,6 +35,7 @@ The diagram maps logical capabilities within the local runtime. Only the supervi
 - **Isolated work.** Git worktrees, macOS Seatbelt restrictions, private evaluation materials and a local credential relay separate implementation from grading.
 - **Project coordination.** The supervisor chooses single, parallel or phased execution; dependencies and allowed write paths are enforced. Up to three jobs can run concurrently. Integrated code receives a separate final evaluation.
 - **Recoverable operations.** Persistent events, receipts, bounded retries, pause/resume/cancel, and dry-run-first archive/cleanup tools.
+- **Preflight and usage control.** Check the work environment before model calls, return compact tool summaries with full evidence available, and persist request/token usage across work and exams. Configured budgets gate subsequent requests; missing usage remains explicitly unknown. See [budget semantics](docs/configuration.md).
 - **Experience reuse.** Public repair lessons from accepted work can inform later tasks in the same repository. Provenance is preserved; stale lessons can be disabled. This is retrieval, not model-weight training.
 - **System audits.** The supervisor freezes a public checklist and execution boundaries. Executors inspect read-only source, use constrained API/browser probes, and deliver reports, logs and screenshots. The supervisor reviews coverage/evidence; confirmed findings can become repair tasks. Audit acceptance concerns investigation quality, not absence of bugs. See the [audit guide](docs/audits.md).
 

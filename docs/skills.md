@@ -58,7 +58,7 @@ Successful upgrades keep `.telos-runtime-backup-*` beside the runtime and `.telo
 
 Do not overlay a locally edited Skill or runtime to force an upgrade. Keep the existing installation and reconcile those changes explicitly. To roll back after a successful upgrade, first stop using the affected MCP installation, preserve the current runtime/Skill pair, and restore the corresponding backup pair to their recorded paths. A first upgrade from 3.3.0 has no previous Skill; preserve/remove the newly installed Skill when restoring that runtime. Do not modify credentials or task state for a file rollback.
 
-Reload the MCP client after upgrading; an already running process retains loaded Python modules. Codex normally detects Skill changes automatically; if `$telos` is absent, reopen the client and check its Skill list and `telos` MCP registration. A new process reading version 3.4.0 does not prove an older open conversation reloaded it.
+Reload the MCP client after upgrading; an already running process retains loaded Python modules. Codex normally detects Skill changes automatically; if `$telos` is absent, reopen the client and check its Skill list and `telos` MCP registration. A new process reading the latest version does not prove an older open conversation reloaded it.
 
 ## 中文说明
 

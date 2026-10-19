@@ -1,5 +1,15 @@
 # Changelog / 更新记录
 
+## 3.5.0 — 2026-10-19
+
+- Check the actual CLI/Python/Git work environment before model calls, with isolated Python startup that cannot import task-repository modules.
+- Default MCP results to compact summaries while retaining full evidence access. Preserve original full project receipts as read-only snapshots and keep reminder continuation actionable and idempotent.
+- Persist normalized request/token usage across work and exams, enforce configured budgets between requests, and expose unknown counters and incomplete project aggregates.
+- Parse streamed Responses incrementally with a documented 16 MiB event bound, preserving valid large terminal usage and original forwarded bytes.
+- Redraw the bilingual README architecture overview around the supervisor, local MCP runtime and executor. Include Skill guidance, audits, local endpoints, preflight and usage control; keep detailed module mapping in the architecture guide.
+
+新增环境预检、精简工具返回、持久用量统计与预算控制，并修复预检误执行仓库模块、大事件用量丢失、项目汇总未知状态遗漏及完整回执补查/提醒恢复问题。重绘中英文架构图，明确两类模型角色、任务边界、模型入口与证据验收闭环。
+
 ## 3.4.0 — 2026-10-19
 
 - Ship the `telos` supervisor Skill with scoped explicit/implicit invocation and references for planning, audits, executor configuration and acceptance.
