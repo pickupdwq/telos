@@ -6,6 +6,7 @@ import shutil
 import signal
 import subprocess
 import uuid
+import preflight
 import providers
 from identity import data_path
 
@@ -42,13 +43,28 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
                TMPPREFIX=str(temp / 'zsh'), PYTHONDONTWRITEBYTECODE='1',
                NO_PROXY='127.0.0.1,localhost', no_proxy='127.0.0.1,localhost')
     env[key_env] = key
+    # Apple's /usr/bin/git is an xcrun shim whose cache write is blocked by the
+    # sandbox. Give the worker the already-installed Git binary directly.
+    git_bin = preflight.git_executable()
+    if git_bin:
+        shim = peer_home / 'bin'
+        shim.mkdir(exist_ok=True, mode=0o700)
+        link = shim / 'git'
+        if (link.exists() or link.is_symlink()) and not (link.is_symlink() and os.readlink(link) == git_bin):
+            link.unlink()
+        if not link.is_symlink():
+            os.symlink(git_bin, link)
+        env['PATH'] = str(shim) + os.pathsep + env.get('PATH', '/usr/bin:/bin')
     if probe:
         import audit
         artifact_root = audit.artifacts(b, state)
         env.update(TELOS_AUDIT_URL=probe['url'], TELOS_AUDIT_TOKEN=probe['token'], TELOS_AUDIT_ARTIFACTS=str(artifact_root),
                    TELOS_AUDIT_SOURCE=state['worktree'])
-    common_git = git(state["worktree"], "rev-parse", "--git-common-dir")
-    common_git = str((Path(state["worktree"]) / common_git).resolve())
+    # Closed-book exams must not inspect the worktree. Their only writable path
+    # is the peer home, so the common Git directory is irrelevant there.
+    common_git = None if exam else git(state["worktree"], "rev-parse", "--git-common-dir")
+    if common_git is not None:
+        common_git = str((Path(state["worktree"]) / common_git).resolve())
     # Provider IDs are persisted CLI protocol identities, not product labels.
     # Preserve them so frozen pre-rename sessions resume without switching identity.
     provider_id = 'ark_exam_loop' if 'backends' not in contract and 'executor' not in contract else 'exam_loop_' + binding['provider']
@@ -87,7 +103,11 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
         settings += ['project_doc_max_bytes=0', 'features.remote_compaction=false']
     output = peer_home / (uuid.uuid4().hex + ".txt")
     pinned = data_path(HOME, '.local/share/{name}-cli') / 'node_modules/.bin/codex'
-    args = [str(pinned) if pinned.exists() else (shutil.which("codex") or "codex"), "--no-daemon", "--cd", str(cwd)]
+    cli = str(pinned) if pinned.exists() else shutil.which("codex")
+    if not cli:
+        raise GateError("Environment preflight failed before any model request: dedicated Codex CLI not found; "
+                        "install the dedicated Telos CLI or restore it on PATH")
+    args = [cli, "--no-daemon", "--cd", str(cwd)]
     for setting in settings:
         args += ["-c", setting]
     args += ["exec"]
@@ -104,6 +124,8 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
                + "Task:\n" + contract["task"] + "\nPublic context:\n" + contract["context"] + "\n")
     if contract.get('allowed_paths'):
         initial += "Allowed change paths (enforced at submission): " + encoded(contract['allowed_paths']) + "\n"
+    initial += ("Patch guidance: use apply_patch; '*** Add File: path' is only for new paths. "
+                "Use '*** Update File: path' with matching context for existing files, never Add File to replace one.\n")
     if contract.get('experience_context'):
         initial += "\nExperience reference:\n" + contract['experience_context'] + "\n"
     if probe:
@@ -111,16 +133,22 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
     prompt = (initial if not state.get("thread_id") else "") + "Codex message:\n" + message
     readable_cache = [peer_home] if exam else [state["worktree"], peer_home, common_git]
     writable = [peer_home] if exam else [state['worktree'], peer_home]
-    protected = [common_git, Path(state['worktree']) / '.git']
+    protected = [p for p in (common_git, Path(state['worktree']) / '.git') if p is not None]
     if probe:
         readable_cache = [peer_home, artifact_root, *audit.source_paths(state, contract['audit'])]
         writable = [peer_home, artifact_root]
         protected.append(state['worktree'])
-    command = ["/usr/bin/sandbox-exec", "-p", sandbox_profile(network=False if exam else contract.get('command_network', False),
-               writable=writable, relay_port=relay_port,
-               protected=protected, service_ports=[probe['port']] if probe else [],
-               readable=[] if exam else contract.get('dependency_paths', []),
-               readable_cache=readable_cache), *args]
+    profile = sandbox_profile(network=False if exam else contract.get('command_network', False),
+                              writable=writable, relay_port=relay_port,
+                              protected=protected, service_ports=[probe['port']] if probe else [],
+                              readable=[] if exam else contract.get('dependency_paths', []),
+                              readable_cache=readable_cache)
+    if phase == 'work':
+        # One bounded probe per work invocation, in the same sandbox/env/cwd as
+        # the CLI. Exams never probe the worktree; audits use their isolated room.
+        preflight.run(b, cli, cwd, env, profile, check_repo=(probe is None and contract.get('task_type') != 'audit'),
+                      secrets=(key,))
+    command = ["/usr/bin/sandbox-exec", "-p", profile, *args]
     p = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     try:
@@ -128,7 +156,9 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
     except subprocess.TimeoutExpired:
         os.killpg(p.pid, signal.SIGKILL)
         out, err = p.communicate()
-        detail = (err.decode(errors='replace')[-1800:] + out.decode(errors='replace')[-1200:]).replace(key, '[REDACTED]')
+        detail = err.decode(errors='replace')[-1800:] + out.decode(errors='replace')[-1200:]
+        if key:
+            detail = detail.replace(key, '[REDACTED]')
         raise GateError("Execution model timed out; no acceptance. " + detail) from None
     events = []
     for line in stdout.decode(errors="replace").splitlines():
@@ -144,13 +174,20 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
         if e.get("type") == "turn.completed":
             usage = e.get("usage")
     if p.returncode or not thread or not output.exists() or not output.read_text().strip():
-        detail = stderr.decode(errors="replace").replace(key, "[REDACTED]")[-1200:]
+        detail = stderr.decode(errors="replace")[-1200:]
+        if key:
+            detail = detail.replace(key, "[REDACTED]")
         errors = [e for e in events if e.get("type") in ("error", "turn.failed")]
         if errors:
-            detail += encoded(errors).replace(key, "[REDACTED]")[-1200:]
+            extra = encoded(errors)
+            if key:
+                extra = extra.replace(key, "[REDACTED]")
+            detail += extra[-1200:]
         raise GateError("Execution model failed: " + detail)
     if exam and thread != state["thread_id"]:
         raise GateError("Closed-book exam resumed a different executor conversation")
-    summary = output.read_text().replace(key, "[REDACTED]")
+    summary = output.read_text()
+    if key:
+        summary = summary.replace(key, "[REDACTED]")
     return {"thread_id": thread, "summary": summary if exam else summary[:12000], "summary_truncated": not exam and len(summary) > 12000,
             "usage": usage, "model": binding['model'], 'backend': providers.public_binding(binding)}

@@ -100,8 +100,11 @@ Merge these entries into the existing configuration; replace the example endpoin
 | `experience_enabled` | true | Enable verified experience injection |
 | Project `max_parallel` | up to 3 | Concurrent model jobs, including exams |
 | Project `max_jobs` | 40 | Job budget, not a token/dollar cap |
+| `task_budget` | unset | Optional default frozen usage budget for new tasks |
 
 Profiles may override `http_timeout`, `job_timeout`, `exam_max_tokens`, `exam_format_attempts` and `credential_provider`. A task's `use_experience=false` disables experience injection for that task.
+
+`task_budget` is an optional object with positive integer limits: `max_requests`, `max_input_tokens`, `max_uncached_input_tokens`, `max_output_tokens` and `max_total_tokens`. `telos_open` and each project task may override the configured default; an absent budget preserves legacy unlimited behavior. The budget is frozen into the task contract and all work, repair and closed-book exam attempts share one durable ledger outside the worker cache. `max_requests` is a hard reservation limit. Token limits are observed-spend thresholds: they stop the next request once spend reaches the limit, so an already in-flight response may overshoot. If usage needed to evaluate a configured token limit is unavailable or invalid, further paid requests stop and the task reports an unknown-budget error; no retry, effort reduction or gate weakening is allowed. These are token/request limits, not currency estimates.
 
 `dependency_paths` explicitly grants read-only access to required local dependency directories during work/checks. It does not permit writes or networking and is not granted during exams. `command_network=true` permits command networking during work; each private check has its own `network` field. Install dependencies through an appropriate workflow before launching isolated work; Telos does not automatically install a project's dependencies.
 
@@ -118,5 +121,6 @@ Project `allowed_paths` are literal relative files/directory prefixes, not globs
 - OpenAI 执行者需要自己的 API 凭据，不复用大总管的 ChatGPT/Codex 登录。
 - 本地入口使用 `local_executor`，兼容 Responses 和 Chat Completions，多地址只能选中一个；详见[本地执行者指南](local-executors.md)。其他新增服务商仍通过 `providers` 配置固定 HTTPS Responses 接口。
 - 默认及格线 90、最多五轮评估；项目默认 40 个作业预算、最多三个并发。它们不限制实际费用或 token。
+- 可为新任务或项目子任务冻结 `task_budget`（请求数与 token 上限）。请求数上限为硬预留；token 上限在已观测用量达到后阻止下一次请求。评测所需用量未知时停止后续付费请求，不重试、不降级。没有真实价格时不估算费用。
 - `dependency_paths` 只开放依赖目录读取；`command_network` 和检查的 `network` 分别控制工作/检查的网络权限，闭卷阶段不获得这些权限。
 - 旧 `EXAM_LOOP_STATE_DIR` / `EXAM_LOOP_CACHE_DIR` 仍兼容，同名 `TELOS_*` 设置优先；历史合同按原来的绑定执行，不强行迁移。

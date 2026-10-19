@@ -7,6 +7,7 @@ import hashlib
 import json
 
 from providers import ProviderError
+from usage import normalize_usage
 
 
 def fingerprint(value):
@@ -104,17 +105,27 @@ def question_payload(contract):
 def response_usage(attempts):
     """API response usage is per request; Codex resume's usage can be cumulative."""
     totals = {}
+    unknown = 0
+    found = False
     for attempt in attempts:
         for response in attempt['responses']:
             usage = response.get('usage')
             if not isinstance(usage, dict):
-                return None
-            current = {k: usage[k] for k in ('input_tokens', 'output_tokens', 'total_tokens') if k in usage}
-            current['cached_input_tokens'] = (usage.get('input_tokens_details') or {}).get('cached_tokens', 0)
-            current['reasoning_output_tokens'] = (usage.get('output_tokens_details') or {}).get('reasoning_tokens', 0)
+                unknown += 1
+                continue
+            found = True
+            current = normalize_usage(usage)
+            if current is None:
+                unknown += 1
+                continue
+            if current.get('input_tokens') is None or current.get('output_tokens') is None:
+                unknown += 1
             for key, value in current.items():
                 if type(value) is int:
                     totals[key] = totals.get(key, 0) + value
+    if not found:
+        return None
+    totals['unknown_responses'] = unknown
     return totals
 
 

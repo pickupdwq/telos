@@ -196,10 +196,19 @@ def convert(response, model, tool_types):
         result['incomplete_details'] = {'reason': 'max_output_tokens' if reason == 'length' else 'content_filter'}
     usage = response.get('usage')
     if isinstance(usage, dict):
-        result['usage'] = {'input_tokens': usage.get('prompt_tokens', 0), 'output_tokens': usage.get('completion_tokens', 0),
-                           'total_tokens': usage.get('total_tokens', 0),
-                           'input_tokens_details': {'cached_tokens': (usage.get('prompt_tokens_details') or {}).get('cached_tokens', 0)},
-                           'output_tokens_details': {'reasoning_tokens': (usage.get('completion_tokens_details') or {}).get('reasoning_tokens', 0)}}
+        normalized = {}
+        for source, target in (('prompt_tokens', 'input_tokens'), ('completion_tokens', 'output_tokens'),
+                               ('total_tokens', 'total_tokens')):
+            if source in usage:
+                normalized[target] = usage[source]
+        prompt_details = usage.get('prompt_tokens_details')
+        if isinstance(prompt_details, dict) and 'cached_tokens' in prompt_details:
+            normalized['input_tokens_details'] = {'cached_tokens': prompt_details['cached_tokens']}
+        completion_details = usage.get('completion_tokens_details')
+        if isinstance(completion_details, dict) and 'reasoning_tokens' in completion_details:
+            normalized['output_tokens_details'] = {'reasoning_tokens': completion_details['reasoning_tokens']}
+        if normalized:
+            result['usage'] = normalized
     return result
 
 

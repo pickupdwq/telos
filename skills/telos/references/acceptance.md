@@ -18,6 +18,8 @@ With automatic return enabled, yield while waiting instead of repeatedly polling
 4. If not accepted and budget remains, send public symptoms, expected behavior and relevant locations through the returned repair action (`telos_send` or structured `telos_repair`). Do not include private answers, check code or the review packet. Check `telos_repair`'s live schema before constructing its feedback object.
 5. Infrastructure failures and code failures have separate bounded recovery rules. Follow the recorded state/backoff and preserve action identifiers for idempotency. At the applicable limit, report the failure, surviving evidence and smallest next decision; do not claim acceptance or create a fresh task merely to reset a budget.
 
+`telos_status`, `telos_receive` and `telos_review` default to summary detail. The review summary keeps every question, private reference, answer, rubric, check outcome and identity/blocker needed for grading; request `detail="full"` only for complete successful logs, raw attempts or static task prose. Failed snippets remain bounded. A frozen `task_budget` counts all work, repair and exam requests: request count is a hard limit, token limits stop the next request after observed spend, and unknown required usage stops further paid requests. Report that budget state instead of retrying it as infrastructure or treating it as acceptance.
+
 Only standalone `accepted=true` completes a standalone task. Projects additionally require integrated checks and `telos_project_finish` returning project `accepted=true`; see [planning](planning.md).
 
 ## Deliver the result

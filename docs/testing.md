@@ -14,6 +14,8 @@ The installer tests use temporary directories and mocked prerequisites. They cov
 
 Local endpoint regressions exercise both Responses and Chat against real HTTP servers and the real Codex CLI, including namespaced tools, work-history recall, zero-tool exams, supervisor grading, key/port isolation and selection locks. These are deterministic model fixtures; a real local gateway needs a separate small work → exam → supervisor acceptance run. See [local executor configuration](local-executors.md).
 
+Usage/preflight regressions cover Chat and Responses JSON/SSE accounting, malformed and partial usage, duplicate terminal events, concurrent reservations, frozen budgets shared by work/exam/repair, exhaustion and unknown-usage stops. `test_preflight.py` also checks the no-model probe order and, when nested Seatbelt is available, runs the selected Python and Git inside the real profile while confirming the private path remains denied. A container or outer sandbox that denies `sandbox-exec` or loopback listeners can run the pure accounting/preflight/compact tests but must report those integration tests as blocked, not passed; run the full command on the supervisor host.
+
 ## Fresh-install smoke test
 
 After installing the dedicated CLI as documented in the README:

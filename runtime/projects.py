@@ -17,6 +17,7 @@ import time
 import uuid
 from processes import process_start, process_running, reap_background
 from identity import canonical_tool_name
+from usage import validate_budget
 
 
 class Projects:
@@ -97,6 +98,14 @@ class Projects:
                 raise self.b.GateError('depends_on must contain task IDs')
             t['depends_on'] = list(dict.fromkeys(t['depends_on']))
             t.setdefault('context', '')
+            # Stable accounting identity: unlike session_id this survives the
+            # constrained reassignment flow, so task budgets stay cumulative.
+            t['usage_id'] = uuid.uuid4().hex
+            try:
+                configured = t.get('budget') if t.get('budget') is not None else self.b.config().get('task_budget')
+                t['budget'] = validate_budget(configured)
+            except ValueError as error:
+                raise self.b.GateError('Invalid task budget: ' + str(error)) from None
             if any(k in t for k in ('exam_profile', 'exam_provider', 'exam_model', 'exam_reasoning_effort',
                                      'backends', 'executor', 'workflow_version', '_workflow_version')):
                 raise self.b.GateError('New project tasks configure one executor; internal/legacy bindings are not task inputs')
@@ -204,22 +213,69 @@ class Projects:
                 t.update(phase='setup_error', error='Interrupted task setup; inspect workspace, then replace this unstarted task')
         return p
 
-    def view(self, p):
+    def _usage(self, p):
+        totals = {'requests': 0, 'failed_requests': 0, 'unknown_usage_requests': 0,
+                  'in_flight_requests': 0, 'input_tokens': 0, 'cached_input_tokens': 0,
+                  'uncached_input_tokens': 0, 'output_tokens': 0, 'reasoning_output_tokens': 0,
+                  'total_tokens': 0}
+        found = False
+        for t in p['tasks']:
+            state = self.child(t)
+            if not state:
+                continue
+            try:
+                _, contract = self.b.load_session(self.b.run_dir(t['session_id']))
+                snapshot = self.b.usage_snapshot(state, contract)
+            except Exception:
+                continue
+            snapshot_totals = snapshot.get('totals')
+            if not isinstance(snapshot_totals, dict):
+                continue
+            found = True
+            for key in totals:
+                value = snapshot_totals.get(key)
+                if type(value) is int:
+                    totals[key] += value
+        return totals if found else None
+
+    def view(self, p, detail='full'):
         result = {k: p[k] for k in ('project_id', 'phase', 'continuation', 'execution_mode', 'strategy',
                                    'decision_reason', 'max_parallel', 'max_jobs', 'jobs_started', 'base_commit')}
+        result['contract_hash'] = p.get('contract_hash')
         result['effective_parallel'] = self.limit(p)
-        result['tasks'] = [{k: t.get(k) for k in ('id', 'task', 'depends_on', 'allowed_paths', 'provider', 'model',
-                                                'executor_profile', 'workflow_version',
-                                                'reasoning_effort', 'session_id', 'phase', 'accepted_commit',
-                                                'event_id', 'error')} for t in p['tasks']]
+        tasks = []
+        for t in p['tasks']:
+            item = {k: t.get(k) for k in ('id', 'task', 'depends_on', 'allowed_paths', 'provider', 'model',
+                                           'executor_profile', 'workflow_version', 'reasoning_effort',
+                                           'session_id', 'phase', 'accepted_commit', 'event_id', 'error',
+                                           'budget', 'revision')}
+            child = self.child(t)
+            if child:
+                try:
+                    _, contract = self.b.load_session(self.b.run_dir(t['session_id']))
+                    item['budget'] = contract.get('budget')
+                    item['usage'] = self.b.usage_snapshot(child, contract)
+                except Exception:
+                    pass
+            tasks.append(item)
+        result['tasks'] = tasks
+        result['usage'] = self._usage(p)
         result['integration'] = p.get('integration')
+        if 'final_review' in p:
+            result['final_review'] = p['final_review']
         result['accepted'] = p['phase'] == 'accepted'
         courier = self.b.read_json(self.b.run_dir(p['project_id']) / 'state.json')
         result['return_health'] = ({'status': 'complete', 'next_action': None} if result['accepted']
                                    else self.b.return_health(courier))
+        if detail == 'summary':
+            from compact import project as project_view
+            return project_view(result)
+        result['detail'] = 'full'
         return result
 
-    def status(self, pid):
+    def status(self, pid, detail='full'):
+        if detail not in ('summary', 'full'):
+            raise self.b.GateError('detail must be summary or full')
         with self.lock():
             p = self.refresh(self.load(pid))
             if p['phase'] == 'accepted':
@@ -232,7 +288,7 @@ class Projects:
                     if self.b.digest(packet) != integ['packet_id']:
                         raise self.b.GateError('Project review evidence changed')
             self.save(p)
-            return self.view(p)
+            return self.view(p, detail)
 
     def limit(self, p):
         if p['execution_mode'] == 'single' or (p['execution_mode'] == 'auto' and p['strategy'] == 'single'):
@@ -356,6 +412,7 @@ class Projects:
                                          use_experience=p.get('use_experience', True),
                                          task_type=t.get('task_type', 'implementation'), audit=t.get('audit'), repair_of=t.get('repair_of'),
                                          _session_id=t['session_id'], _base_commit=base, _project_id=pid,
+                                         _usage_id=t.get('usage_id'), _budget=t.get('budget'),
                                          _allowed_paths=t['allowed_paths'], _dependency_pins=pins,
                                          _workflow_version=t.get('workflow_version', 2),
                                          _executor=t.get('executor'),
@@ -414,16 +471,18 @@ class Projects:
         p['notice_signature'] = signature
         b.spawn_dispatch(p['project_id'])
 
-    def receive(self, pid, event_id=None):
+    def receive(self, pid, event_id=None, detail='full'):
+        if detail not in ('summary', 'full'):
+            raise self.b.GateError('detail must be summary or full')
         b = self.b
         with self.lock():
             p = self.refresh(self.load(pid))
             if p['continuation'] != 'active' or p['phase'] == 'accepted':
-                return {'proceed': False, 'project': self.view(p)}
+                return self._receive_result({'proceed': False, 'event_id': event_id, 'events': [], 'project': self.view(p), 'project_id': pid}, detail)
             if p.get('owner'):
                 receipt = b.receive_event(pid, event_id)
                 if not receipt['proceed']:
-                    return {'proceed': False, 'project': self.view(p)}
+                    return self._receive_result({'proceed': False, 'event_id': event_id, 'events': [], 'project': self.view(p), 'project_id': pid}, detail)
             events = []
             for t in p['tasks']:
                 s = self.child(t)
@@ -437,8 +496,17 @@ class Projects:
                     state['events'][event_id]['status'] = 'processed'
                     b.write_json(root / 'state.json', state)
             self.save(p)
-            return {'proceed': True, 'events': events, 'project': self.view(p),
+            full = {'proceed': True, 'events': events, 'project': self.view(p), 'project_id': pid,
                     'instruction': 'Supervisor reviews every child via existing evaluate/review/grade tools; integrate then check/review/finish the project. Never treat child acceptance as project acceptance.'}
+            return self._receive_result(full, detail)
+
+    @staticmethod
+    def _receive_result(full, detail):
+        if detail == 'summary':
+            from compact import project_receive
+            return project_receive(full)
+        full['detail'] = 'full'
+        return full
 
     def update(self, pid, decision_reason, strategy=None, max_parallel=None, add_tasks=None):
         with self.lock():
@@ -512,6 +580,9 @@ class Projects:
                 self.b.return_control(t['session_id'], 'cancel')
             p['history'].append({'at': time.time(), 'task_id': task_id, 'previous_session_id': t['session_id'],
                                  'previous_worktree': old.get('worktree') if old else None, 'reason': decision_reason})
+            if not new.get('usage_id'):
+                # Legacy task: its prior ledger is keyed by the old session ID.
+                new['usage_id'] = t['session_id']
             new.update(session_id=uuid.uuid4().hex, phase='pending', revision=t['revision'] + 1)
             for key in ('accepted_commit', 'event_id', 'error', 'base_commit'):
                 new.pop(key, None)
@@ -679,7 +750,9 @@ class Projects:
                 self.publish(current)
             self.save(current)
 
-    def review(self, pid):
+    def review(self, pid, detail='full'):
+        if detail not in ('summary', 'full'):
+            raise self.b.GateError('detail must be summary or full')
         with self.lock():
             p = self.load(pid)
             if p['phase'] not in ('awaiting_final_review', 'integration_failed') or not p['integration'].get('packet_id'):
@@ -687,8 +760,20 @@ class Projects:
             packet = self.b.read_json(self.path(pid).parent / 'integration-review.json')
             if self.b.digest(packet) != p['integration']['packet_id']:
                 raise self.b.GateError('Integration evidence changed')
-            return {'packet_id': p['integration']['packet_id'], 'questions': p['contract']['questions'], 'evidence': packet,
-                    'instruction': 'Supervisor must inspect the integrated code and answer each final acceptance criterion with evidence before finish. These private references must not be forwarded to workers.'}
+            full = {'packet_id': p['integration']['packet_id'], 'questions': p['contract']['questions'], 'evidence': packet,
+                    'instruction': 'Supervisor must inspect the integrated code and answer each final acceptance criterion with evidence before finish. These private references must not be forwarded to workers.',
+                    'project_id': pid, 'worktree': p['integration'].get('worktree'), 'commit': packet.get('commit'),
+                    'pins': p['integration'].get('pins'), 'contract_hash': p.get('contract_hash'),
+                    'blockers': (p.get('final_review') or {}).get('blockers', []),
+                    'final_review': p.get('final_review'), 'usage': self._usage(p),
+                    'identity': {'project_id': pid, 'packet_id': p['integration']['packet_id'],
+                                 'commit': packet.get('commit'), 'pins': p['integration'].get('pins'),
+                                 'contract_hash': p.get('contract_hash')}}
+            if detail == 'summary':
+                from compact import project_review
+                return project_review(full)
+            full['detail'] = 'full'
+            return full
 
     def finish(self, pid, packet_id, scores, blockers, rationale):
         with self.lock():

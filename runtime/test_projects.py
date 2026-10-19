@@ -11,6 +11,7 @@ import unittest
 from unittest.mock import patch, Mock
 from test_telos import b, BridgeTests, synthetic_exam
 from test_callbacks import FakeRPC, OWNER, OTHER
+from usage import BudgetExceeded
 
 
 class ProjectTests(unittest.TestCase):
@@ -163,6 +164,26 @@ class ProjectTests(unittest.TestCase):
         self.assertEqual(self.child(pid, 'a')['turns'], 1)
         self.assertEqual(self.state(pid)['tasks'][1]['phase'], 'pending')
 
+    def test_task_budgets_freeze_from_task_or_configured_default(self):
+        config = b.config()
+        config['task_budget'] = {'max_requests': 2}
+        b.write_json(b.CONFIG, config)
+        pid = self.create([self.task('a', budget={'max_requests': 1}), self.task('b'),
+                           self.task('c', budget=None)])
+        by_id = {task['id']: task for task in self.state(pid)['tasks']}
+        self.assertEqual(by_id['a']['budget'], {'max_requests': 1})
+        self.assertEqual(by_id['b']['budget'], {'max_requests': 2})
+        self.assertEqual(by_id['c']['budget'], {'max_requests': 2})
+        self.start(pid)
+        for task_id, expected in (('a', {'max_requests': 1}), ('b', {'max_requests': 2}),
+                                  ('c', {'max_requests': 2})):
+            child = self.child(pid, task_id)
+            _, contract = b.load_session(b.run_dir(child['session_id']))
+            self.assertEqual(contract['budget'], expected)
+        for invalid in ({'max_requests': True}, {'max_requests': 0}, {'unknown': 1}, {}):
+            with self.subTest(invalid=invalid), self.assertRaises(b.GateError):
+                self.create([self.task('bad', budget=invalid)])
+
     def test_full_project_gate_real_git_and_tests(self):
         pid = self.create(); self.start(pid)
         for name in 'abc':
@@ -286,6 +307,31 @@ class RobustnessTests(ProjectTests):
         self.assertEqual(new['contract_hash'], old['contract_hash'])
         self.assertEqual(self.state(pid)['jobs_started'], 2)
         self.assertEqual(b.read_json(b.run_dir(old['session_id']) / 'state.json')['continuation'], 'cancelled')
+
+    def test_reassignment_shares_cumulative_task_usage_and_budget(self):
+        pid = self.create([self.task('a', budget={'max_requests': 2})]); self.start(pid)
+        old = self.child(pid, 'a')
+        _, old_contract = b.load_session(b.run_dir(old['session_id']))
+        ledger = b.usage_ledger(old, old_contract)
+        ledger.finish(ledger.begin('work'), {'input_tokens': 10, 'output_tokens': 5})
+        old['phase'] = 'error'
+        b.write_json(b.run_dir(old['session_id']) / 'state.json', old)
+        original = b._start_job
+        def launch(*args, **kwargs):
+            with patch.object(b.subprocess, 'Popen', return_value=Mock(pid=os.getpid())):
+                return original(*args, **kwargs)
+        with patch.object(b, '_start_job', launch):
+            b.project_manager().reassign(pid, 'a', 'Retry with the remaining budget')
+        new = self.child(pid, 'a')
+        self.assertEqual(new['usage_id'], old['usage_id'])
+        _, new_contract = b.load_session(b.run_dir(new['session_id']))
+        self.assertEqual(new_contract['budget'], {'max_requests': 2})
+        self.assertEqual(b.usage_snapshot(new, new_contract)['totals']['requests'], 1)
+        next_ledger = b.usage_ledger(new, new_contract)
+        next_ledger.finish(next_ledger.begin('exam'), {'input_tokens': 1, 'output_tokens': 1})
+        self.assertEqual(next_ledger.snapshot()['totals']['requests'], 2)
+        with self.assertRaises(BudgetExceeded):
+            next_ledger.begin('work')
 
     def test_worker_can_read_own_files_but_not_sibling_cache(self):
         pid = self.create(); self.start(pid)
