@@ -29,6 +29,18 @@ The installer copies `config.example.json` to `~/.local/share/telos/config.json`
 
 Executor model, provider and effort are frozen per task. New bindings default to `max` when no override is supplied. An explicit effort is sent unchanged; provider support is not inferred. The supervisor's allowlist only checks its OpenAI identity and model; launch the supervisor with `model_reasoning_effort="max"` to set its effort.
 
+If the original Codex conversation uses a locally named OpenAI provider such as `openai_http`, explicitly trust that provider ID in the installed configuration:
+
+```json
+"supervisor": {
+  "provider": "openai",
+  "provider_aliases": ["openai_http"],
+  "models": ["gpt-6-astra"]
+}
+```
+
+Only add an alias after checking that its effective Codex configuration uses the intended OpenAI endpoint and authentication. Aliases are local trust decisions, not inferred from a GPT model name or a provider-name prefix. Unlisted providers and models remain rejected, and Telos preserves and rechecks the original conversation's actual identity before grading. Omit `provider_aliases` to accept only `openai`.
+
 ## Credentials
 
 | Provider | Endpoint | Environment variable | Interactive setup |
@@ -93,6 +105,7 @@ Project `allowed_paths` are literal relative files/directory prefixes, not globs
 - 安装器将根目录配置示例复制为 `~/.local/share/telos/config.json`，修改后重启 MCP。直接运行未配置的源码会使用历史默认值，不能视为已完成安装。
 - 用 `executor_profile` 选择执行者，或明确指定 `provider` 与 `model`；只改模型名不会自动切换服务商。新任务不支持独立考试模型。
 - 每项任务冻结执行者绑定，默认强度为 `max`，显式值不静默降级。大总管模型由允许列表约束，强度由原 Codex 对话设置。
+- 大总管使用 `openai_http` 等本机 OpenAI 通道名时，核对实际地址和认证配置后，在 `supervisor.provider_aliases` 中明确授权该名称。默认不接受别名；模型允许列表、原会话绑定和验收前身份复查继续生效。
 - 凭据依次从环境变量、Telos 凭据文件、地址匹配的 OpenCode 配置读取。使用 `telos auth deepseek`、`telos auth ark` 或 `telos auth openai` 隐藏输入，禁止把 Key 写进任务和仓库。
 - OpenAI 执行者需要自己的 API 凭据，不复用大总管的 ChatGPT/Codex 登录。
 - 新增服务商需要固定 HTTPS Responses 接口，在本机配置，不能通过任务参数传任意地址；仅支持 Chat Completions 的接口不满足条件。
