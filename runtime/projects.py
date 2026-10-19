@@ -5,6 +5,7 @@ All coordinator mutations use one cross-process lock; session locks are nested
 inside it, never the reverse. No model is called while holding a session lock.
 """
 from __future__ import annotations
+import copy
 import contextlib
 import fcntl
 import json
@@ -17,7 +18,7 @@ import time
 import uuid
 from processes import process_start, process_running, reap_background
 from identity import canonical_tool_name
-from usage import validate_budget
+from usage import TOKEN_FIELDS, validate_budget
 
 
 class Projects:
@@ -218,25 +219,52 @@ class Projects:
                   'in_flight_requests': 0, 'input_tokens': 0, 'cached_input_tokens': 0,
                   'uncached_input_tokens': 0, 'output_tokens': 0, 'reasoning_output_tokens': 0,
                   'total_tokens': 0}
-        found = False
+        unknown_fields = {key: 0 for key in TOKEN_FIELDS}
+        started = 0
+        incomplete = False
+        unavailable = []
         for t in p['tasks']:
-            state = self.child(t)
+            try:
+                state = self.child(t)
+            except Exception:
+                # A corrupt child state after setup is a started but unavailable
+                # ledger; never silently omit it from the aggregate.
+                if t.get('phase') != 'pending':
+                    started += 1
+                    incomplete = True
+                    unavailable.append(t['id'])
+                continue
             if not state:
                 continue
+            started += 1
             try:
                 _, contract = self.b.load_session(self.b.run_dir(t['session_id']))
                 snapshot = self.b.usage_snapshot(state, contract)
             except Exception:
+                incomplete = True
+                unavailable.append(t['id'])
                 continue
-            snapshot_totals = snapshot.get('totals')
+            snapshot_totals = snapshot.get('totals') if isinstance(snapshot, dict) else None
             if not isinstance(snapshot_totals, dict):
+                incomplete = True
+                unavailable.append(t['id'])
                 continue
-            found = True
             for key in totals:
                 value = snapshot_totals.get(key)
                 if type(value) is int:
                     totals[key] += value
-        return totals if found else None
+            fields = snapshot.get('unknown_fields')
+            if isinstance(fields, dict):
+                for key in unknown_fields:
+                    value = fields.get(key)
+                    if type(value) is int:
+                        unknown_fields[key] += value
+        if not started:
+            return None
+        totals['unknown_fields'] = unknown_fields
+        totals['incomplete'] = incomplete
+        totals['unavailable_tasks'] = unavailable
+        return totals
 
     def view(self, p, detail='full'):
         result = {k: p[k] for k in ('project_id', 'phase', 'continuation', 'execution_mode', 'strategy',
@@ -477,11 +505,19 @@ class Projects:
         b = self.b
         with self.lock():
             p = self.refresh(self.load(pid))
+            stored = (p.get('receipts') or {}).get(event_id) if event_id else None
+            # detail=full is a historical read-only lookup. The default summary
+            # path is the MCP callback continuation: it may still recover a
+            # pending progress reminder for unhandled work.
+            if isinstance(stored, dict) and detail == 'full':
+                return self._receive_result(self._replay_receipt(stored, event_id, pid), detail)
             if p['continuation'] != 'active' or p['phase'] == 'accepted':
                 return self._receive_result({'proceed': False, 'event_id': event_id, 'events': [], 'project': self.view(p), 'project_id': pid}, detail)
             if p.get('owner'):
                 receipt = b.receive_event(pid, event_id)
                 if not receipt['proceed']:
+                    if isinstance(stored, dict):
+                        return self._receive_result(self._replay_receipt(stored, event_id, pid), detail)
                     return self._receive_result({'proceed': False, 'event_id': event_id, 'events': [], 'project': self.view(p), 'project_id': pid}, detail)
             events = []
             for t in p['tasks']:
@@ -490,15 +526,33 @@ class Projects:
                     r = b.receive_event(t['session_id'], s['last_event_id'])
                     if r['proceed']:
                         events.append({'task_id': t['id'], **r})
-            if p.get('owner'):
+            full = {'proceed': True, 'events': events, 'project': self.view(p), 'project_id': pid,
+                    'instruction': 'Supervisor reviews every child via existing evaluate/review/grade tools; integrate then check/review/finish the project. Never treat child acceptance as project acceptance.'}
+            if event_id and event_id not in (p.get('receipts') or {}):
+                p.setdefault('receipts', {})[event_id] = copy.deepcopy({
+                    'proceed': full['proceed'], 'event_id': event_id, 'project_id': pid,
+                    'events': full['events'], 'project': full['project'],
+                    'instruction': full['instruction']})
+            self.save(p)
+            if p.get('owner') and event_id:
+                # The immutable receipt is durable before the courier event is
+                # retired, so a later full-detail lookup cannot lose the batch.
                 with b.locked(pid) as root:
                     state, _ = b.load_session(root)
                     state['events'][event_id]['status'] = 'processed'
                     b.write_json(root / 'state.json', state)
-            self.save(p)
-            full = {'proceed': True, 'events': events, 'project': self.view(p), 'project_id': pid,
-                    'instruction': 'Supervisor reviews every child via existing evaluate/review/grade tools; integrate then check/review/finish the project. Never treat child acceptance as project acceptance.'}
             return self._receive_result(full, detail)
+
+    @staticmethod
+    def _replay_receipt(stored, event_id, pid):
+        replay = copy.deepcopy(stored)
+        replay.update(proceed=False, event_id=event_id, project_id=pid, replayed=True, read_only=True,
+                      continuation_hint='Use the default summary continuation to recover any pending reminder; '
+                                         'this full lookup never authorizes work.')
+        for event in replay.get('events') or []:
+            if isinstance(event, dict):
+                event['proceed'] = False
+        return replay
 
     @staticmethod
     def _receive_result(full, detail):

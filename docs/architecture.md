@@ -78,6 +78,8 @@ The flat runtime directory is intentional: it is copied as a self-contained stan
 
 The bridge retains upstream credentials and forwards requests only to the frozen HTTPS Responses endpoint. Executor requests use an ephemeral local relay token; shell environments exclude upstream keys and relay tokens. Source worktrees, private contracts and other executors' caches have separate permissions. Explicit dependency grants are read-only. Normal command network access is disabled by default, while model traffic goes through the relay.
 
+SSE accounting is incremental and byte-exact: only the current event is retained, capped at 16 MiB (the same bound as other accepted response bodies). Events split across arbitrary chunks, including CRLF and multiline `data:` fields, are parsed safely. An event over the cap is discarded; if that was the terminal event, usage remains unknown, the request is recorded as failed, and a configured token budget stops further paid requests. Total stream length is never buffered.
+
 Private contracts, evidence, events and lessons live under `~/.local/state/telos/`. Worktrees and isolated executor homes live under `~/.cache/telos/`. JSON files and filesystem locks persist state; no database or message broker is required. Cleanup requires verified archives and eligible task state rather than deleting directories solely by age.
 
 This is a local OS sandbox, not a VM. The original supervisor is trusted to create appropriate checks, keep references private and review untrusted model output as data. Project files and prompts sent to providers remain subject to the user's provider agreements. Host compromise, model reasoning errors and weak acceptance criteria are outside the guarantees of the gate.

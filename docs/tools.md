@@ -74,7 +74,7 @@ Required / 必填：`project_id`
 
 ## `telos_project_receive`
 
-Receive one project wake-up and acknowledge all currently pending child completion events. Use the returned session_id and event_id for existing evaluate/review/grade/send tools. Review all results as supervisor. Duplicate notifications do not repeat work. Default detail=summary; use detail=full for complete child receipts.
+Receive one project wake-up and acknowledge all currently pending child completion events. Use the returned session_id and event_id for existing evaluate/review/grade/send tools. Review all results as supervisor. Duplicate notifications do not repeat work. Default detail=summary is the callback continuation and can recover a pending reminder for unhandled work. detail=full is a read-only replay of the stored original batch with project and child proceed=false; it never consumes a reminder or re-authorizes work.
 
 Required / 必填：`project_id`
 

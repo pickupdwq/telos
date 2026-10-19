@@ -65,8 +65,23 @@ class PreflightTests(unittest.TestCase):
         self.assertIn('core.hooksPath=/dev/null', worktree)
         self.assertIn('rev-parse', worktree)
         self.assertNotIn('hooks/', ' '.join(worktree))
+        python_probe = next(command for command, _ in runner.calls if '-I' in command)
+        isolated = python_probe.index('-I')
+        self.assertEqual(python_probe[isolated + 1], '-c')
         # One CLI version probe per invocation, not one per request/retry.
         self.assertEqual(sum(command.count('--version') for command, _ in runner.calls), 2)
+
+    def test_python_probe_isolated_mode_ignores_repository_modules_and_startup_paths(self):
+        marker = self.root / 'repo-import-ran'
+        payload = 'from pathlib import Path\nPath(' + repr(str(marker)) + ').write_text("ran")\n'
+        (self.work / 'json.py').write_text(payload)
+        (self.work / 'ssl.py').write_text(payload)
+        (self.work / 'sitecustomize.py').write_text(payload)
+        env = {**os.environ, 'PYTHONPATH': str(self.work), 'PYTHONSTARTUP': str(self.work / 'json.py')}
+        probe = subprocess.run([sys.executable, '-I', '-c', 'import json, ssl, sys; print("ok")'],
+                               cwd=self.work, env=env, capture_output=True, text=True, timeout=20)
+        self.assertEqual(probe.returncode, 0, probe.stderr)
+        self.assertFalse(marker.exists(), 'repository module or startup customization executed')
 
     def test_repo_probe_is_absent_when_not_requested(self):
         runner = FakeRunner()

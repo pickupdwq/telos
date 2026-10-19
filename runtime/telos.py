@@ -1744,7 +1744,7 @@ next(tool for tool in TOOLS if tool['name'] == 'telos_status')['description'] +=
 next(tool for tool in TOOLS if tool['name'] == 'telos_review')['description'] += ' Default detail=summary retains every question, reference, rubric, answer, check outcome and identity/blocker; use detail=full for unchanged raw evidence and logs.'
 next(tool for tool in TOOLS if tool['name'] == 'telos_receive')['description'] += ' Default detail=summary; use detail=full for the complete receipt.'
 next(tool for tool in TOOLS if tool['name'] == 'telos_project_status')['description'] += ' Default detail=summary; use detail=full for complete project records.'
-next(tool for tool in TOOLS if tool['name'] == 'telos_project_receive')['description'] += ' Default detail=summary; use detail=full for complete child receipts.'
+next(tool for tool in TOOLS if tool['name'] == 'telos_project_receive')['description'] += ' Default detail=summary is the callback continuation and can recover a pending reminder for unhandled work. detail=full is a read-only replay of the stored original batch with project and child proceed=false; it never consumes a reminder or re-authorizes work.'
 next(tool for tool in TOOLS if tool['name'] == 'telos_project_review')['description'] += ' Default detail=summary retains all criteria, check outcomes, identity and blockers; use detail=full for raw evidence and logs.'
 TOOLS[0]['description'] += (' The supervisor is the original GPT flagship conversation and alone grades/accepts. '
     'Select executor_profile=deepseek_official, ark_coding_plan or local, or a locally configured provider/model. '

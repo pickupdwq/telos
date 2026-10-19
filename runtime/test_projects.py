@@ -333,6 +333,123 @@ class RobustnessTests(ProjectTests):
         with self.assertRaises(BudgetExceeded):
             next_ledger.begin('work')
 
+    def test_project_usage_marks_unknown_detail_and_unreadable_ledgers(self):
+        pid = self.create(); self.start(pid)
+        children = {name: self.child(pid, name) for name in 'abc'}
+        for name, raw in {
+                'a': {'input_tokens': 10, 'output_tokens': 5},
+                'b': {'input_tokens': 4, 'output_tokens': 2, 'total_tokens': 6,
+                      'input_tokens_details': {'cached_tokens': 1},
+                      'output_tokens_details': {'reasoning_tokens': 1}}}.items():
+            state = children[name]
+            contract = b.read_json(b.run_dir(state['session_id']) / 'contract.json')
+            ledger = b.usage_ledger(state, contract)
+            ledger.finish(ledger.begin('work'), raw)
+        b.usage_path(children['c'].get('usage_id') or children['c']['session_id']).write_text('{broken')
+
+        usage = b.project_manager()._usage(self.state(pid))
+        self.assertEqual(usage['input_tokens'], 14)
+        self.assertEqual(usage['output_tokens'], 7)
+        self.assertEqual(usage['requests'], 2)
+        self.assertEqual(usage['unknown_fields']['cached_input_tokens'], 1)
+        self.assertEqual(usage['unknown_fields']['reasoning_output_tokens'], 1)
+        self.assertTrue(usage['incomplete'])
+        self.assertEqual(usage['unavailable_tasks'], ['c'])
+
+        for state in children.values():
+            b.usage_path(state.get('usage_id') or state['session_id']).write_text('{broken')
+        usage = b.project_manager()._usage(self.state(pid))
+        self.assertIsNotNone(usage)
+        self.assertEqual(usage['requests'], 0)
+        self.assertTrue(usage['incomplete'])
+        self.assertEqual(sorted(usage['unavailable_tasks']), ['a', 'b', 'c'])
+        self.assertTrue(all(type(value) is int for value in usage['unknown_fields'].values()))
+
+    def test_project_receive_full_detail_replays_original_batch_read_only(self):
+        db = {'thread': {'id': OWNER, 'status': {'type': 'idle'}, 'cwd': str(self.repo)}, 'queue': [], 'calls': []}
+        with patch.object(b, 'CodexRPC', side_effect=lambda *_: FakeRPC(db)), patch.object(b, 'spawn_dispatch'):
+            pid = self.create(notify=True, caller=OWNER); self.start(pid)
+            for name in 'abc':
+                state = self.child(pid, name)
+                state.update(phase='responded', job_id=name * 32)
+                b.record_event(state)
+                b.write_json(b.run_dir(state['session_id']) / 'state.json', state)
+            b.project_manager().tick(pid)
+            eid = b.read_json(b.run_dir(pid) / 'state.json')['last_event_id']
+            summary = b.call_tool('telos_project_receive', {'project_id': pid, 'event_id': eid}, {'threadId': OWNER})
+            self.assertEqual(len(summary['events']), 3)
+
+            original_turns = self.child(pid, 'a')['turns']
+            changed = self.child(pid, 'a')
+            changed.update(turns=original_turns + 77, last_error='changed after receipt')
+            b.write_json(b.run_dir(changed['session_id']) / 'state.json', changed)
+
+            replay = b.call_tool('telos_project_receive', {'project_id': pid, 'event_id': eid, 'detail': 'full'},
+                                 {'threadId': OWNER})
+        self.assertFalse(replay['proceed'])
+        self.assertTrue(replay['replayed'])
+        self.assertEqual(len(replay['events']), 3)
+        self.assertTrue(all(event['proceed'] is False for event in replay['events']))
+        self.assertEqual({event['session_id'] for event in replay['events']},
+                         {self.child(pid, name)['session_id'] for name in 'abc'})
+        first = next(event for event in replay['events'] if event['task_id'] == 'a')
+        self.assertEqual(first['result']['turns'], original_turns)
+        self.assertNotEqual(first['result'].get('last_error'), 'changed after receipt')
+        self.assertEqual(set(b.project_manager().load(pid)['receipts']), {eid})
+
+    def test_project_receive_full_lookup_does_not_block_reminder_recovery(self):
+        db = {'thread': {'id': OWNER, 'status': {'type': 'idle'}, 'cwd': str(self.repo)}, 'queue': [], 'calls': []}
+        with patch.object(b, 'CodexRPC', side_effect=lambda *_: FakeRPC(db)), patch.object(b, 'spawn_dispatch'):
+            pid = self.create([self.task('a')], notify=True, caller=OWNER); self.start(pid)
+            child = self.child(pid, 'a'); child.update(phase='responded', thread_id=OTHER)
+            b.record_event(child); b.write_json(b.run_dir(child['session_id']) / 'state.json', child)
+            b.project_manager().tick(pid)
+            eid = b.read_json(b.run_dir(pid) / 'state.json')['last_event_id']
+            first = b.call_tool('telos_project_receive', {'project_id': pid, 'event_id': eid}, {'threadId': OWNER})
+            self.assertTrue(first['proceed'])
+            child_id, session_id = first['events'][0]['event_id'], first['events'][0]['session_id']
+
+            courier = b.read_json(b.run_dir(pid) / 'state.json')
+            courier['events'][eid]['received_at'] = time.time() - 1000
+            b.write_json(b.run_dir(pid) / 'state.json', courier)
+            b.recover_events()
+            courier_before = (b.run_dir(pid) / 'state.json').read_bytes()
+            project_before = b.project_manager().path(pid).read_bytes()
+            self.assertEqual(b.read_json(b.run_dir(pid) / 'state.json')['events'][eid]['reminder']['status'], 'pending')
+
+            lookup = b.call_tool('telos_project_receive', {'project_id': pid, 'event_id': eid, 'detail': 'full'},
+                                 {'threadId': OWNER})
+            self.assertFalse(lookup['proceed']); self.assertTrue(lookup['replayed']); self.assertTrue(lookup['read_only'])
+            self.assertFalse(lookup['events'][0]['proceed'])
+            self.assertEqual((lookup['events'][0]['event_id'], lookup['events'][0]['session_id']), (child_id, session_id))
+            self.assertEqual((b.run_dir(pid) / 'state.json').read_bytes(), courier_before)
+            self.assertEqual(b.project_manager().path(pid).read_bytes(), project_before)
+
+            recovered = b.call_tool('telos_project_receive', {'project_id': pid, 'event_id': eid}, {'threadId': OWNER})
+            self.assertTrue(recovered['proceed'])
+            self.assertEqual((recovered['events'][0]['event_id'], recovered['events'][0]['session_id']),
+                             (child_id, session_id))
+            self.assertEqual(self.state(pid)['jobs_started'], 1)
+            self.assertEqual(b.read_json(b.run_dir(pid) / 'state.json')['events'][eid]['reminder']['status'], 'processed')
+
+            repeated = b.call_tool('telos_project_receive', {'project_id': pid, 'event_id': eid}, {'threadId': OWNER})
+            self.assertFalse(repeated['proceed']); self.assertTrue(repeated['replayed'])
+            self.assertEqual(repeated['events'][0]['event_id'], child_id)
+            self.assertEqual(self.state(pid)['jobs_started'], 1)
+
+            with self.assertRaises(b.GateError):
+                b.call_tool('telos_project_receive', {'project_id': pid, 'event_id': eid, 'detail': 'full'},
+                            {'threadId': OTHER})
+
+            project = self.state(pid); project['continuation'] = 'paused'
+            b.project_manager().save(project)
+            paused = b.call_tool('telos_project_receive', {'project_id': pid, 'event_id': eid}, {'threadId': OWNER})
+            self.assertFalse(paused['proceed']); self.assertEqual(paused['events'], [])
+            paused_full = b.call_tool('telos_project_receive', {'project_id': pid, 'event_id': eid, 'detail': 'full'},
+                                      {'threadId': OWNER})
+            self.assertFalse(paused_full['proceed']); self.assertTrue(paused_full['replayed'])
+            self.assertEqual(paused_full['events'][0]['event_id'], child_id)
+
     def test_worker_can_read_own_files_but_not_sibling_cache(self):
         pid = self.create(); self.start(pid)
         a, other = self.child(pid, 'a'), self.child(pid, 'b')

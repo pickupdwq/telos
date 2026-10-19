@@ -203,7 +203,14 @@ def project_receive(full):
     result = {'proceed': full.get('proceed'), 'project_id': full.get('project_id'),
               'instruction': full.get('instruction'),
               'detail': 'summary',
-              'detail_hint': 'Call telos_project_receive with detail="full" for complete child receipts.'}
+              'detail_hint': ('Call telos_project_receive with detail="full" for the immutable original child receipts; '
+                              'that lookup is read-only and returns proceed=false.')}
+    if 'replayed' in full:
+        result['replayed'] = full.get('replayed')
+    if 'read_only' in full:
+        result['read_only'] = full.get('read_only')
+    if 'continuation_hint' in full:
+        result['continuation_hint'] = full.get('continuation_hint')
     events = []
     for event in full.get('events') or []:
         item = {'task_id': event.get('task_id'), 'session_id': event.get('session_id'),

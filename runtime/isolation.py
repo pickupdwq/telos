@@ -30,6 +30,128 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
         return None
 
 
+# Only the current SSE event is retained. The cap matches the largest response
+# body the relay accepts elsewhere; an oversized event is discarded rather than
+# buffered without bound. If the discarded event was the terminal event, the
+# request completes with unknown usage and a configured token budget stops the
+# next paid request. Total stream length is never buffered.
+SSE_MAX_EVENT_BYTES = 16 * 1024 * 1024
+_TERMINAL_EVENTS = {'response.completed': 'completed', 'response.incomplete': 'incomplete',
+                    'response.failed': 'failed', 'response.cancelled': 'cancelled',
+                    'response.canceled': 'canceled'}
+
+
+class SSEUsageTracker:
+    """Incrementally parse SSE events while bytes stream through unchanged."""
+
+    def __init__(self, max_event_bytes=SSE_MAX_EVENT_BYTES):
+        self.max_event_bytes = max_event_bytes
+        self.line = bytearray()
+        self.skip_lf = False
+        self.data_lines = []
+        self.event_bytes = 0
+        self.overflow = False
+        self.line_discarded = False
+        self.usage = None
+        self.outcome = None
+
+    def _discard_event(self):
+        self.overflow = True
+        self.line.clear()
+        self.line_discarded = True
+        self.data_lines = []
+
+    def _reset_event(self):
+        self.overflow = False
+        self.line_discarded = False
+        self.data_lines = []
+        self.event_bytes = 0
+
+    def _dispatch(self):
+        if self.overflow:
+            self._reset_event()
+            return
+        data = b'\n'.join(self.data_lines)
+        self._reset_event()
+        if not data or data.strip() == b'[DONE]':
+            return
+        try:
+            event = json.loads(data.decode('utf-8', errors='replace'))
+        except ValueError:
+            return
+        if not isinstance(event, dict):
+            return
+        kind = event.get('type')
+        if kind not in _TERMINAL_EVENTS:
+            return
+        # Duplicate terminal events replace, never accumulate.
+        self.outcome = _TERMINAL_EVENTS[kind]
+        response = event.get('response')
+        candidate = response.get('usage') if isinstance(response, dict) else None
+        if not isinstance(candidate, dict):
+            candidate = event.get('usage')
+        if isinstance(candidate, dict):
+            self.usage = candidate
+
+    def _line_done(self):
+        line = bytes(self.line)
+        self.line.clear()
+        discarded = self.line_discarded
+        self.line_discarded = False
+        if self.overflow:
+            # Keep discarding until a blank line really terminates this event.
+            if line or discarded:
+                return
+            self._reset_event()
+            return
+        if not line:
+            self._dispatch()
+            return
+        if line == b'data':
+            value = b''
+        elif line.startswith(b'data:'):
+            value = line[5:]
+            if value.startswith(b' '):
+                value = value[1:]
+        else:
+            return
+        self.event_bytes += len(value) + 1
+        if self.event_bytes > self.max_event_bytes:
+            # The oversized data line already ended at this boundary, so the
+            # next empty line is the event terminator (not a pending line tail).
+            self.overflow = True
+            self.line_discarded = False
+            self.data_lines = []
+            return
+        self.data_lines.append(value)
+
+    def feed(self, chunk):
+        for byte in chunk:
+            if self.skip_lf:
+                self.skip_lf = False
+                if byte == 0x0A:
+                    continue
+            if byte in (0x0A, 0x0D):
+                self._line_done()
+                if byte == 0x0D:
+                    self.skip_lf = True
+                continue
+            if self.overflow:
+                self.line_discarded = True
+                continue
+            if len(self.line) + 1 > self.max_event_bytes - self.event_bytes:
+                self._discard_event()
+                continue
+            self.line.append(byte)
+
+    def finish(self):
+        if self.line:
+            self._line_done()
+        if self.data_lines or self.overflow:
+            self._dispatch()
+        return self.usage, self.outcome
+
+
 def usage_from_payload(raw, content_type):
     """Extract one usage object from a JSON/SSE Responses or Chat payload."""
     if not raw:
@@ -152,7 +274,7 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
             finished = False
             seen_usage = None
             content_type = ''
-            tail = bytearray()
+            tracker = SSEUsageTracker()
             outcome = None
 
             def complete(status, raw_usage=None, error_kind=None):
@@ -295,16 +417,14 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                         return
                     while chunk := response.read1(65536):
                         self.wfile.write(chunk); self.wfile.flush()
-                        if len(tail) + len(chunk) > 2 * 1024 * 1024:
-                            del tail[:len(tail) + len(chunk) - 2 * 1024 * 1024]
-                        tail += chunk
-                    seen_usage = usage_from_payload(bytes(tail), content_type)
-                    outcome = response_outcome(bytes(tail), content_type)
+                        tracker.feed(chunk)
+                    seen_usage, outcome = tracker.finish()
+                    outcome = outcome or 'missing_terminal'
                     status, error_kind = _terminal('completed', outcome)
                     complete(status, seen_usage, error_kind)
             except Exception as error:
-                if seen_usage is None and tail:
-                    seen_usage = usage_from_payload(bytes(tail), content_type)
+                if seen_usage is None:
+                    seen_usage, _ = tracker.finish()
                 complete('failed', seen_usage, 'protocol' if seen_usage is not None else 'transport')
                 if diagnostics is not None:
                     detail = str(error).replace(token, '[REDACTED]')

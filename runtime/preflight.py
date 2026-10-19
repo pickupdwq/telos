@@ -88,7 +88,10 @@ def run(b, cli, cwd, env, profile, *, check_repo=False, secrets=(), timeout=20,
         raise b.GateError('Environment preflight failed before any model request: Git is not installed or not on PATH; install Apple Command Line Tools or Git')
     probes = [
         ('dedicated CLI', [str(cli), '--version']),
-        ('Python', [sys.executable, '-c', 'import json, ssl, sys; print(".".join(map(str, sys.version_info[:3])))']),
+        # Isolated mode keeps the task cwd/repository off sys.path and ignores
+        # PYTHON* startup environment, so repository json.py/ssl.py or startup
+        # customizations cannot run inside the no-model probe.
+        ('Python', [sys.executable, '-I', '-c', 'import json, ssl, sys; print(".".join(map(str, sys.version_info[:3])))']),
         ('Git', [git, '--version']),
     ]
     if check_repo:

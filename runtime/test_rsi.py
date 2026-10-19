@@ -209,14 +209,14 @@ class ProjectProgressTests(ProjectTests):
             b.record_event(child); b.write_json(b.run_dir(child['session_id']) / 'state.json', child)
             b.project_manager().tick(pid)
             state = b.read_json(b.run_dir(pid) / 'state.json'); eid = state['last_event_id']
-            b.project_manager().receive(pid, eid)
+            b.call_tool('telos_project_receive', {'project_id': pid, 'event_id': eid}, {'threadId': OWNER})
             state = b.read_json(b.run_dir(pid) / 'state.json')
             state['events'][eid]['received_at'] = time.time() - 1000
             b.write_json(b.run_dir(pid) / 'state.json', state)
             b.recover_events()
             event = b.read_json(b.run_dir(pid) / 'state.json')['events'][eid]
             self.assertIn('reminder', event)
-            receipt = b.project_manager().receive(pid, eid)
+            receipt = b.call_tool('telos_project_receive', {'project_id': pid, 'event_id': eid}, {'threadId': OWNER})
             self.assertTrue(receipt['proceed']); self.assertEqual(len(receipt['events']), 1)
             self.assertEqual(self.state(pid)['jobs_started'], 1)
 

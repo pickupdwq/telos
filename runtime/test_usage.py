@@ -87,6 +87,45 @@ class NormalizationTests(unittest.TestCase):
             json.dumps({'usage': chat_usage()}).encode(), 'application/json'), chat_usage())
         self.assertEqual(normalized['uncached_input_tokens'], 60)
 
+    def test_streaming_sse_metadata_handles_crlf_multiline_and_arbitrary_splits(self):
+        event = {'type': 'response.completed', 'response': {'usage': responses_usage()}}
+        lines = json.dumps(event, indent=2).splitlines()
+        stream = (b'event: response.completed\r\n'
+                  + b'\r\n'.join(b'data: ' + line.encode() for line in lines)
+                  + b'\r\n\r\n')
+        tracker = isolation.SSEUsageTracker()
+        for byte in stream:
+            tracker.feed(bytes([byte]))
+        self.assertEqual(tracker.finish(), (responses_usage(), 'completed'))
+
+    def test_streaming_sse_metadata_keeps_terminal_event_larger_than_two_mib(self):
+        event = {'type': 'response.completed', 'response': {
+            'usage': responses_usage(),
+            'output': [{'type': 'output_text', 'text': 'x' * (2 * 1024 * 1024 + 8192)}]}}
+        stream = (b'event: response.completed\r\ndata: ' + json.dumps(event).encode()
+                  + b'\r\n\r\n')
+        tracker = isolation.SSEUsageTracker()
+        for start in range(0, len(stream), 4093):
+            tracker.feed(stream[start:start + 4093])
+        self.assertEqual(tracker.finish(), (responses_usage(), 'completed'))
+
+    def test_streaming_sse_metadata_does_not_invent_a_terminal_event(self):
+        tracker = isolation.SSEUsageTracker()
+        tracker.feed(b'event: response.created\r\ndata: {"type":"response.created"}\r\n\r\n')
+        self.assertEqual(tracker.finish(), (None, None))
+        self.assertEqual(isolation._terminal('completed', 'missing_terminal'),
+                         ('failed', 'response_missing_terminal'))
+
+    def test_streaming_sse_metadata_recovers_after_an_oversized_event(self):
+        tracker = isolation.SSEUsageTracker(max_event_bytes=1024)
+        oversized = (b'event: response.output_text.delta\r\ndata: '
+                     + b'x' * 2048 + b'\r\n\r\n')
+        terminal = {'type': 'response.completed', 'response': {'usage': responses_usage()}}
+        stream = oversized + (b'event: response.completed\r\ndata: '
+                              + json.dumps(terminal).encode() + b'\r\n\r\n')
+        tracker.feed(stream)
+        self.assertEqual(tracker.finish(), (responses_usage(), 'completed'))
+
     def test_terminal_response_outcomes_are_classified_without_provider_bodies(self):
         self.assertEqual(isolation.response_outcome(
             json.dumps({'status': 'incomplete'}).encode(), 'application/json'), 'incomplete')
@@ -393,6 +432,31 @@ class RelayAccountingTests(unittest.TestCase):
         self.assertEqual(snapshot['totals']['input_tokens'], 100)
         self.assertEqual(snapshot['totals']['output_tokens'], 20)
         self.assertEqual(snapshot['totals']['total_tokens'], 120)
+
+    def test_terminal_sse_event_larger_than_two_mib_is_forwarded_and_accounted(self):
+        event = {'type': 'response.completed', 'response': {
+            'usage': responses_usage(),
+            'output': [{'type': 'message', 'role': 'assistant', 'content': [
+                {'type': 'output_text', 'text': 'x' * (2 * 1024 * 1024 + 8192)}]}]}}
+        data = (b'event: response.completed\r\ndata: '
+                + json.dumps(event).encode() + b'\r\n\r\n')
+
+        def reply(request, n):
+            return 200, 'text/event-stream', data
+        with upstream(reply) as (port, seen):
+            ledger = usage.UsageLedger(self.path)
+            with isolation.model_relay(f'http://127.0.0.1:{port}', 'UPSTREAM_KEY', usage_ledger=ledger,
+                                       usage_context={'phase': 'work'}) as relay:
+                forwarded = post(relay, payload={'model': 'deepseek-flash'})
+        self.assertEqual(forwarded, data)
+        snapshot = ledger.snapshot()
+        self.assertEqual(snapshot['totals']['requests'], 1)
+        self.assertEqual(snapshot['totals']['failed_requests'], 0)
+        self.assertEqual(snapshot['totals']['unknown_usage_requests'], 0)
+        self.assertEqual(snapshot['totals']['input_tokens'], 100)
+        self.assertEqual(snapshot['totals']['output_tokens'], 20)
+        stored = json.loads(self.path.read_text())['requests']
+        self.assertEqual(next(iter(stored.values()))['status'], 'completed')
 
     def test_local_chat_usage_is_recorded_before_conversion_and_failure_is_bounded(self):
         binding = {'provider': 'local', 'model': 'local-model', 'wire_api': 'chat',

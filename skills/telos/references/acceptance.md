@@ -8,6 +8,8 @@ For standalone events, call `telos_receive`. Continue only when `proceed=true`; 
 
 For project events, call `telos_project_receive`, review each returned child using its own session and action event IDs, then start eligible work. Do not substitute the project wake-up ID for a child's event ID. Inspect the batch's state and instructions before deciding which action is legal.
 
+`telos_project_receive` keeps read and continuation distinct. The default `detail="summary"` is the MCP callback continuation: if a valid progress reminder exists, it recovers the unhandled child receipts and may return `proceed=true` with the original child action event IDs. `detail="full"` is a historical read-only lookup: it returns the stored original batch even after child state changes, with project and child `proceed=false`, and it never consumes a reminder, re-authorizes work or changes action idempotency.
+
 With automatic return enabled, yield while waiting instead of repeatedly polling. If an expected return fails, call `telos_status` (or `telos_project_status` for the project). Inspect the reported continuation, `return_channel.health`, event ID/status, receipt and last error; use child status for a child's return diagnostics. On the original supervisor, receive a known pending event with its existing ID and follow `proceed`/`next_action`. If the channel cannot be reconciled, report the exact diagnostic and preserve the task. Queue submission is different from processing/receipt. Keep ownership on the original supervisor; never invent metadata, start a replacement supervisor or blindly resend an uncertain operation. Manual mode is an explicit user choice, not an automatic fallback for a broken callback.
 
 ## Review before scoring
