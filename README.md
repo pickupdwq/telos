@@ -30,7 +30,7 @@ The diagram maps logical capabilities within the local runtime. Only the supervi
 
 ## What it does
 
-- **Configurable executor.** DeepSeek official API by default; Volcengine Ark Coding Plan, OpenAI API and locally configured Responses-compatible providers are supported.
+- **Configurable executor.** DeepSeek official API by default; Volcengine Ark Coding Plan, OpenAI API and local endpoints are supported. Save several local endpoints and activate exactly one, using Responses or Chat Completions.
 - **Evidence before acceptance.** Frozen executable checks run against a pinned Git commit. The supervisor then reviews the code and grades the questionnaire. Default passing score: 90/100, with critical-question minima and no unresolved blockers.
 - **Same-executor closed-book exam.** The executor keeps its work conversation, but receives no new source, private answers or test results. The relay disables tools and rejects tool calls during the exam.
 - **Isolated work.** Git worktrees, macOS Seatbelt restrictions, private evaluation materials and a local credential relay separate implementation from grading.
@@ -143,8 +143,9 @@ The installed example selects:
 | Default: `deepseek_official` | DeepSeek official | `deepseek-flash` | `max` |
 | Optional: `ark_coding_plan` | Volcengine Ark Coding Plan | `glm-5.3-flash` | `max` |
 | Optional: `openai_executor` | OpenAI API | `gpt-6.1-sol` | `xhigh` (explicit example override) |
+| Optional: `local` | Active local endpoint | Locally configured model ID | `none` by default; reasoning parameter omitted upstream |
 
-New executor bindings default to `max` unless explicitly overridden. The supervisor's effort comes from the original Codex session; Telos does not silently change it. Model availability and supported reasoning levels depend on the provider; unsupported settings fail rather than silently downgrade.
+Cloud executor bindings default to `max` unless explicitly overridden. Local endpoints omit reasoning parameters by default and support explicit configuration. The supervisor's effort comes from the original Codex session; Telos does not silently change it. Model availability and supported reasoning levels depend on the provider; unsupported settings fail rather than silently downgrade.
 
 As of **2026-10-18**, DeepSeek documents `deepseek-flash` as the alias for DeepSeek V4.1 Flash 1017. It is a rolling alias, not an immutable dated pin. See the [official integration guide](https://api-docs.deepseek.com/quick_start/agent_integrations/).
 
@@ -153,6 +154,8 @@ To select another executor, tell the supervisor:
 > Use Telos with `executor_profile=ark_coding_plan` for this task.
 
 Profiles live in `~/.local/share/telos/config.json`. Each task freezes its provider, model and effort; changing defaults affects new tasks. Replacing an executor uses a new session or the constrained project reassignment flow. [Configuration details →](docs/configuration.md)
+
+Save local endpoints with `telos local add`, activate one with `telos local select`, and choose `executor_profile=local` for tasks. Ark and DeepSeek profiles remain available. Existing local tasks retain their original address/model and require that endpoint to be selected again before resuming. [Local executor setup and examples →](docs/local-executors.md)
 
 The supervisor may use your Codex login. The OpenAI **executor** uses a separate API credential; this release does not route executor requests through your ChatGPT/Codex subscription. Telos itself is free software, while provider inference and subscriptions may incur charges. Job limits are not monetary spending caps.
 

@@ -32,6 +32,11 @@ class ExamPolicy:
                        max_output_tokens=self.binding['exam_max_tokens'])
         request.pop('previous_response_id', None)
         request.pop('parallel_tool_calls', None)
+        if isinstance(request.get('input'), list):
+            # Recent CLI models declare tools inside history as well as at the
+            # top level. Remove declarations, retaining past calls and results.
+            request['input'] = [item for item in request['input']
+                                if item.get('type') not in ('additional_tools', 'tool_search_output')]
         request['reasoning'] = {**request.get('reasoning', {}), 'effort': self.binding['reasoning_effort']}
         # The same conversation includes earlier tool results. These remain input
         # evidence, but no tools are advertised or executed during this turn.

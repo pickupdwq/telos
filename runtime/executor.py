@@ -71,6 +71,9 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
         settings += [f'model_catalog_json={json.dumps(str(catalog_path))}',
                      'model_reasoning_summary="none"', 'show_raw_agent_reasoning=true',
                      'model_supports_reasoning_summaries=true']
+    if binding['provider'] == 'local':
+        settings += ['features.remote_compaction=false', 'model_reasoning_summary="none"',
+                     'model_supports_reasoning_summaries=false']
     local_config = Path(state["worktree"]) / ".codex/config.toml"
     if local_config.exists():
         raise GateError("Project .codex/config.toml requires explicit compatibility review before isolated peer execution")

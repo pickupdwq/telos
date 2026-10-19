@@ -43,9 +43,15 @@ def registry(cfg):
         raise ProviderError('providers must be a mapping')
     result = copy.deepcopy(PROVIDERS)
     for name, raw in extra.items():
-        if name in PROVIDERS or not re.fullmatch(r'[a-z][a-z0-9_]{0,39}', name):
+        if name in (*PROVIDERS, 'local') or not re.fullmatch(r'[a-z][a-z0-9_]{0,39}', name):
             raise ProviderError('Custom providers need a distinct simple name')
         result[name] = validate_custom_spec(raw)
+    from local_executor import selected
+    local = selected(cfg, required=False)
+    if local:
+        name, spec = local
+        result['local'] = {**spec, 'default_model': spec['model'], 'models': [spec['model']],
+                           'credential_provider': None, 'local_endpoint': name}
     return result
 
 
@@ -85,22 +91,34 @@ def validate_backend(provider, model, specs=None):
 
 
 def validate_binding(binding):
-    if not isinstance(binding, dict) or binding.get('version') not in (1, 2):
+    if not isinstance(binding, dict) or binding.get('version') not in (1, 2, 3):
         raise ProviderError('Unsupported backend binding version')
     required = {'version', 'profile', 'provider', 'model', 'base_url', 'wire_api', 'exam_wire_api',
                 'credential_ref', 'reasoning_effort', *LIMITS}
-    if binding['version'] == 2:
+    if binding['version'] in (2, 3):
         required.add('provider_spec')
+    if binding['version'] == 3:
+        required.add('local_endpoint')
     if set(binding) != required:
         raise ProviderError('Invalid backend binding fields')
-    if binding['version'] == 2:
-        if binding['provider'] in PROVIDERS or not re.fullmatch(r'[a-z][a-z0-9_]{0,39}', binding['provider']):
+    if binding['version'] == 3:
+        from local_executor import endpoint, NAME
+        if (binding.get('provider') != 'local' or not isinstance(binding.get('local_endpoint'), str)
+                or not NAME.fullmatch(binding['local_endpoint'])):
+            raise ProviderError('Invalid local executor binding')
+        raw = endpoint(binding['provider_spec'])
+        if raw != binding['provider_spec'] or binding['model'] != raw['model']:
+            raise ProviderError('Local binding must preserve its normalized endpoint and selected model')
+        spec = {**raw, 'exam_wire_api': raw['wire_api']}
+    elif binding['version'] == 2:
+        if binding['provider'] in (*PROVIDERS, 'local') or not re.fullmatch(r'[a-z][a-z0-9_]{0,39}', binding['provider']):
             raise ProviderError('Invalid custom provider binding')
         spec = {**validate_custom_spec(binding['provider_spec']), 'exam_wire_api': 'responses'}
     else:
         spec = PROVIDERS.get(binding['provider'])
-    validate_backend(binding['provider'], binding['model'], {binding['provider']: spec} if spec else {})
-    if (binding['base_url'] != spec['base_url'] or binding['wire_api'] != 'responses'
+    if binding['version'] != 3:
+        validate_backend(binding['provider'], binding['model'], {binding['provider']: spec} if spec else {})
+    if (binding['base_url'] != spec['base_url'] or binding['wire_api'] != spec.get('wire_api', 'responses')
             or binding['exam_wire_api'] != spec['exam_wire_api']):
         raise ProviderError('Backend destination/protocol does not match its provider')
     if binding['reasoning_effort'] is not None and binding['reasoning_effort'] not in EFFORTS:
@@ -110,6 +128,7 @@ def validate_binding(binding):
         raise ProviderError('Invalid profile name')
     ref = binding['credential_ref']
     if (not isinstance(ref, dict) or set(ref) != {'env', 'opencode_provider'} or ref['env'] != spec['env']
+            or (binding['version'] == 3 and ref['opencode_provider'] is not None)
             or (ref['opencode_provider'] is not None and (not isinstance(ref['opencode_provider'], str)
                 or not re.fullmatch(r'[A-Za-z0-9_.-]{1,100}', ref['opencode_provider'])))):
         raise ProviderError('Invalid provider credential reference')
@@ -133,6 +152,22 @@ def resolve_binding(cfg, *, profile=None, provider=None, model=None, reasoning_e
         if provider is not None and provider != settings.get('provider'):
             raise ProviderError('Explicit provider conflicts with the selected profile')
     provider = provider or settings.get('provider') or 'ark'
+    if provider == 'local':
+        from local_executor import selected
+        name, spec = selected(cfg)
+        if model is not None and model != spec['model'] or settings.get('model', spec['model']) != spec['model']:
+            raise ProviderError('Local tasks use the active endpoint model; select a configured endpoint to change it')
+        if settings.get('credential_provider') is not None:
+            raise ProviderError('Local tasks use their own endpoint credentials')
+        effort = reasoning_effort if reasoning_effort is not None else settings.get('reasoning_effort', spec['reasoning_effort'])
+        if effort not in EFFORTS:
+            raise ProviderError('Unsupported local reasoning_effort')
+        binding = {'version': 3, 'profile': profile, 'provider': 'local', 'model': spec['model'],
+                   'local_endpoint': name, 'provider_spec': spec, 'base_url': spec['base_url'],
+                   'wire_api': spec['wire_api'], 'exam_wire_api': spec['wire_api'],
+                   'credential_ref': {'env': spec['env'], 'opencode_provider': None}, 'reasoning_effort': effort}
+        binding.update({k: settings.get(k, cfg.get(k, limits[2])) for k, limits in LIMITS.items()})
+        return validate_binding(binding)
     specs = registry(cfg)
     if not isinstance(provider, str) or provider not in specs:
         raise ProviderError('Unknown provider')
@@ -199,6 +234,7 @@ def contract_bindings(contract, cfg):
 
 def public_binding(binding):
     return {**{k: binding[k] for k in ('profile', 'provider', 'model', 'base_url', 'reasoning_effort')},
+            **({'local_endpoint': binding['local_endpoint'], 'wire_api': binding['wire_api']} if binding['version'] == 3 else {}),
             'billing': PROVIDERS.get(binding['provider'], {}).get('billing', 'provider_defined')}
 
 
@@ -222,12 +258,15 @@ def credential(binding, home, environ=None):
     binding = validate_binding(binding)
     environ = os.environ if environ is None else environ
     env_name = binding['credential_ref']['env']
+    if binding['version'] == 3 and env_name is None:
+        return '', 'local endpoint without authentication'
     key = environ.get(env_name, '').strip()
     if key:
         return key, env_name + ' environment'
     path = credential_path(home)
     if path.exists():
-        entry = json.loads(path.read_text()).get(binding['provider'], {})
+        storage_key = 'local:' + binding['local_endpoint'] if binding['version'] == 3 else binding['provider']
+        entry = json.loads(path.read_text()).get(storage_key, {})
         if entry.get('base_url', '').rstrip('/') == binding['base_url']:
             key = entry.get('api_key')
             if isinstance(key, str) and key.strip():

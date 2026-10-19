@@ -7,7 +7,7 @@ import sys
 import unittest
 
 suite = unittest.TestSuite()
-for module_name in ['test_telos', 'test_callbacks', 'test_repairs', 'test_projects', 'test_experience', 'test_rsi', 'test_providers', 'test_closed_book', 'test_maintenance', 'test_hardening', 'test_identity', 'test_audit']:
+for module_name in ['test_telos', 'test_callbacks', 'test_repairs', 'test_projects', 'test_experience', 'test_rsi', 'test_providers', 'test_closed_book', 'test_maintenance', 'test_hardening', 'test_identity', 'test_audit', 'test_local_executor']:
     module = importlib.import_module(module_name)
     for cls in vars(module).values():
         if isinstance(cls, type) and issubclass(cls, unittest.TestCase) and cls.__module__ == module_name:

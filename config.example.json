@@ -1,10 +1,17 @@
 {
   "default_executor_profile": "deepseek_official",
+  "local_executor": {
+    "active": null,
+    "endpoints": {}
+  },
   "supervisor": {
     "provider": "openai",
     "models": ["gpt-6-astra"]
   },
   "profiles": {
+    "local": {
+      "provider": "local"
+    },
     "deepseek_official": {
       "provider": "deepseek",
       "model": "deepseek-flash",

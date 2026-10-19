@@ -10,7 +10,9 @@ mkdir -p .artifacts
 python3 runtime/verify_all.py .artifacts/regression.json
 ```
 
-The installer tests use temporary directories and mocked prerequisites. The runtime suite requires macOS and runs each locally declared test once; avoid broad `unittest discover` over `runtime/`, which can repeat inherited tests. The initial release contains 197 runtime regression cases covering task gates, callbacks, project orchestration, isolation, providers, closed-book exams, experience, storage and identity compatibility.
+The installer tests use temporary directories and mocked prerequisites. The runtime suite requires macOS and runs each locally declared test once; avoid broad `unittest discover` over `runtime/`, which can repeat inherited tests. Coverage includes task gates, callbacks, project orchestration, isolation, providers, closed-book exams, experience, storage, audits and local endpoints. Use the generated report for the current test count.
+
+Local endpoint regressions exercise both Responses and Chat against real HTTP servers and the real Codex CLI, including namespaced tools, work-history recall, zero-tool exams, supervisor grading, key/port isolation and selection locks. These are deterministic model fixtures; a real local gateway needs a separate small work → exam → supervisor acceptance run. See [local executor configuration](local-executors.md).
 
 ## Fresh-install smoke test
 

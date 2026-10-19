@@ -27,7 +27,7 @@ The installer copies `config.example.json` to `~/.local/share/telos/config.json`
 
 `executor_profile` can be selected on `telos_open`, each project task or `telos_project_reassign`. Alternatively specify `provider` and `model` explicitly. An explicit provider must agree with a selected profile. Passing only `model` keeps the default profile's provider; use both fields when crossing providers. No separate examiner profile is accepted for new tasks.
 
-Executor model, provider and effort are frozen per task. New bindings default to `max` when no override is supplied. An explicit effort is sent unchanged; provider support is not inferred. The supervisor's allowlist only checks its OpenAI identity and model; launch the supervisor with `model_reasoning_effort="max"` to set its effort.
+Executor model, provider and effort are frozen per task. Cloud bindings default to `max`; local endpoints default to `none` (omit upstream reasoning parameters). An explicit non-none effort is sent unchanged; provider support is not inferred. The supervisor's allowlist only checks its OpenAI identity and model; launch the supervisor with `model_reasoning_effort="max"` to set its effort.
 
 If the original Codex conversation uses a locally named OpenAI provider such as `openai_http`, explicitly trust that provider ID in the installed configuration:
 
@@ -48,14 +48,19 @@ Only add an alias after checking that its effective Codex configuration uses the
 | `deepseek` | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` | `telos auth deepseek` |
 | `ark` | `https://ark.cn-beijing.volces.com/api/coding/v3` | `ARK_API_KEY` | `telos auth ark` |
 | `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `telos auth openai` |
+| `local` | One active loopback endpoint | Dedicated `--key-env`, or none | `telos auth local` |
 
 Lookup order: matching environment variable, Telos local credential store, then an eligible OpenCode configuration/auth entry with a matching endpoint. The built-in OpenCode provider IDs are `deepseek` and `huoshancodingplan`. Credentials are resolved at request time and can be rotated without changing frozen task contracts.
 
 The interactive command accepts no key argument and writes `~/.config/telos/credentials.json` with mode `0600`. Keep keys out of task arguments, configuration examples, command history and Git. The original supervisor uses its own Codex authentication; Telos does not copy that login to executor sessions.
 
-## Additional providers
+## Local executor endpoints
 
-Only a locally configured, fixed **HTTPS Responses API** endpoint is supported by this extension mechanism. An arbitrary Chat Completions endpoint is insufficient.
+Use `telos local add NAME --url URL --model MODEL --protocol responses|chat`, then `telos local select NAME`. Append `--default` to select local execution for new tasks by default. Endpoints and keys are separate from Ark/DeepSeek. See [local executor setup](local-executors.md) for multiple ports, credentials, frozen tasks and protocol limitations.
+
+## Additional HTTPS providers
+
+The `providers` extension mechanism accepts fixed **HTTPS Responses API** endpoints. Loopback Responses and Chat Completions endpoints use the separate `local_executor` configuration above.
 
 ```json
 {
@@ -104,11 +109,11 @@ Project `allowed_paths` are literal relative files/directory prefixes, not globs
 
 - 安装器将根目录配置示例复制为 `~/.local/share/telos/config.json`，修改后重启 MCP。直接运行未配置的源码会使用历史默认值，不能视为已完成安装。
 - 用 `executor_profile` 选择执行者，或明确指定 `provider` 与 `model`；只改模型名不会自动切换服务商。新任务不支持独立考试模型。
-- 每项任务冻结执行者绑定，默认强度为 `max`，显式值不静默降级。大总管模型由允许列表约束，强度由原 Codex 对话设置。
+- 每项任务冻结执行者绑定，云端默认强度为 `max`，本地默认不发送推理参数，显式值不静默降级。大总管模型由允许列表约束，强度由原 Codex 对话设置。
 - 大总管使用 `openai_http` 等本机 OpenAI 通道名时，核对实际地址和认证配置后，在 `supervisor.provider_aliases` 中明确授权该名称。默认不接受别名；模型允许列表、原会话绑定和验收前身份复查继续生效。
 - 凭据依次从环境变量、Telos 凭据文件、地址匹配的 OpenCode 配置读取。使用 `telos auth deepseek`、`telos auth ark` 或 `telos auth openai` 隐藏输入，禁止把 Key 写进任务和仓库。
 - OpenAI 执行者需要自己的 API 凭据，不复用大总管的 ChatGPT/Codex 登录。
-- 新增服务商需要固定 HTTPS Responses 接口，在本机配置，不能通过任务参数传任意地址；仅支持 Chat Completions 的接口不满足条件。
+- 本地入口使用 `local_executor`，兼容 Responses 和 Chat Completions，多地址只能选中一个；详见[本地执行者指南](local-executors.md)。其他新增服务商仍通过 `providers` 配置固定 HTTPS Responses 接口。
 - 默认及格线 90、最多五轮评估；项目默认 40 个作业预算、最多三个并发。它们不限制实际费用或 token。
 - `dependency_paths` 只开放依赖目录读取；`command_network` 和检查的 `network` 分别控制工作/检查的网络权限，闭卷阶段不获得这些权限。
 - 旧 `EXAM_LOOP_STATE_DIR` / `EXAM_LOOP_CACHE_DIR` 仍兼容，同名 `TELOS_*` 设置优先；历史合同按原来的绑定执行，不强行迁移。

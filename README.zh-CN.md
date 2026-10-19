@@ -30,7 +30,7 @@ Telos 是运行在本机的 Codex MCP 桥接程序。原来的 GPT 旗舰对话�
 
 ## 功能
 
-- **执行者可切换。** 默认使用 DeepSeek 官方 API，同时支持火山 Ark Coding Plan、OpenAI API 和本地注册的 Responses 兼容服务商。
+- **执行者可切换。** 默认使用 DeepSeek 官方 API，同时支持火山 Ark Coding Plan、OpenAI API 和本地端口。可保存多个本地入口，同一时间只启用一个，兼容 Responses 与 Chat Completions。
 - **凭证据验收。** 在固定 Git 提交上运行预先冻结的真实检查，大总管再审核源码、给问卷评分。默认 90 分及格，还必须满足关键题最低分、所有检查通过、无阻塞问题。
 - **同一执行者闭卷答题。** 保留原工作会话记忆，不提供新的源码、私有答案或检查结果。转发层禁用工具，并拒绝考试中的工具调用。
 - **隔离工作。** 使用 Git worktree、macOS Seatbelt、私有验收目录和本地凭据转发，划分实现与评估的权限。
@@ -143,8 +143,9 @@ cd /你的/干净Git项目/绝对路径
 | 默认：`deepseek_official` | DeepSeek 官方 | `deepseek-flash` | `max` |
 | 可选：`ark_coding_plan` | 火山 Ark Coding Plan | `glm-5.3-flash` | `max` |
 | 可选：`openai_executor` | OpenAI API | `gpt-6.1-sol` | `xhigh`，示例中显式覆盖 |
+| 可选：`local` | 当前选中的本地入口 | 本机配置的模型 ID | 默认 `none`，不向上游发送推理参数 |
 
-新执行者绑定未显式指定时默认 `max`。大总管的推理强度继承原 Codex 对话，Telos 不会暗中修改。模型权限和可用强度以服务商支持为准，不兼容时明确失败，不静默降级。
+云端执行者绑定未显式指定时默认 `max`；本地入口默认不发送推理参数，可以显式配置。大总管的推理强度继承原 Codex 对话，Telos 不会暗中修改。模型权限和可用强度以服务商支持为准，不兼容时明确失败，不静默降级。
 
 截至 **2026-10-18**，DeepSeek 官方文档将 `deepseek-flash` 对应到 DeepSeek V4.1 Flash 1017。它是滚动别名，不是永远固定的日期快照，见[官方集成指南](https://api-docs.deepseek.com/quick_start/agent_integrations/)。
 
@@ -153,6 +154,8 @@ cd /你的/干净Git项目/绝对路径
 > 这个任务使用 Telos，执行者选 `executor_profile=ark_coding_plan`。
 
 配置文件位于 `~/.local/share/telos/config.json`。任务创建时冻结服务商、模型和强度，修改默认配置只影响新任务。更换执行者需要新会话，或使用受约束的项目重新分配流程。详见[配置指南](docs/configuration.md)。
+
+本地入口通过 `telos local add` 保存、`telos local select` 切换，任务选择 `executor_profile=local`。火山与 DeepSeek 配置继续保留。已创建的本地任务绑定原地址和模型，切换后需选回原入口才能续跑。[本地执行者配置与示例](docs/local-executors.md)
 
 大总管可以使用现有 Codex 登录；OpenAI **执行者**需要单独的 API 凭据，本发布版没有将执行者请求转接到 ChatGPT/Codex 套餐。Telos 本身免费开源，模型 API 与套餐按各服务商规则计费；作业数量上限不等于费用上限。
 

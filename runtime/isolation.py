@@ -2,6 +2,7 @@
 import contextlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
+import json
 import secrets
 import shutil
 import threading
@@ -28,10 +29,11 @@ class NoRedirect(urllib.request.HTTPRedirectHandler):
 
 
 @contextlib.contextmanager
-def model_relay(endpoint, key, timeout=180, policy=None):
+def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=None, diagnostics=None):
     """Only the bridge holds upstream credentials. No arbitrary URL/proxy methods."""
     token = secrets.token_urlsafe(48)
-    opener = urllib.request.build_opener(NoRedirect())
+    local = binding is not None and binding.get('provider') == 'local'
+    opener = urllib.request.build_opener(NoRedirect(), *([urllib.request.ProxyHandler({})] if local else []))
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -40,18 +42,35 @@ def model_relay(endpoint, key, timeout=180, policy=None):
         def do_POST(self):
             if not hmac.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + token):
                 self.send_error(403); return
-            allowed = ('/v1/responses',) if policy else ('/v1/responses', '/v1/responses/compact')
+            allowed = ('/v1/responses',) if policy or local else ('/v1/responses', '/v1/responses/compact')
             if self.path not in allowed:
                 self.send_error(404); return
             try:
+                if validate:
+                    validate()
                 length = int(self.headers.get('Content-Length', '0'))
                 if not 0 < length <= 16 * 1024 * 1024:
                     self.send_error(413); return
                 body = self.rfile.read(length)
                 if policy:
                     body = policy.prepare(body)
-                req = urllib.request.Request(endpoint.rstrip('/') + self.path.removeprefix('/v1'),
-                    data=body, headers={'Authorization': 'Bearer ' + key, 'Content-Type': 'application/json'})
+                suffix = self.path.removeprefix('/v1')
+                chat_request = None
+                if local:
+                    request = json.loads(body)
+                    if request.get('model') != binding['model']:
+                        raise ValueError('Local request changed the frozen model')
+                    if binding['wire_api'] == 'chat':
+                        from chat_adapter import prepare
+                        chat_request, tool_types = prepare(request)
+                        body, suffix = json.dumps(chat_request, ensure_ascii=False).encode(), '/chat/completions'
+                    elif binding['reasoning_effort'] == 'none':
+                        request.pop('reasoning', None)
+                        body = json.dumps(request, ensure_ascii=False).encode()
+                headers = {'Content-Type': 'application/json'}
+                if key:
+                    headers['Authorization'] = 'Bearer ' + key
+                req = urllib.request.Request(endpoint.rstrip('/') + suffix, data=body, headers=headers)
                 try:
                     response = opener.open(req, timeout=timeout)
                 except urllib.error.HTTPError as error:
@@ -61,11 +80,22 @@ def model_relay(endpoint, key, timeout=180, policy=None):
                     self.send_error(error.code, 'Model endpoint rejected request'); return
                 with response:
                     validated = None
-                    if policy:
+                    content_type = response.headers.get('Content-Type', 'application/json')
+                    if chat_request is not None:
+                        from chat_adapter import convert, encode
+                        raw = response.read(16 * 1024 * 1024 + 1)
+                        if len(raw) > 16 * 1024 * 1024:
+                            raise ValueError('Local response exceeds size limit')
+                        converted = convert(json.loads(raw), request['model'], tool_types)
+                        if converted['status'] != 'completed':
+                            raise ValueError('Local Chat response is incomplete; no partial tool call was forwarded')
+                        validated, content_type = encode(converted, request.get('stream', False))
+                    elif policy:
                         validated = response.read(policy.MAX_RESPONSE_BYTES + 1)
-                        policy.validate_response(validated, response.headers.get('Content-Type', 'application/json'))
+                    if policy:
+                        policy.validate_response(validated, content_type)
                     self.send_response(response.status)
-                    self.send_header('Content-Type', response.headers.get('Content-Type', 'application/json'))
+                    self.send_header('Content-Type', content_type)
                     self.send_header('Connection', 'close')
                     self.end_headers()
                     if validated is not None:
@@ -73,16 +103,19 @@ def model_relay(endpoint, key, timeout=180, policy=None):
                     while chunk := response.read1(65536):
                         self.wfile.write(chunk); self.wfile.flush()
             except Exception as error:
+                if diagnostics is not None:
+                    detail = str(error).replace(token, '[REDACTED]')
+                    diagnostics['failure'] = (detail.replace(key, '[REDACTED]') if key else detail)[:600]
                 if policy:
                     # The private policy error is consumed by the bridge, not by
                     # a model; provider output cannot become an executable event.
                     policy.failure = str(error)
                     if isinstance(error, (OSError, TimeoutError, urllib.error.URLError)):
                         policy.transport_error = 'Exam endpoint transport failed'
-                    try:
-                        self.send_error(400, 'Closed-book response rejected')
-                    except OSError:
-                        pass
+                try:
+                    self.send_error(400, 'Model protocol or frozen endpoint validation failed')
+                except OSError:
+                    pass
                 self.close_connection = True
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)

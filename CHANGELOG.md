@@ -1,5 +1,16 @@
 # Changelog / 更新记录
 
+## 3.3.0 — 2026-10-19
+
+- Add named local executor endpoints with one active selection, preserving DeepSeek official and Ark Coding Plan profiles and credentials.
+- Support loopback Responses and Chat Completions, including function/custom tools, namespaces and same-thread exams; use no new dependencies.
+- Add `telos local list/add/select` and endpoint-bound `telos auth local`. Freeze endpoint/protocol/model per task, block switching during local jobs, and reject silent rerouting or cloud fallback.
+- Remove history-based tool declarations during closed-book exams, including those emitted by current GPT Codex model catalogs.
+- Add configuration, credential, relay, project and real CLI regressions for both protocols.
+- Handle nullable reasoning history from Codex resumes, preserving explicit reasoning effort through Chat tool calls and closed-book exams.
+
+新增本地执行者入口：多个配置只启用一个，兼容两种协议，火山与 DeepSeek 继续可选。保留原会话闭卷验收，补齐新工具声明格式的禁用，具体边界见本地执行者指南。
+
 ## 3.2.0 — 2026-10-19
 
 - Add `task_type=audit`: frozen public scope/checklists, read-only source, separate evidence artifacts and supervisor-owned audit review.

@@ -130,6 +130,9 @@ def configure_credential(provider):
     registry = providers.registry(config())
     if provider not in registry:
         raise GateError('Unknown provider')
+    entry = registry[provider]
+    if provider == 'local' and entry['env'] is None:
+        raise GateError('Local endpoint has no authentication; add an endpoint with --key-env first')
     if not sys.stdin.isatty():
         raise GateError('Run telos auth in an interactive local terminal')
     key = getpass.getpass(f'{provider} API Key (hidden): ').strip()
@@ -140,7 +143,8 @@ def configure_credential(provider):
     with (path.parent / '.credentials.lock').open('a+') as lock:
         fcntl.flock(lock, fcntl.LOCK_EX)
         data = read_json(path) if path.exists() else {}
-        data[provider] = {'base_url': registry[provider]['base_url'], 'api_key': key}
+        storage_key = 'local:' + entry['local_endpoint'] if provider == 'local' else provider
+        data[storage_key] = {'base_url': entry['base_url'], 'api_key': key}
         write_json(path, data)
     return {'provider': provider, 'configured': True, 'path': str(path)}
 
@@ -923,6 +927,8 @@ def _start_job(sid, kind, message="", event_id=None):
             raise GateError("A job is already running; poll telos_status")
         if state["phase"] == "awaiting_review":
             raise GateError("Grade the pending exam before sending more work")
+        from local_executor import assert_active
+        assert_active(bridge_services(), backend_bindings(contract)['executor'])
         if state["rounds"] >= contract["max_rounds"]:
             raise GateError("Maximum exam rounds reached; do not lower the threshold")
         if kind == "send":
@@ -981,14 +987,22 @@ def peer_turn(state, contract, message, phase="work", policy=None):
     from isolation import model_relay
     binding = backend_bindings(contract)['executor']
     key, _ = provider_credential(binding['provider'], binding)
-    with model_relay(binding['base_url'], key, binding['http_timeout'], policy=policy) as (endpoint, token, port):
+    from local_executor import lease, assert_active
+    local = binding['provider'] == 'local'
+    diagnostics = {}
+    options = {'binding': binding, 'validate': lambda: assert_active(bridge_services(), binding),
+               'diagnostics': diagnostics} if local else {}
+    with (lease(bridge_services(), binding) if local else contextlib.nullcontext()), \
+            model_relay(binding['base_url'], key, binding['http_timeout'], policy=policy, **options) as (endpoint, token, port):
         try:
             return isolated_peer_turn(state, contract, message, endpoint, token, port, phase=phase)
-        except GateError:
+        except GateError as error:
             if policy and policy.transport_error:
                 raise InfrastructureError(policy.transport_error) from None
             if policy and policy.failure:
                 raise GateError(policy.failure) from None
+            if diagnostics.get('failure'):
+                raise GateError('Local executor relay: ' + diagnostics['failure']) from error
             raise
 
 
@@ -1580,8 +1594,9 @@ for schema in (TOOLS[0]['inputSchema'], PROJECT_TASK):
     schema['properties'].update({'dependency_paths': {'type': 'array', 'items': STR},
                                  'command_network': {'type': 'boolean'}})
 TOOLS[0]['description'] += (' The supervisor is the original GPT flagship conversation and alone grades/accepts. '
-    'Select executor_profile=deepseek_official or ark_coding_plan, or a locally configured provider/model. '
-    'Every new task has one frozen executor binding, reasoning_effort=max by default. '
+    'Select executor_profile=deepseek_official, ark_coding_plan or local, or a locally configured provider/model. '
+    'Local tasks share one active configured loopback endpoint; select it with telos local select. '
+    'Every new task has one frozen executor binding, reasoning_effort=max by default (local: none unless configured). '
     'Evaluation resumes that SAME execution conversation in closed-book mode: no tools, new source, '
     'reference answers or check results. Switching executors requires a new task/session (project_reassign). '
     'Project command network is OFF; explicit dependency_paths grant read-only access during work and executable checks, never the closed-book exam.')
@@ -1693,13 +1708,27 @@ def serve():
 def main():
     os.umask(0o077)
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["serve", "doctor", "auth", "status", "review", "receive", "pause", "resume", "cancel", "recover", "cache", "_job", "_dispatch", "_project_check"])
+    parser.add_argument("command", choices=["serve", "doctor", "auth", "local", "status", "review", "receive", "pause", "resume", "cancel", "recover", "cache", "_job", "_dispatch", "_project_check"])
     parser.add_argument("ids", nargs="*")
     parser.add_argument('--action', choices=['inventory', 'archive', 'cleanup'], default='inventory')
     parser.add_argument('--apply', action='store_true', help='Apply explicit archive/cleanup; default is preview')
+    parser.add_argument('--url', help='Local loopback base URL with explicit port')
+    parser.add_argument('--model', help='Local model ID')
+    parser.add_argument('--protocol', choices=['responses', 'chat'], default='responses')
+    parser.add_argument('--key-env', help='Dedicated environment variable for local authentication')
+    parser.add_argument('--reasoning-effort', choices=providers.EFFORTS, default='none')
+    parser.add_argument('--default', action='store_true', help='Make the selected local endpoint the default executor')
     args = parser.parse_args()
     if args.command == "serve":
         serve()
+    elif args.command == 'local':
+        from local_executor import manage
+        if not 1 <= len(args.ids) <= 2:
+            raise GateError('Usage: telos local list | add NAME | select NAME')
+        spec = {'base_url': args.url, 'model': args.model, 'wire_api': args.protocol,
+                'env': args.key_env, 'reasoning_effort': args.reasoning_effort} if args.ids[0] == 'add' else None
+        print(json.dumps(manage(bridge_services(), args.ids[0], args.ids[1] if len(args.ids) == 2 else None,
+                               spec, args.default), ensure_ascii=False, indent=2))
     elif args.command == 'auth':
         if len(args.ids) != 1:
             raise GateError('Usage: telos auth <configured provider>')
