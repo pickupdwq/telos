@@ -11,6 +11,14 @@ from identity import data_path
 
 
 def run(b, state, contract, message, endpoint, key, relay_port, phase="work"):
+    if contract.get('task_type') == 'audit' and phase == 'work':
+        from audit_probe import service
+        with service(b, state, contract) as probe:
+            return _run(b, state, contract, message, endpoint, key, relay_port, phase, probe)
+    return _run(b, state, contract, message, endpoint, key, relay_port, phase)
+
+
+def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", probe=None):
     """Run or resume exactly one executor; work/exam differ only in capabilities."""
     if phase not in ("work", "exam"):
         raise b.GateError("Unknown executor phase")
@@ -34,6 +42,11 @@ def run(b, state, contract, message, endpoint, key, relay_port, phase="work"):
                TMPPREFIX=str(temp / 'zsh'), PYTHONDONTWRITEBYTECODE='1',
                NO_PROXY='127.0.0.1,localhost', no_proxy='127.0.0.1,localhost')
     env[key_env] = key
+    if probe:
+        import audit
+        artifact_root = audit.artifacts(b, state)
+        env.update(TELOS_AUDIT_URL=probe['url'], TELOS_AUDIT_TOKEN=probe['token'], TELOS_AUDIT_ARTIFACTS=str(artifact_root),
+                   TELOS_AUDIT_SOURCE=state['worktree'])
     common_git = git(state["worktree"], "rev-parse", "--git-common-dir")
     common_git = str((Path(state["worktree"]) / common_git).resolve())
     # Provider IDs are persisted CLI protocol identities, not product labels.
@@ -62,6 +75,10 @@ def run(b, state, contract, message, endpoint, key, relay_port, phase="work"):
     if local_config.exists():
         raise GateError("Project .codex/config.toml requires explicit compatibility review before isolated peer execution")
     cwd = peer_home / 'exam_room' if exam else Path(state['worktree'])
+    if probe:
+        cwd = peer_home / 'audit_room'
+        cwd.mkdir(exist_ok=True)
+        settings += ['project_doc_max_bytes=0']
     if exam:
         cwd.mkdir(exist_ok=True)
         settings += ['project_doc_max_bytes=0', 'features.remote_compaction=false']
@@ -74,7 +91,7 @@ def run(b, state, contract, message, endpoint, key, relay_port, phase="work"):
     if state.get("thread_id"):
         args += ["resume", state["thread_id"]]
     args += ["--ignore-user-config", "--json", "--color", "never"] if not state.get("thread_id") else ["--ignore-user-config", "--json"]
-    if exam:
+    if exam or probe:
         args += ["--skip-git-repo-check", "--ignore-rules"]
     args += ["-o", str(output), "-"]
     initial = (f"You are an independent coding session using {binding['model']}, communicating with the GPT supervisor through a local MCP bridge. "
@@ -86,12 +103,21 @@ def run(b, state, contract, message, endpoint, key, relay_port, phase="work"):
         initial += "Allowed change paths (enforced at submission): " + encoded(contract['allowed_paths']) + "\n"
     if contract.get('experience_context'):
         initial += "\nExperience reference:\n" + contract['experience_context'] + "\n"
+    if probe:
+        initial += audit.public_prompt(b, state, contract)
     prompt = (initial if not state.get("thread_id") else "") + "Codex message:\n" + message
+    readable_cache = [peer_home] if exam else [state["worktree"], peer_home, common_git]
+    writable = [peer_home] if exam else [state['worktree'], peer_home]
+    protected = [common_git, Path(state['worktree']) / '.git']
+    if probe:
+        readable_cache = [peer_home, artifact_root, *audit.source_paths(state, contract['audit'])]
+        writable = [peer_home, artifact_root]
+        protected.append(state['worktree'])
     command = ["/usr/bin/sandbox-exec", "-p", sandbox_profile(network=False if exam else contract.get('command_network', False),
-               writable=[peer_home] if exam else [state["worktree"], peer_home], relay_port=relay_port,
-               protected=[common_git, Path(state["worktree"]) / ".git"],
+               writable=writable, relay_port=relay_port,
+               protected=protected, service_ports=[probe['port']] if probe else [],
                readable=[] if exam else contract.get('dependency_paths', []),
-               readable_cache=[peer_home] if exam else [state["worktree"], peer_home, common_git]), *args]
+               readable_cache=readable_cache), *args]
     p = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     try:

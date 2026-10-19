@@ -2,7 +2,7 @@
   "tools": [
     {
       "name": "telos_open",
-      "description": "Start an independent coding conversation for a user-requested telos collaboration. Creates an isolated git worktree from a CLEAN repository and freezes private questions, reference answers, and executable acceptance checks BEFORE sending work. Not a subagent or OMX team. Omit backend selection to use configured executor profile; new bindings default reasoning_effort=max; default 90/100, max 5 exam rounds. Each check argv must be ['{python}','-c','inline Python code']; it may run project test commands in the snapshot, network off by default. Reference/check code is never sent to the execution model. Do not invent irrelevant tests. No inference call until send/evaluate. Automatic completion return is ON by default, bound to the original Codex thread from trusted MCP metadata. Supports the configured CLI service or a compatible Desktop IPC owner; Desktop delivery waits until this chat is idle. Use notify=false only for explicit manual polling. Caller cannot select or override a destination thread. For project goals prefer telos_project_open: the supervisor autonomously chooses single, parallel or phased execution. Verified repository experience is retrieved automatically for new sessions. The supervisor is the original GPT flagship conversation and alone grades/accepts. Select executor_profile=deepseek_official or ark_coding_plan, or a locally configured provider/model. Every new task has one frozen executor binding, reasoning_effort=max by default. Evaluation resumes that SAME execution conversation in closed-book mode: no tools, new source, reference answers or check results. Switching executors requires a new task/session (project_reassign). Project command network is OFF; explicit dependency_paths grant read-only access during work and executable checks, never the closed-book exam.",
+      "description": "Start an independent coding conversation for a user-requested telos collaboration. Creates an isolated git worktree from a CLEAN repository and freezes private questions, reference answers, and executable acceptance checks BEFORE sending work. Not a subagent or OMX team. Omit backend selection to use configured executor profile; new bindings default reasoning_effort=max; default 90/100, max 5 exam rounds. Each check argv must be ['{python}','-c','inline Python code']; it may run project test commands in the snapshot, network off by default. Reference/check code is never sent to the execution model. Do not invent irrelevant tests. No inference call until send/evaluate. Automatic completion return is ON by default, bound to the original Codex thread from trusted MCP metadata. Supports the configured CLI service or a compatible Desktop IPC owner; Desktop delivery waits until this chat is idle. Use notify=false only for explicit manual polling. Caller cannot select or override a destination thread. For project goals prefer telos_project_open: the supervisor autonomously chooses single, parallel or phased execution. Verified repository experience is retrieved automatically for new sessions. The supervisor is the original GPT flagship conversation and alone grades/accepts. Select executor_profile=deepseek_official or ark_coding_plan, or a locally configured provider/model. Every new task has one frozen executor binding, reasoning_effort=max by default. Evaluation resumes that SAME execution conversation in closed-book mode: no tools, new source, reference answers or check results. Switching executors requires a new task/session (project_reassign). Project command network is OFF; explicit dependency_paths grant read-only access during work and executable checks, never the closed-book exam. For system audits set task_type=audit and freeze public audit boundaries/checklist separately from private quality questions/checks. Source is read-only, reports/evidence go to a separate artifact directory. Use scoped HTTP/browser probes; no unrestricted command/check network. Page audits require an existing Playwright module and browser executable, explicit targets/actions/viewports. Checks assess investigation quality, not absence of target bugs; read TELOS_AUDIT_REPORT in quality checks. Required checklist items must be investigated; optional untested items need reasons. For fixes of supervisor-confirmed findings use repair_of and allowed_paths; no automatic repair/merge/deploy.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -113,6 +113,230 @@
           },
           "command_network": {
             "type": "boolean"
+          },
+          "task_type": {
+            "enum": [
+              "implementation",
+              "audit"
+            ]
+          },
+          "audit": {
+            "type": "object",
+            "properties": {
+              "environment": {
+                "type": "object",
+                "properties": {
+                  "kind": {
+                    "enum": [
+                      "local",
+                      "test",
+                      "staging"
+                    ]
+                  },
+                  "name": {
+                    "type": "string"
+                  }
+                },
+                "required": [
+                  "kind",
+                  "name"
+                ],
+                "additionalProperties": false
+              },
+              "scope_paths": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "requirements": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "out_of_scope": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "stop_conditions": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "mutation_policy": {
+                "type": "string"
+              },
+              "checklist": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "kind": {
+                      "enum": [
+                        "code",
+                        "api",
+                        "interaction",
+                        "visual"
+                      ]
+                    },
+                    "prompt": {
+                      "type": "string"
+                    },
+                    "expected": {
+                      "type": "string"
+                    },
+                    "required": {
+                      "type": "boolean"
+                    },
+                    "viewports": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "kind",
+                    "prompt",
+                    "expected"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "targets": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "origin": {
+                      "type": "string"
+                    },
+                    "path_prefix": {
+                      "type": "string"
+                    },
+                    "methods": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "origin",
+                    "path_prefix",
+                    "methods"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "limits": {
+                "type": "object",
+                "properties": {
+                  "max_probes": {
+                    "type": "integer"
+                  },
+                  "probe_timeout_seconds": {
+                    "type": "integer"
+                  },
+                  "max_artifact_bytes": {
+                    "type": "integer"
+                  }
+                },
+                "required": [],
+                "additionalProperties": false
+              },
+              "browser": {
+                "type": "object",
+                "properties": {
+                  "module_path": {
+                    "type": "string"
+                  },
+                  "executable_path": {
+                    "type": "string"
+                  },
+                  "actions": {
+                    "type": "array",
+                    "items": {
+                      "type": "string"
+                    }
+                  },
+                  "viewports": {
+                    "type": "array",
+                    "items": {
+                      "type": "object",
+                      "properties": {
+                        "name": {
+                          "type": "string"
+                        },
+                        "width": {
+                          "type": "integer"
+                        },
+                        "height": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [
+                        "name",
+                        "width",
+                        "height"
+                      ],
+                      "additionalProperties": false
+                    }
+                  }
+                },
+                "required": [
+                  "module_path",
+                  "executable_path",
+                  "viewports",
+                  "actions"
+                ],
+                "additionalProperties": false
+              }
+            },
+            "required": [
+              "environment",
+              "scope_paths",
+              "requirements",
+              "out_of_scope",
+              "stop_conditions",
+              "mutation_policy",
+              "checklist",
+              "targets"
+            ],
+            "additionalProperties": false
+          },
+          "repair_of": {
+            "type": "object",
+            "properties": {
+              "session_id": {
+                "type": "string"
+              },
+              "finding_ids": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              }
+            },
+            "required": [
+              "session_id",
+              "finding_ids"
+            ],
+            "additionalProperties": false
+          },
+          "allowed_paths": {
+            "type": "array",
+            "items": {
+              "type": "string"
+            }
           }
         },
         "required": [
@@ -200,7 +424,7 @@
     },
     {
       "name": "telos_grade",
-      "description": "The original GPT supervisor records per-question integer scores and rationales after reviewing the private packet and code. The bridge computes total and enforces frozen threshold, critical minima, all real checks passed, no blockers, and unchanged commit. Cannot lower threshold or accept missing evidence. If rejected, send only requirement-level repair feedback; stop at max rounds. A successful exam is not permission to merge/deploy. When the reviewed implementation reveals reusable knowledge, distill up to 3 concrete public_lessons automatically; exclude private exam answers/check code and speculation. These are persisted as experience only with acceptance evidence.",
+      "description": "The original GPT supervisor records per-question integer scores and rationales after reviewing the private packet and code. The bridge computes total and enforces frozen threshold, critical minima, all real checks passed, no blockers, and unchanged commit. Cannot lower threshold or accept missing evidence. If rejected, send only requirement-level repair feedback; stop at max rounds. A successful exam is not permission to merge/deploy. When the reviewed implementation reveals reusable knowledge, distill up to 3 concrete public_lessons automatically; exclude private exam answers/check code and speculation. These are persisted as experience only with acceptance evidence. Audit grading additionally requires audit_review: decide each finding, acknowledge all limitations and actually inspect each captured screenshot. Audit accepted=true means evidence-backed coverage, never a healthy system.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -248,6 +472,61 @@
               "type": "string"
             },
             "maxItems": 3
+          },
+          "audit_review": {
+            "type": "object",
+            "properties": {
+              "findings": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "id": {
+                      "type": "string"
+                    },
+                    "disposition": {
+                      "enum": [
+                        "confirmed",
+                        "unconfirmed",
+                        "dismissed",
+                        "suggestion"
+                      ]
+                    },
+                    "rationale": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "id",
+                    "disposition",
+                    "rationale"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "limitations": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "visual_evidence_reviewed": {
+                "type": "array",
+                "items": {
+                  "type": "string"
+                }
+              },
+              "coverage_rationale": {
+                "type": "string"
+              }
+            },
+            "required": [
+              "findings",
+              "limitations",
+              "visual_evidence_reviewed",
+              "coverage_rationale"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -305,7 +584,7 @@
     },
     {
       "name": "telos_project_open",
-      "description": "Plan a project owned by THIS original supervisor. Default execution_mode=auto: supervisor decides strategy single/parallel/phased with decision_reason after inspecting task size, dependencies and shared files. Honor user single/parallel override. Never ask the user to choose unless needed. Maximum 3 simultaneous jobs. Every task has literal allowed_paths and private frozen checks/questions; unordered overlapping writers are rejected. No model calls until start. Final project checks are separate from child acceptance. Set notify=false for manual mode only. Final checks inherit the read-only dependency_paths from frozen child contracts. Optional project dependency_paths add read-only access for final checks only; network and write permissions are unchanged.",
+      "description": "Plan a project owned by THIS original supervisor. Default execution_mode=auto: supervisor decides strategy single/parallel/phased with decision_reason after inspecting task size, dependencies and shared files. Honor user single/parallel override. Never ask the user to choose unless needed. Maximum 3 simultaneous jobs. Every task has literal allowed_paths and private frozen checks/questions; unordered overlapping writers are rejected. No model calls until start. Final project checks are separate from child acceptance. Set notify=false for manual mode only. Final checks inherit the read-only dependency_paths from frozen child contracts. Optional project dependency_paths add read-only access for final checks only; network and write permissions are unchanged. Audit children use task_type=audit, audit boundaries and allowed_paths=[]; read-only auditors may overlap. Split by independently reviewable scope; include interface/visual checks and shared end-to-end flows as needed. Add authorized repair tasks after findings are confirmed, using repair_of and dependencies. Final checks can read TELOS_AUDIT_REPORTS; final review includes child audit reports.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -436,6 +715,224 @@
                 },
                 "command_network": {
                   "type": "boolean"
+                },
+                "task_type": {
+                  "enum": [
+                    "implementation",
+                    "audit"
+                  ]
+                },
+                "audit": {
+                  "type": "object",
+                  "properties": {
+                    "environment": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "enum": [
+                            "local",
+                            "test",
+                            "staging"
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "scope_paths": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "requirements": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "out_of_scope": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "stop_conditions": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "mutation_policy": {
+                      "type": "string"
+                    },
+                    "checklist": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "enum": [
+                              "code",
+                              "api",
+                              "interaction",
+                              "visual"
+                            ]
+                          },
+                          "prompt": {
+                            "type": "string"
+                          },
+                          "expected": {
+                            "type": "string"
+                          },
+                          "required": {
+                            "type": "boolean"
+                          },
+                          "viewports": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "kind",
+                          "prompt",
+                          "expected"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "targets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "origin": {
+                            "type": "string"
+                          },
+                          "path_prefix": {
+                            "type": "string"
+                          },
+                          "methods": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "origin",
+                          "path_prefix",
+                          "methods"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "limits": {
+                      "type": "object",
+                      "properties": {
+                        "max_probes": {
+                          "type": "integer"
+                        },
+                        "probe_timeout_seconds": {
+                          "type": "integer"
+                        },
+                        "max_artifact_bytes": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": false
+                    },
+                    "browser": {
+                      "type": "object",
+                      "properties": {
+                        "module_path": {
+                          "type": "string"
+                        },
+                        "executable_path": {
+                          "type": "string"
+                        },
+                        "actions": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "viewports": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "name": {
+                                "type": "string"
+                              },
+                              "width": {
+                                "type": "integer"
+                              },
+                              "height": {
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "width",
+                              "height"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "module_path",
+                        "executable_path",
+                        "viewports",
+                        "actions"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "environment",
+                    "scope_paths",
+                    "requirements",
+                    "out_of_scope",
+                    "stop_conditions",
+                    "mutation_policy",
+                    "checklist",
+                    "targets"
+                  ],
+                  "additionalProperties": false
+                },
+                "repair_of": {
+                  "type": "object",
+                  "properties": {
+                    "session_id": {
+                      "type": "string"
+                    },
+                    "finding_ids": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "session_id",
+                    "finding_ids"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
@@ -752,6 +1249,224 @@
                 },
                 "command_network": {
                   "type": "boolean"
+                },
+                "task_type": {
+                  "enum": [
+                    "implementation",
+                    "audit"
+                  ]
+                },
+                "audit": {
+                  "type": "object",
+                  "properties": {
+                    "environment": {
+                      "type": "object",
+                      "properties": {
+                        "kind": {
+                          "enum": [
+                            "local",
+                            "test",
+                            "staging"
+                          ]
+                        },
+                        "name": {
+                          "type": "string"
+                        }
+                      },
+                      "required": [
+                        "kind",
+                        "name"
+                      ],
+                      "additionalProperties": false
+                    },
+                    "scope_paths": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "requirements": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "out_of_scope": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "stop_conditions": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "mutation_policy": {
+                      "type": "string"
+                    },
+                    "checklist": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "id": {
+                            "type": "string"
+                          },
+                          "kind": {
+                            "enum": [
+                              "code",
+                              "api",
+                              "interaction",
+                              "visual"
+                            ]
+                          },
+                          "prompt": {
+                            "type": "string"
+                          },
+                          "expected": {
+                            "type": "string"
+                          },
+                          "required": {
+                            "type": "boolean"
+                          },
+                          "viewports": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "id",
+                          "kind",
+                          "prompt",
+                          "expected"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "targets": {
+                      "type": "array",
+                      "items": {
+                        "type": "object",
+                        "properties": {
+                          "origin": {
+                            "type": "string"
+                          },
+                          "path_prefix": {
+                            "type": "string"
+                          },
+                          "methods": {
+                            "type": "array",
+                            "items": {
+                              "type": "string"
+                            }
+                          }
+                        },
+                        "required": [
+                          "origin",
+                          "path_prefix",
+                          "methods"
+                        ],
+                        "additionalProperties": false
+                      }
+                    },
+                    "limits": {
+                      "type": "object",
+                      "properties": {
+                        "max_probes": {
+                          "type": "integer"
+                        },
+                        "probe_timeout_seconds": {
+                          "type": "integer"
+                        },
+                        "max_artifact_bytes": {
+                          "type": "integer"
+                        }
+                      },
+                      "required": [],
+                      "additionalProperties": false
+                    },
+                    "browser": {
+                      "type": "object",
+                      "properties": {
+                        "module_path": {
+                          "type": "string"
+                        },
+                        "executable_path": {
+                          "type": "string"
+                        },
+                        "actions": {
+                          "type": "array",
+                          "items": {
+                            "type": "string"
+                          }
+                        },
+                        "viewports": {
+                          "type": "array",
+                          "items": {
+                            "type": "object",
+                            "properties": {
+                              "name": {
+                                "type": "string"
+                              },
+                              "width": {
+                                "type": "integer"
+                              },
+                              "height": {
+                                "type": "integer"
+                              }
+                            },
+                            "required": [
+                              "name",
+                              "width",
+                              "height"
+                            ],
+                            "additionalProperties": false
+                          }
+                        }
+                      },
+                      "required": [
+                        "module_path",
+                        "executable_path",
+                        "viewports",
+                        "actions"
+                      ],
+                      "additionalProperties": false
+                    }
+                  },
+                  "required": [
+                    "environment",
+                    "scope_paths",
+                    "requirements",
+                    "out_of_scope",
+                    "stop_conditions",
+                    "mutation_policy",
+                    "checklist",
+                    "targets"
+                  ],
+                  "additionalProperties": false
+                },
+                "repair_of": {
+                  "type": "object",
+                  "properties": {
+                    "session_id": {
+                      "type": "string"
+                    },
+                    "finding_ids": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "session_id",
+                    "finding_ids"
+                  ],
+                  "additionalProperties": false
                 }
               },
               "required": [
@@ -1080,6 +1795,89 @@
         },
         "required": [
           "action"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "telos_audit_probe",
+      "description": "Run a bounded HTTP or declarative browser probe within an active audit contract. Original supervisor only; executors use their authenticated local probe service. Runs before evaluation; request_id deduplicates operations, including uncertain outcomes. Captures evidence; business failures are findings, not acceptance. No arbitrary JS, redirects, WebSockets, installations or target/permission expansion.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "request": {
+            "type": "object",
+            "properties": {
+              "request_id": {
+                "type": "string"
+              },
+              "check_id": {
+                "type": "string"
+              },
+              "kind": {
+                "enum": [
+                  "http",
+                  "browser"
+                ]
+              },
+              "url": {
+                "type": "string"
+              },
+              "method": {
+                "type": "string"
+              },
+              "headers": {
+                "type": "object",
+                "additionalProperties": {
+                  "type": "string"
+                }
+              },
+              "body": {
+                "type": [
+                  "string",
+                  "null"
+                ]
+              },
+              "viewport": {
+                "type": "string"
+              },
+              "steps": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "action": {
+                      "type": "string"
+                    },
+                    "selector": {
+                      "type": "string"
+                    },
+                    "value": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "action"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "request_id",
+              "check_id",
+              "kind",
+              "url"
+            ],
+            "additionalProperties": false
+          }
+        },
+        "required": [
+          "session_id",
+          "request"
         ],
         "additionalProperties": false
       }

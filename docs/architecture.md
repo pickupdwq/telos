@@ -14,7 +14,7 @@ The architecture diagram is a **logical capability map**, not a deployment of in
 
 | Layer | Responsibilities | Contracts and boundaries |
 | --- | --- | --- |
-| **Control surface** | Expose 24 tools over MCP stdio/JSON-RPC; bind the original supervisor; route completion events | Trusted `threadId` and supervisor identity; CLI queue or versioned Desktop IPC |
+| **Control surface** | Expose 25 tools over MCP stdio/JSON-RPC; bind the original supervisor; route completion events | Trusted `threadId` and supervisor identity; CLI queue or versioned Desktop IPC |
 | **Orchestration plane** | Freeze acceptance criteria and provider policy; enforce a finite-state machine (FSM); schedule the project dependency DAG | Immutable contract hash; frozen provider/model/effort; allowed write paths; round and concurrency budgets |
 | **Execution & verification plane** | Run work and closed-book phases in one executor thread; relay inference; run private checks; enforce acceptance | Phase-specific capabilities; fixed upstream endpoint; pinned source commit and evidence packet |
 | **Artifact & experience plane** | Store isolated worktrees, snapshots, private evidence, receipts and reusable lessons | JSON state with filesystem locks; Git identity; provenance checks; verified archival before cleanup |
@@ -98,7 +98,7 @@ Failure metadata and public repair advice can be recorded as candidates. Only ac
 
 | 层次 | 核心职责 | 对应约束 |
 | --- | --- | --- |
-| **交互与控制入口** | 通过 MCP stdio/JSON-RPC 暴露 24 个工具；绑定原始大总管；回传完成事件 | 可信 `threadId`、原会话身份、CLI 队列或版本化 Desktop IPC |
+| **交互与控制入口** | 通过 MCP stdio/JSON-RPC 暴露 25 个工具；绑定原始大总管；回传完成事件 | 可信 `threadId`、原会话身份、CLI 队列或版本化 Desktop IPC |
 | **任务编排平面** | 冻结合同、有限状态机（FSM）、依赖有向无环图（DAG）调度 | 合同哈希、服务商/模型/强度绑定、可修改路径、轮数与并发上限 |
 | **执行与验证平面** | 持久化执行者会话、鉴权推理转发、真实检查、验收策略门禁 | 按阶段控制能力、固定上游地址、固定源码提交与证据包 |
 | **产物与经验平面** | 工作区、快照、私有证据、回执与经验存储 | JSON 状态和文件锁、Git 提交标识、来源校验、归档后清理 |
@@ -145,6 +145,10 @@ macOS Seatbelt 属于本地操作系统沙箱，不能提供虚拟机隔离或�
 失败记录与公开返工建议可成为候选经验，只有独立任务或整个项目通过验收后才允许复用。按仓库与修改范围匹配，最多三条、6,000 字符，不包含私有答案、检查实现和原始日志。忘记经验会停用后续检索并保留来源，不训练模型权重。
 
 ## Diagram source / 图源
+
+Version 3.2 adds system audits to the core workflow illustrated above: `audit.py` validates public boundaries and pins report evidence; `audit_probe.py` brokers bounded HTTP/browser actions; `audit_browser.cjs` drives an explicitly supplied existing Playwright/Chromium installation. Audit artifacts live separately from read-only source and private exam materials. Final acceptance judges investigation quality, with findings and limitations preserved. See [audit workflow and boundaries](audits.md). The static core diagrams retain the original 3.1 catalog; the current generated MCP catalog has 25 tools.
+
+3.2 版本增加只读走查合同、受限接口/浏览器探针、独立证据产物和大总管逐项审核，复用原调度、回传与闭卷问答。走查验收与系统是否存在 Bug 分开；详见[系统走查](audits.md)。上方静态核心架构图保留 3.1 的工具数量，当前工具目录为 25 项。
 
 | Diagram / 图 | English | 中文 |
 | --- | --- | --- |

@@ -1,0 +1,26 @@
+{
+  "repo": "/absolute/path/to/a-clean-demo-repository",
+  "task_type": "audit",
+  "task": "Audit calc.py integer arithmetic with evidence; do not change source.",
+  "executor_profile": "deepseek_official",
+  "audit": {
+    "environment": {"kind": "local", "name": "Isolated source fixture"},
+    "scope_paths": ["calc.py"],
+    "requirements": ["Addition must preserve Python integer precision."],
+    "out_of_scope": ["Production services and unrelated modules"],
+    "stop_conditions": ["Record unavailable evidence; return to the supervisor before expanding scope."],
+    "mutation_policy": "Source is read-only. Write only task reports and evidence.",
+    "targets": [],
+    "checklist": [
+      {"id": "precision", "kind": "code", "prompt": "Inspect and reproduce positive, negative, zero and large-integer behavior.", "expected": "Exact integer results, or documented reproducible defects.", "required": true}
+    ],
+    "limits": {"max_probes": 10, "probe_timeout_seconds": 30, "max_artifact_bytes": 5000000}
+  },
+  "questions": [
+    {"id": "coverage", "prompt": "Which arithmetic boundaries did you investigate, what evidence supports the result, and what remains unverified?", "reference": "Cover the declared positive, negative, zero and arbitrary-precision cases with evidence. Explain limitations accurately; a reproducible defect is a valid investigation result.", "points": 70, "minimum": 60},
+    {"id": "boundaries", "prompt": "Explain how you stayed within source and operational boundaries.", "reference": "Source stayed unchanged; only declared files were read, evidence was stored separately, and no production or unrelated system was accessed.", "points": 30, "minimum": 25}
+  ],
+  "checks": [
+    {"id": "report-quality", "argv": ["{python}", "-c", "import json, os; r=json.load(open(os.environ['TELOS_AUDIT_REPORT'])); i=next(x for x in r['results'] if x['id']=='precision'); assert i['status'] in ('passed','finding') and i['steps'] and i['evidence']"], "timeout_seconds": 30, "network": false}
+  ]
+}

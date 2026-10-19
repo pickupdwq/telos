@@ -51,7 +51,7 @@ class Storage:
         paths = []
         for s in sessions:
             sid = s['session_id']
-            paths += [b.CACHE / k / sid for k in ('worktrees', 'snapshots', 'homes')]
+            paths += [b.CACHE / k / sid for k in ('worktrees', 'snapshots', 'homes', 'audits', 'audit-probes')]
         if project:
             paths += [b.CACHE / 'projects' / ident, b.CACHE / 'snapshots' / ident]
         for path in paths:
@@ -115,8 +115,13 @@ class Storage:
         if b.project_manager().path(ident).exists():
             paths += [b.run_dir(ident), b.project_manager().path(ident).parent]
         # State/lock/outbox are mutable; immutable contracts and evidence only.
-        return {str(p.relative_to(b.STATE)): file_hash(p) for root in paths for p in root.glob('*.json')
-                if p.name not in ('state.json', 'project.json') and not p.name.endswith('-error.json')}
+        evidence = {str(p.relative_to(b.STATE)): file_hash(p) for root in paths for p in root.glob('*.json')
+                    if p.name not in ('state.json', 'project.json') and not p.name.endswith('-error.json')}
+        for root in paths:
+            for folder in root.glob('audit-evidence-*'):
+                evidence.update({str(p.relative_to(b.STATE)): file_hash(p) for p in folder.rglob('*') if p.is_file()})
+            evidence.update({str(p.relative_to(b.STATE)): file_hash(p) for p in root.glob('audit-report-*.md')})
+        return evidence
 
     def verify_archive(self, ident):
         b = self.b
@@ -132,11 +137,20 @@ class Storage:
         b = self.b
         destination = b.STATE / 'archives' / ident
         evidence = self.evidence(ident, sessions)
+        import audit
+        audit_artifacts = {}
+        for state in sessions:
+            _, contract = b.load_session(b.run_dir(state['session_id']))
+            root = audit.artifacts(b, state)
+            if contract.get('task_type') == 'audit' and root.exists():
+                audit_artifacts[state['session_id']] = audit.manifest(root, contract['audit']['limits']['max_artifact_bytes'])
         if destination.exists():
             manifest = self.verify_archive(ident)
             resuming = (project or sessions[0]).get('archived', {}).get('manifest_hash') == b.digest(manifest)
             heads_match = manifest['heads'] == heads or (resuming and all(manifest['heads'].get(k) == v for k, v in heads.items()))
-            if not heads_match or manifest['evidence'] != evidence:
+            audits_match = (manifest.get('audit_artifacts', {}) == audit_artifacts or
+                            resuming and all(manifest.get('audit_artifacts', {}).get(k) == v for k, v in audit_artifacts.items()))
+            if not heads_match or manifest['evidence'] != evidence or not audits_match:
                 raise b.GateError('Existing archive differs from current work; preserve it and inspect manually')
             return manifest
         tmp = destination.with_name(ident + '.tmp-' + str(time.time_ns()))
@@ -154,10 +168,12 @@ class Storage:
             target = tmp / 'evidence' / relative
             target.parent.mkdir(parents=True, exist_ok=True)
             shutil.copy2(b.STATE / relative, target)
+        for sid, files in audit_artifacts.items():
+            audit.copy_evidence(audit.artifacts(b, {'session_id': sid}), tmp / 'audit-artifacts' / sid, files)
         b.write_json(tmp / 'task-state.json', {'project': project, 'sessions': sessions})
         files = {str(p.relative_to(tmp)): file_hash(p) for p in tmp.rglob('*') if p.is_file()}
         manifest = {'target_id': ident, 'created_at': time.time(), 'heads': heads, 'evidence': evidence,
-                    'refs': refs, 'files': files, 'repo': repo}
+                    'refs': refs, 'files': files, 'repo': repo, 'audit_artifacts': audit_artifacts}
         b.write_json(tmp / 'manifest.json', manifest)
         os.replace(tmp, destination)
         return self.verify_archive(ident)

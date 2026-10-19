@@ -1,5 +1,15 @@
 # Changelog / 更新记录
 
+## 3.2.0 — 2026-10-19
+
+- Add `task_type=audit`: frozen public scope/checklists, read-only source, separate evidence artifacts and supervisor-owned audit review.
+- Add bounded HTTP/browser probes, explicit target/method/action/viewport permissions, idempotent request IDs and screenshot evidence using existing Playwright/Chromium installations.
+- Separate investigation quality from target business failures; enforce required coverage, evidence hashes, finding decisions and screenshot review acknowledgement.
+- Support overlapping read-only project auditors, integrated audit evidence, confirmed-finding repair handoffs and evidence-preserving archive/cleanup.
+- Preserve existing implementation tasks, same-executor exams, callbacks and credentials; add the `telos_audit_probe` MCP tool (25 total).
+
+新增系统走查、接口与页面取证、公开执行边界、专用报告验收和确认问题转修复。页面驱动复用已有依赖，不自动安装；只支持指定测试环境，具体范围见走查指南。走查通过不代表系统没有缺陷。
+
 ## 3.1.0 — 2026-10-18
 
 First repository release of the existing local Telos runtime.

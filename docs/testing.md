@@ -23,9 +23,24 @@ python3 runtime/verify.py --install-dir "$PWD/.artifacts/installed" \
   --report .artifacts/installation.json
 ```
 
-This does not register MCP or change your current installation. Use a fresh target each time: the installer deliberately refuses overwrites. The verification includes a stdio MCP handshake and 24-tool catalog, rejection of untrusted ownership, callback/repair regressions, a real local Codex app-server with a stub model and a worker credential-environment probe.
+This does not register MCP or change your current installation. Use a fresh target each time: the installer deliberately refuses overwrites. The verification includes a stdio MCP handshake and 25-tool catalog, rejection of untrusted ownership, callback/repair regressions, a real local Codex app-server with a stub model and a worker credential-environment probe.
 
 A passing report verifies this local CLI/MCP path. It does **not** validate upstream keys, remote model behavior or automatic return to a real Desktop conversation. After a CLI/Desktop upgrade, repeat local tests and a small end-to-end task in the actual host you intend to use.
+
+## Optional local browser audit verification
+
+Use already installed Playwright and a Chromium headless shell. No package installation, real provider call or external site is involved:
+
+```sh
+python3 runtime/verify_audit_browser.py \
+  --module /absolute/path/to/node_modules/playwright/index.js \
+  --browser /absolute/path/to/chrome-headless-shell \
+  --report .artifacts/audit-browser-verification.json
+```
+
+The fixture exercises desktop/mobile form interaction, deliberately broken mobile layout, off-scope request and redirect blocking, captured screenshots, and the supervisor review gate. Inspect exported screenshots as well as the JSON report. It uses a deterministic model/exam/supervisor boundary and does not establish model audit quality on real systems. Browser verification is opt-in; the default suite covers contracts, real sandbox boundaries, HTTP probes, a real executor CLI against a stub model, evidence tampering, project integration, repair handoffs and archival.
+
+浏览器验证复用已有依赖，在本地测试页面验证交互、布局缺陷、地址与重定向限制和截图证据。默认回归不要求安装浏览器；两者都不消耗模型额度。
 
 ## Optional paid integration checks
 
@@ -42,8 +57,8 @@ GitHub Actions runs portable installer tests on Ubuntu and the runtime suite plu
 
 ## 中文说明
 
-默认测试不调用真实服务商、不消耗额度。安装器测试在临时目录验证启动器、路径转义、配置默认值和禁止覆盖；197 项运行时回归使用真实 Git、进程和 macOS 沙箱，模型边界使用本地替身。
+默认测试不调用真实服务商、不消耗额度。安装器测试在临时目录验证启动器、路径转义、配置默认值和禁止覆盖；运行时回归使用真实 Git、进程和 macOS 沙箱，模型边界使用本地替身，数量以验证报告为准。
 
-完整安装验证还包括 MCP 握手、24 个工具、可信会话绑定、原生队列、回传和执行环境凭据隔离。临时安装命令不注册 MCP、不覆盖本机部署。已有验证目录请保留或换一个空目录，不要对生产目录强制覆盖。
+完整安装验证还包括 MCP 握手、25 个工具、可信会话绑定、原生队列、回传和执行环境凭据隔离。临时安装命令不注册 MCP、不覆盖本机部署。已有验证目录请保留或换一个空目录，不要对生产目录强制覆盖。
 
 离线通过不等于真实 Key 有效，也不等于桌面自动回传已通过。升级 CLI/桌面程序后，在目标宿主再做小规模真实任务验证。`--live` 是额外付费验证，会调用配置中的 DeepSeek 与火山服务商；CI 不运行它。报告可能含路径或任务信息，不要提交到仓库。

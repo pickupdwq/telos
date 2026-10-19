@@ -16,6 +16,7 @@ Include the affected commit/version, macOS/Python/Codex versions, a minimal repr
 - Source/context goes to the selected providers. Local contracts, evidence, session history and experience may contain sensitive repository information.
 - A successful closed-book answer is not sufficient for acceptance. Real checks and unchanged commit/evidence gates must also pass.
 - Upgrade Codex/Desktop deliberately and rerun probes; internal protocol compatibility must not be assumed.
+- Audit executors have read-only scoped source and a local authenticated probe broker. Probe targets/methods/actions are frozen; the browser adapter uses a fresh context and blocks redirects, WebSockets and service workers. It requires trusted existing Playwright/Chromium binaries. Network allowlisting cannot determine whether an allowed application endpoint has business side effects: use designated local/test/staging systems and scoped test accounts. Screenshots and response bodies may contain sensitive data and must remain private. See [audit boundaries](docs/audits.md).
 
 ## 中文
 

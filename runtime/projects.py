@@ -82,7 +82,16 @@ class Projects:
             for k in ('task', 'message'):
                 if not isinstance(t.get(k), str) or not t[k].strip():
                     raise self.b.GateError('Each task needs task and public message')
-            t['allowed_paths'] = self.scope(t.get('allowed_paths'))
+            if t.get('task_type', 'implementation') == 'audit':
+                import audit
+                if t.get('allowed_paths') not in (None, []) or t.get('command_network', False) or any(c.get('network', False) for c in t.get('checks', [])):
+                    raise self.b.GateError('Audit children are read-only and use scoped probes, not unrestricted network')
+                t['allowed_paths'] = []
+                t['audit'] = audit.validate(t.get('audit'))
+            else:
+                if t.get('task_type', 'implementation') != 'implementation' or t.get('audit') is not None:
+                    raise self.b.GateError('Invalid project task type/audit boundaries')
+                t['allowed_paths'] = self.scope(t.get('allowed_paths'))
             t.setdefault('depends_on', [])
             if not isinstance(t['depends_on'], list) or not all(isinstance(x, str) for x in t['depends_on']):
                 raise self.b.GateError('depends_on must contain task IDs')
@@ -345,6 +354,7 @@ class Projects:
                                          assessment_mode=t.get('assessment_mode', 'closed_book'), review_paths=t.get('review_paths'),
                                          dependency_paths=t.get('dependency_paths'), command_network=t.get('command_network', False),
                                          use_experience=p.get('use_experience', True),
+                                         task_type=t.get('task_type', 'implementation'), audit=t.get('audit'), repair_of=t.get('repair_of'),
                                          _session_id=t['session_id'], _base_commit=base, _project_id=pid,
                                          _allowed_paths=t['allowed_paths'], _dependency_pins=pins,
                                          _workflow_version=t.get('workflow_version', 2),
@@ -635,11 +645,22 @@ class Projects:
             check_contract, dependency_contracts = self.verification_contract(p)
             state = {'session_id': pid, 'worktree': p['integration']['worktree']}
             commit, target = b.snapshot(state, ident)
+            audit_reports = {}
+            for task in p['tasks']:
+                child_state, child_contract = b.load_session(b.run_dir(task['session_id']))
+                if child_contract.get('task_type') == 'audit':
+                    import audit
+                    evidence = b.read_json(b.run_dir(task['session_id']) / f"attempt-{child_state['rounds']}.json")['audit']
+                    audit.verify(b, child_state, child_contract, evidence)
+                    audit_reports[task['id']] = {'evidence': evidence, 'review': child_state['acceptance']['audit_review']}
+                    shutil.copytree(evidence['evidence_dir'], target / '.telos-audits' / task['id'])
             checks = b.executable_checks(check_contract, target)
             packet = {'project_id': pid, 'commit': commit, 'pins': p['integration']['pins'],
                       'contract_hash': p['contract_hash'], 'checks': checks,
                       'dependency_paths': check_contract['dependency_paths'],
                       'dependency_contracts': dependency_contracts}
+            if audit_reports:
+                packet['audits'] = audit_reports
             b.write_json(self.path(pid).parent / 'integration-review.json', packet)
             phase = 'awaiting_final_review' if all(x['status'] == 'passed' for x in checks) else 'integration_failed'
             update = {'commit': commit, 'packet_id': b.digest(packet)}

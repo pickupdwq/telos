@@ -37,6 +37,7 @@ The diagram maps logical capabilities within the local runtime. Only the supervi
 - **Project coordination.** The supervisor chooses single, parallel or phased execution; dependencies and allowed write paths are enforced. Up to three jobs can run concurrently. Integrated code receives a separate final evaluation.
 - **Recoverable operations.** Persistent events, receipts, bounded retries, pause/resume/cancel, and dry-run-first archive/cleanup tools.
 - **Experience reuse.** Public repair lessons from accepted work can inform later tasks in the same repository. Provenance is preserved; stale lessons can be disabled. This is retrieval, not model-weight training.
+- **System audits.** The supervisor freezes a public checklist and execution boundaries. Executors inspect read-only source, use constrained API/browser probes, and deliver reports, logs and screenshots. The supervisor reviews coverage/evidence; confirmed findings can become repair tasks. Audit acceptance concerns investigation quality, not absence of bugs. See the [audit guide](docs/audits.md).
 
 Telos produces accepted commits in isolated worktrees. Merging, pushing and deploying remain separate actions.
 
@@ -126,6 +127,12 @@ For a larger project:
 
 You do not need to manually sequence MCP calls. The supervisor uses the workflow described by the tools. A completed model reply or notification is **not** a passing result; only `accepted=true` means the gate passed.
 
+For system audits:
+
+> Use Telos to audit [requirements, repository, test environment and design references]. Choose the task decomposition, freeze the public checklist and execution boundaries, inspect code/APIs and key page interactions/layouts, review actual evidence, and report findings and unverified scope. This task is audit-only.
+
+Page audits require an existing Playwright 1.48+ module, Chromium executable, explicit test targets, permitted actions and viewports. Telos does not install dependencies or use personal browser profiles. A dedicated Chromium headless shell is recommended. See the [audit guide](docs/audits.md) for configuration and repair handoffs.
+
 ## Models and reasoning effort
 
 The installed example selects:
@@ -193,7 +200,7 @@ Pause/cancel prevents follow-on stages; an already-running provider request may 
 - Command network access is off by default. Explicit `dependency_paths` grant read access; command/check network access must be deliberately enabled when needed.
 - Repositories with `.codex/config.toml`, symlinked/special snapshot entries or unusual dependency layouts may need compatibility work. Telos does not silently bypass these checks.
 - Source and task context are sent to your selected model providers. Private grading materials stay out of the executor conversation but are available to the supervisor. Treat local evidence and logs as potentially sensitive.
-- This release does not provide a dedicated read-only audit mode, a browser walkthrough driver or a guarantee that model combinations outperform a single model.
+- Audit probes target explicitly designated local/test/staging environments. The Chromium driver blocks redirects, WebSockets, service workers and downloads; affected flows must be reported unverified. Model combinations do not necessarily outperform a single model.
 - Desktop automatic return and provider compatibility need their own end-to-end verification; an available socket or successful `doctor` check is insufficient.
 
 ## Development
