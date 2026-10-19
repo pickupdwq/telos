@@ -57,18 +57,18 @@ Local verification has been run on Apple Silicon, macOS 27.0.1, Python 3.13 and 
 
 ## Quick start
 
-The installer creates a **fresh installation**. It refuses to overwrite an existing Telos directory, launcher or MCP registration. Existing local deployments should keep their current installation until a migration is planned; cloning this repository does not upgrade them.
+The installer installs the runtime and its companion **supervisor Skill** together. Fresh installs refuse existing files; managed installations use the explicit `--upgrade` path below. Cloning the repository alone does not update your installation.
 
 ### Ask Codex to install
 
 You can paste this into another Codex CLI session. Include the repository URL so Codex can find the correct project and installation instructions:
 
-> Install Telos from https://github.com/pickupdwq/telos by following its README. Check dependencies, use the tested dedicated Codex CLI 0.163.0, register MCP, and run the offline installation verification. Preserve existing configuration and do not overwrite an existing installation. I will enter the DeepSeek key myself in the hidden local terminal prompt described in the README. Report the verification results and remind me to reopen Codex after registration.
+> Install Telos and its global user Skill from https://github.com/pickupdwq/telos by following its README. Check dependencies, use the tested dedicated Codex CLI 0.163.0, register MCP, and run the offline installation verification. Reuse an existing installation unless I request an upgrade; preserve its configuration and credentials. I will enter any missing provider key myself in the hidden local terminal prompt. Report the verification results and remind me to reopen Codex after registration.
 
 - **Another CLI session on the same Mac, using the same Codex configuration:** reuse the existing installation. Reopen Codex and use `/mcp` to confirm that Telos is loaded.
 - **Another machine:** it must be able to access this repository and meet the macOS, Python 3.12+ and dedicated CLI requirements above. Configure your own provider credentials and run the installation verification on that machine.
 
-On **2026-10-18**, all six installer tests and a fresh-directory installation with offline verification passed on the Mac environment listed above. Checks covered the MCP handshake, 24 tools, trusted session binding, acceptance gates, native CLI callbacks and executor credential isolation. These checks use local model stubs; real API credentials, network access, other CLI versions and automatic return to a real Desktop conversation require separate validation. See [testing](docs/testing.md) for reproducible commands.
+Installer regressions cover fresh installs, managed upgrades, configuration preservation, conflict checks and rollback. Offline runtime checks use local model stubs; real API credentials, other CLI versions and automatic return to a real Desktop conversation require separate validation. See [testing](docs/testing.md) for reproducible commands.
 
 ### 1. Clone and install the dedicated CLI
 
@@ -80,13 +80,22 @@ npm install --prefix "$HOME/.local/share/telos-cli" @openai/codex@0.163.0
 
 This dedicated location is part of the sandbox configuration. A global `codex` command alone is not the documented installation path.
 
-### 2. Install and register the MCP server
+### 2. Install the runtime, Skill and MCP registration
 
 ```sh
 python3 install.py --register
 ```
 
-This copies the runtime and [key-free example configuration](config.example.json), creates `~/.local/bin/telos` and registers `telos` with Codex. It preserves other MCP entries and model settings. Omit `--register` to install files only; `--dry-run` checks the installation plan without writing.
+This copies the runtime and [key-free example configuration](config.example.json), creates `~/.local/bin/telos`, installs the Skill at `~/.agents/skills/telos`, and registers `telos` with Codex. It preserves other MCP entries and model settings. The Skill is available across projects for this OS user; it does not start executors merely by being installed. Omit `--register` to install files only; `--dry-run` checks the installation plan without writing. See [Skill usage and installation](docs/skills.md).
+
+To upgrade an existing managed installation from a checked-out release:
+
+```sh
+python3 install.py --upgrade --dry-run
+python3 install.py --upgrade
+```
+
+Upgrade preserves the installed configuration, credentials, task state and launcher, and retains runtime/Skill backups. It refuses modified managed files, conflicting Skills and running jobs. Pause/finish active projects and wait for their jobs/checks first; then reload the MCP client. Custom installations must retain their original `--prefix` and `--bin-dir`. See the [upgrade details](docs/skills.md#install-and-upgrade).
 
 ### 3. Add the executor credential
 
@@ -119,13 +128,13 @@ Restart an already-open Codex client after MCP registration. Confirm that the `t
 
 ### 6. Ask for a task
 
-> Use Telos to implement this feature: [requirements]. Use the default DeepSeek executor. Freeze relevant executable checks and the private questionnaire before sending work. Review the resulting code and test evidence, and continue until accepted or the configured budget is exhausted. Report the worktree and commit.
+> $telos Implement this feature: [requirements]. Reuse the configured default executor. Freeze relevant executable checks and the private questionnaire before sending work. Review the resulting code and test evidence, and continue until accepted or the configured budget is exhausted. Report the worktree and commit.
 
 For a larger project:
 
 > Use Telos to complete [goal]. Decide whether single, parallel or phased execution fits the dependencies. Define allowed paths for each task, reuse verified repository experience, and perform final integration checks before acceptance.
 
-You do not need to manually sequence MCP calls. The supervisor uses the workflow described by the tools. A completed model reply or notification is **not** a passing result; only `accepted=true` means the gate passed.
+You can invoke `$telos` explicitly or ask to use Telos in natural language. The Skill guides planning, boundaries and review; MCP executes the workflow and enforces its gates. Ordinary advice does not start executors. A completed model reply or notification is **not** a passing result; only `accepted=true` means the gate passed.
 
 For system audits:
 
@@ -191,6 +200,7 @@ Pause/cancel prevents follow-on stages; an already-running provider request may 
 | --- | --- |
 | `~/.local/share/telos/` | Runtime and key-free `config.json` |
 | `~/.local/share/telos-cli/` | Dedicated Codex CLI dependency |
+| `~/.agents/skills/telos/` | User-scoped supervisor Skill, shared across projects |
 | `~/.config/telos/credentials.json` | Local provider credentials |
 | `~/.local/state/telos/` | Private contracts, evidence, events and experience |
 | `~/.cache/telos/` | Worktrees and isolated executor sessions |

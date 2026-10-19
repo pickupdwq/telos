@@ -1,5 +1,15 @@
 # Changelog / 更新记录
 
+## 3.4.0 — 2026-10-19
+
+- Ship the `telos` supervisor Skill with scoped explicit/implicit invocation and references for planning, audits, executor configuration and acceptance.
+- Install runtime and user-scoped Skill together; add explicit managed upgrades that preserve configuration/credentials/state, reject local modifications and active work, retain backups and roll back publication failures.
+- Keep the current conversation as supervisor, reuse existing executor settings, and clarify evidence, task boundaries, internal acceptance commits and event reconciliation.
+- Add installer regressions and installation/upgrade documentation; keep CI smoke Skills isolated from the user Skill directory.
+- Document local `deepseek-flash` with `max`, cover its real-CLI tool/history/exam path using a model fixture, and reject Chat replies that contain reasoning without an answer or tool call.
+
+新增随工具一起安装的大总管 Skill，支持开发、系统走查、确认问题后的修复和回调验收指导。默认对当前用户全局可用，复用统一执行者配置；显式升级保留现有配置、凭据和任务记录。
+
 ## 3.3.0 — 2026-10-19
 
 - Add named local executor endpoints with one active selection, preserving DeepSeek official and Ark Coding Plan profiles and credentials.

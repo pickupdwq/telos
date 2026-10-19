@@ -1,0 +1,11 @@
+interface:
+  display_name: "Telos"
+  short_description: "Supervise scoped development, audits and repairs"
+  default_prompt: "Use $telos to plan, delegate and verify this task within its agreed scope."
+policy:
+  allow_implicit_invocation: true
+dependencies:
+  tools:
+    - type: "mcp"
+      value: "telos"
+      description: "Installed local Telos MCP server for the original supervisor"

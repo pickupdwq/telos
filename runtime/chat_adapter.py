@@ -187,6 +187,8 @@ def convert(response, model, tool_types):
     reason = choice.get('finish_reason')
     if reason not in ('stop', 'tool_calls', 'length', 'content_filter') or not output:
         raise ProviderError('Local Chat response did not finish with usable output')
+    if all(item['type'] == 'reasoning' for item in output):
+        raise ProviderError('Local Chat returned reasoning without a final answer or tool call')
     status = 'completed' if reason in ('stop', 'tool_calls') else 'incomplete'
     result = {'id': 'resp_' + uuid.uuid4().hex, 'object': 'response', 'created_at': int(time.time()),
               'model': response.get('model', model), 'status': status, 'output': output}

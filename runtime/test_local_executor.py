@@ -160,6 +160,14 @@ class ConfigurationTests(unittest.TestCase):
 
 
 class AdapterTests(unittest.TestCase):
+    def test_reasoning_only_reply_is_not_a_completed_submission(self):
+        for text in (None, ''):
+            with self.subTest(text=text):
+                response = completion(text)
+                response['choices'][0]['message']['reasoning_content'] = 'Private reasoning alone is not an answer.'
+                with self.assertRaisesRegex(p.ProviderError, 'without a final answer or tool call'):
+                    chat.convert(response, 'deepseek-flash', {})
+
     def test_nullable_reasoning_history_preserves_text_and_effort(self):
         for summary, content in [([{'type': 'summary_text', 'text': 'Remembered reasoning'}], None),
                                  (None, [{'type': 'reasoning_text', 'text': 'Remembered reasoning'}]),
@@ -361,6 +369,8 @@ class LocalWorkflowTests(unittest.TestCase):
     def test_real_cli_namespaced_responses_tools_and_same_thread_exam(self): self.workflow('responses', 'gpt-6.1-sol')
 
     def test_real_cli_high_chat_reasoning_survives_tools_and_exam(self): self.workflow('chat', 'gpt-6.1-sol', 'high')
+
+    def test_real_cli_local_deepseek_max_tools_and_same_thread_exam(self): self.workflow('chat', 'deepseek-flash', 'max')
 
 
 class LocalProjectTests(unittest.TestCase):

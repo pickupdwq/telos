@@ -4,7 +4,9 @@
 
 ## Defaults and profiles
 
-The installer copies `config.example.json` to `~/.local/share/telos/config.json`. Edit that installed file, then restart the MCP process. Running `runtime/telos.py` directly without installing/copying this configuration uses legacy defaults and is not equivalent to the quick start.
+Fresh installation copies `config.example.json` to `~/.local/share/telos/config.json`; `--upgrade` preserves the installed file instead. Edit that installed file, then restart the MCP process. Running `runtime/telos.py` directly without installing/copying this configuration uses legacy defaults and is not equivalent to the quick start.
+
+The bundled [supervisor Skill](skills.md) reuses this configuration. It contains no separate executor defaults, endpoints or keys. It does not change the original supervisor's model/effort, and loading it does not change the active local endpoint.
 
 ```json
 {
@@ -107,7 +109,8 @@ Project `allowed_paths` are literal relative files/directory prefixes, not globs
 
 ## 中文要点
 
-- 安装器将根目录配置示例复制为 `~/.local/share/telos/config.json`，修改后重启 MCP。直接运行未配置的源码会使用历史默认值，不能视为已完成安装。
+- 全新安装将根目录配置示例复制为 `~/.local/share/telos/config.json`；`--upgrade` 保留现有配置。修改后重启 MCP。直接运行未配置的源码会使用历史默认值，不能视为已完成安装。
+- 配套大总管 Skill 复用同一配置，不另存模型、入口或 Key，不改变当前大总管模型、强度或活动本地入口。
 - 用 `executor_profile` 选择执行者，或明确指定 `provider` 与 `model`；只改模型名不会自动切换服务商。新任务不支持独立考试模型。
 - 每项任务冻结执行者绑定，云端默认强度为 `max`，本地默认不发送推理参数，显式值不静默降级。大总管模型由允许列表约束，强度由原 Codex 对话设置。
 - 大总管使用 `openai_http` 等本机 OpenAI 通道名时，核对实际地址和认证配置后，在 `supervisor.provider_aliases` 中明确授权该名称。默认不接受别名；模型允许列表、原会话绑定和验收前身份复查继续生效。

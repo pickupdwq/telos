@@ -28,6 +28,25 @@ Acceptable hosts are `127.0.0.0/8`, `localhost` (normalized to `127.0.0.1`) and 
 
 本地入口和火山、DeepSeek 是并列的执行渠道。`select` 只切换当前本地入口，`--default` 才将新任务默认执行者改为本地；原云端配置和 Key 不变。已有名称不能覆盖，改端口、协议或模型请新增名称后选择，避免改写旧任务。Key 通过终端隐藏输入，不能写进任务、配置示例或仓库。
 
+### Local DeepSeek / 本地 DeepSeek
+
+A gateway exposing `deepseek-flash` through Chat Completions can use the existing local adapter with `max` reasoning. Save a separate configuration to keep other model bindings intact, even when both use the same address:
+
+```sh
+# For a gateway that permits unauthenticated loopback requests
+telos local add local-deepseek --url http://127.0.0.1:14000/v1 \
+  --model deepseek-flash --protocol chat --reasoning-effort max
+
+# Activate when choosing this model for new local tasks
+telos local select local-deepseek
+```
+
+If the gateway requires a key, add a dedicated `--key-env` when saving the entry and use `telos auth local` after selecting it. Adding an entry alone does not select it. This remains `provider=local`; the `deepseek_official` profile continues to use its separate official endpoint and credential.
+
+`max` is forwarded as Chat `reasoning_effort`; API acceptance does not prove a particular internal compute budget. Verify final text and tool calls, not HTTP status alone. A reply containing only `reasoning_content` without an answer/tool call is rejected; reasoning is never substituted for the final answer.
+
+本地服务新增模型后，无需扩展硬编码模型列表。将 `deepseek-flash` 保存为独立名称，指定 `chat` 与 `max` 即可，仍然只启用一个本地配置。添加不会自动切换；DeepSeek 官方渠道和原模型配置继续保留。连通性检查必须包含实际输出，HTTP 200 但最终答案为空不能算调用成功。
+
 ## Choose an executor / 选择执行者
 
 Tell the supervisor which profile to use:
