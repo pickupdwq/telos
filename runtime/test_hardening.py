@@ -8,10 +8,60 @@ from unittest.mock import patch
 
 from desktop_rpc import DesktopRPC, RPCError
 from providers import ProviderError
-from supervisor import verify_thread
+from supervisor import policy, verify_owner, verify_thread
 from test_callbacks import CallbackTests, FakeRPC, OWNER
 from test_telos import b
 from test_projects import ProjectTests
+
+
+class SupervisorAliasTests(unittest.TestCase):
+    def setUp(self):
+        self.cfg = {'supervisor': {'provider': 'openai', 'models': ['gpt-6-astra']}}
+        self.thread = {'id': OWNER, 'model': 'gpt-6-astra', 'modelProvider': 'openai_http'}
+
+    def test_alias_is_rejected_until_explicitly_trusted(self):
+        with self.assertRaisesRegex(ProviderError, 'openai_http'):
+            verify_thread(self.thread, self.cfg)
+
+    def test_trusted_alias_preserves_actual_identity_and_builtin_provider(self):
+        self.cfg['supervisor']['provider_aliases'] = ['openai_http']
+        before = copy.deepcopy(self.cfg)
+        self.assertEqual(verify_thread(self.thread, self.cfg),
+                         {'model': 'gpt-6-astra', 'modelProvider': 'openai_http'})
+        verify_thread({**self.thread, 'modelProvider': 'openai'}, self.cfg)
+        self.assertEqual(self.cfg, before)
+
+    def test_alias_does_not_relax_model_or_other_provider_restrictions(self):
+        self.cfg['supervisor']['provider_aliases'] = ['openai_http']
+        for fields in ({'model': 'gpt-mini'}, {'model': 'deepseek-flash'},
+                       {'modelProvider': 'custom'}, {'modelProvider': None}, {'model': None}):
+            with self.subTest(fields=fields), self.assertRaises(ProviderError):
+                verify_thread({**self.thread, **fields}, self.cfg)
+
+    def test_malformed_alias_policy_is_rejected(self):
+        for aliases in ('openai_http', None, [None], [{}], [''], ['openai'],
+                        ['openai_http', 'openai_http'], ['openai.*']):
+            with self.subTest(aliases=aliases), self.assertRaisesRegex(ProviderError, 'provider_aliases'):
+                policy({'supervisor': {**self.cfg['supervisor'], 'provider_aliases': aliases}})
+
+    def test_alias_cannot_change_canonical_provider_or_add_unknown_fields(self):
+        for fields in ({'provider': 'custom'}, {'trust_all': True}):
+            with self.subTest(fields=fields), self.assertRaises(ProviderError):
+                policy({'supervisor': {**self.cfg['supervisor'], **fields, 'provider_aliases': ['openai_http']}})
+
+    def test_owner_is_revalidated_before_grading(self):
+        from types import SimpleNamespace
+        self.cfg['supervisor']['provider_aliases'] = ['openai_http']
+        db = {'thread': self.thread, 'calls': []}
+        bridge = SimpleNamespace(config=lambda: self.cfg, owner_rpc=lambda _: FakeRPC(db))
+        owner = {'thread_id': OWNER, 'model': 'gpt-6-astra', 'modelProvider': 'openai_http'}
+        verify_owner(bridge, owner)
+        db['thread'] = {**self.thread, 'modelProvider': 'custom'}
+        with self.assertRaises(ProviderError):
+            verify_owner(bridge, owner)
+        db['thread'] = {**self.thread, 'id': 'another-thread'}
+        with self.assertRaisesRegex(ProviderError, 'identity changed'):
+            verify_owner(bridge, owner)
 
 
 class DesktopIdentityTests(unittest.TestCase):
