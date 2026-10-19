@@ -220,4 +220,3 @@ def project_receive(full):
     else:
         result['project'] = full.get('project')
     return result
-

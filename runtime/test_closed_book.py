@@ -50,8 +50,8 @@ class WorkflowTests(unittest.TestCase):
         server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
         worker = threading.Thread(target=server.serve_forever, daemon=True); worker.start()
         relay = isolation.model_relay
-        def local_relay(endpoint, key, timeout=30, policy=None):
-            return relay(f'http://127.0.0.1:{server.server_port}', key, timeout, policy=policy)
+        def local_relay(endpoint, key, timeout=30, **kwargs):
+            return relay(f'http://127.0.0.1:{server.server_port}', key, timeout, **kwargs)
         try:
             with patch.object(b, 'provider_credential', return_value=('FIXTURE_ONLY', 'test')), \
                     patch.object(isolation, 'model_relay', side_effect=local_relay):

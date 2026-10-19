@@ -47,11 +47,10 @@ class NormalizationTests(unittest.TestCase):
 
     def test_missing_and_invalid_usage_is_unknown_not_zero(self):
         for value in (None, {}, {'input_tokens': True, 'output_tokens': -3},
-                      {'input_tokens': '12', 'output_tokens': None}):
+                      {'input_tokens': '12', 'output_tokens': None},
+                      {'input_tokens': 5}, {'output_tokens': 2},
+                      {'prompt_tokens': 5}, {'completion_tokens': 2}):
             self.assertIsNone(usage.normalize_usage(value))
-        partial = usage.normalize_usage({'input_tokens': 5})
-        self.assertEqual(partial['input_tokens'], 5)
-        self.assertIsNone(partial['output_tokens'])
         normalized = usage.normalize_usage({'input_tokens': 10, 'output_tokens': 4})
         self.assertIsNone(normalized['cached_input_tokens'])
         self.assertIsNone(normalized['reasoning_output_tokens'])
@@ -93,7 +92,11 @@ class NormalizationTests(unittest.TestCase):
             json.dumps({'status': 'incomplete'}).encode(), 'application/json'), 'incomplete')
         self.assertEqual(isolation.response_outcome(
             json.dumps({'response': {'status': 'failed'}}).encode(), 'application/json'), 'failed')
-        self.assertIsNone(isolation.response_outcome(b'not-json', 'application/json'))
+        self.assertEqual(isolation.response_outcome(b'not-json', 'application/json'), 'malformed')
+        self.assertEqual(isolation.response_outcome(b'', 'application/json'), 'malformed')
+        self.assertEqual(isolation.response_outcome(
+            b'event: response.created\ndata: {"type":"response.created"}\n\n', 'text/event-stream'),
+            'missing_terminal')
         stream = (
             'event: response.incomplete\ndata: ' + json.dumps({'type': 'response.incomplete'}) + '\n\n'
             'event: response.completed\ndata: ' + json.dumps({'type': 'response.completed'}) + '\n\n'
@@ -112,11 +115,12 @@ class NormalizationTests(unittest.TestCase):
         self.assertIsNone(normalized['reasoning_output_tokens'])
 
     def test_closed_book_partial_usage_keeps_known_totals_and_unknown_count(self):
-        attempts = [{'responses': [{'usage': responses_usage()}, {'usage': None}]}]
+        attempts = [{'responses': [{'usage': responses_usage()}, {'usage': None},
+                                   {'usage': {'input_tokens': 500}}]}]
         totals = closed_book.response_usage(attempts)
         self.assertEqual(totals['input_tokens'], 100)
         self.assertEqual(totals['output_tokens'], 20)
-        self.assertEqual(totals['unknown_responses'], 1)
+        self.assertEqual(totals['unknown_responses'], 2)
         self.assertIsNone(closed_book.response_usage([{'responses': []}]))
 
 
@@ -208,12 +212,13 @@ class LedgerTests(unittest.TestCase):
         ledger = usage.UsageLedger(self.path)
         ledger.finish(ledger.begin('work'), {'input_tokens': 5, 'output_tokens': 2, 'total_tokens': 7})
         ledger.finish(ledger.begin('work'), {'input_tokens': False})
+        ledger.finish(ledger.begin('work'), {'input_tokens': 100})
         snapshot = ledger.snapshot()
         self.assertEqual(snapshot['totals']['input_tokens'], 5)
         self.assertEqual(snapshot['totals']['output_tokens'], 2)
         self.assertEqual(snapshot['totals']['total_tokens'], 7)
-        self.assertEqual(snapshot['totals']['unknown_usage_requests'], 1)
-        self.assertEqual(snapshot['unknown_fields']['input_tokens'], 1)
+        self.assertEqual(snapshot['totals']['unknown_usage_requests'], 2)
+        self.assertEqual(snapshot['unknown_fields']['input_tokens'], 2)
 
     def test_concurrent_reservations_cannot_exceed_the_request_budget(self):
         ledger = usage.UsageLedger(self.path, {'max_requests': 5})
@@ -563,6 +568,37 @@ class RelayAccountingTests(unittest.TestCase):
         self.assertEqual(snapshot['totals']['failed_requests'], 1)
         self.assertEqual(snapshot['totals']['input_tokens'], 100)
 
+    def test_malformed_json_and_truncated_sse_are_failed_unknown(self):
+        def malformed(request, n):
+            return 200, 'application/json', b'{not valid json'
+        malformed_path = Path(self.temp.name) / 'malformed.json'
+        with upstream(malformed) as (port, seen):
+            ledger = usage.UsageLedger(malformed_path)
+            with isolation.model_relay(f'http://127.0.0.1:{port}', 'UPSTREAM_KEY', usage_ledger=ledger,
+                                       usage_context={'phase': 'work'}) as relay:
+                post(relay, payload={'model': 'deepseek-flash'})
+        snapshot = ledger.snapshot()
+        self.assertEqual(snapshot['totals']['requests'], 1)
+        self.assertEqual(snapshot['totals']['failed_requests'], 1)
+        self.assertEqual(snapshot['totals']['unknown_usage_requests'], 1)
+        stored = json.loads(malformed_path.read_text())['requests']
+        self.assertEqual(next(iter(stored.values()))['error_kind'], 'response_malformed')
+
+        truncated = b'event: response.created\ndata: {"type":"response.created"}\n\n'
+        def incomplete_stream(request, n):
+            return 200, 'text/event-stream', truncated
+        stream_path = Path(self.temp.name) / 'truncated-stream.json'
+        with upstream(incomplete_stream) as (port, seen):
+            ledger = usage.UsageLedger(stream_path)
+            with isolation.model_relay(f'http://127.0.0.1:{port}', 'UPSTREAM_KEY', usage_ledger=ledger,
+                                       usage_context={'phase': 'exam'}) as relay:
+                post(relay, payload={'model': 'deepseek-flash'})
+        snapshot = ledger.snapshot()
+        self.assertEqual(snapshot['totals']['failed_requests'], 1)
+        self.assertEqual(snapshot['totals']['unknown_usage_requests'], 1)
+        stored = json.loads(stream_path.read_text())['requests']
+        self.assertEqual(next(iter(stored.values()))['error_kind'], 'response_missing_terminal')
+
     def test_accounting_completion_failure_is_surfaced(self):
         class BrokenLedger:
             def begin(self, phase, **kwargs):
@@ -602,4 +638,3 @@ class RelayAccountingTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
-

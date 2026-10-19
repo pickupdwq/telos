@@ -52,7 +52,10 @@ def normalize_usage(raw_usage):
     chat = 'prompt_tokens' in raw_usage or 'completion_tokens' in raw_usage
     input_tokens = _count(raw_usage.get('prompt_tokens' if chat else 'input_tokens'))
     output_tokens = _count(raw_usage.get('completion_tokens' if chat else 'output_tokens'))
-    if input_tokens is None and output_tokens is None:
+    # Both main counters are required by the public helper contract. A partial
+    # request is recorded as unknown by the ledger, while other valid requests
+    # keep contributing their known aggregates.
+    if input_tokens is None or output_tokens is None:
         return None
     result = {key: None for key in TOKEN_FIELDS}
     details_key = 'prompt_tokens_details' if chat else 'input_tokens_details'
@@ -66,11 +69,10 @@ def normalize_usage(raw_usage):
         reasoning = None
     uncached = (input_tokens - cached if input_tokens is not None and cached is not None else None)
     total = _count(raw_usage.get('total_tokens'))
-    if input_tokens is not None and output_tokens is not None:
-        reported_minimum = input_tokens + output_tokens
-        # A contradictory smaller reported total must never undercount a total
-        # token budget; the main counters are the conservative lower bound.
-        total = reported_minimum if total is None else max(total, reported_minimum)
+    reported_minimum = input_tokens + output_tokens
+    # A contradictory smaller reported total must never undercount a total
+    # token budget; the main counters are the conservative lower bound.
+    total = reported_minimum if total is None else max(total, reported_minimum)
     result.update(input_tokens=input_tokens, cached_input_tokens=cached,
                   uncached_input_tokens=uncached, output_tokens=output_tokens,
                   reasoning_output_tokens=reasoning, total_tokens=total)
@@ -321,4 +323,3 @@ def _usage_summary(snapshot, state):
     used = {key: totals.get(key) for key in ('requests', 'input_tokens', 'uncached_input_tokens',
                                               'output_tokens', 'total_tokens')}
     return 'used=' + json.dumps(used, sort_keys=True) + ' remaining=' + json.dumps(state.get('remaining', {}), sort_keys=True)
-

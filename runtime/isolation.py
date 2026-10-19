@@ -71,11 +71,17 @@ def usage_from_payload(raw, content_type):
 
 
 def response_outcome(raw, content_type):
-    """Return the terminal Responses status without retaining provider bodies."""
+    """Return the terminal Responses status without retaining provider bodies.
+
+    Malformed JSON and SSE streams that end before a terminal event are reported
+    as failures so accounting never records them as completed successes.
+    """
+    stream = 'text/event-stream' in (content_type or '')
+    json_body = 'application/json' in (content_type or '')
     if not raw:
-        return None
+        return 'missing_terminal' if stream else ('malformed' if json_body else None)
     text = raw.decode('utf-8', errors='replace') if isinstance(raw, (bytes, bytearray)) else str(raw)
-    if 'text/event-stream' in (content_type or ''):
+    if stream:
         outcome = None
         for block in text.replace('\r\n', '\n').split('\n\n'):
             data = '\n'.join(line[5:].lstrip() for line in block.splitlines() if line.startswith('data:'))
@@ -96,13 +102,13 @@ def response_outcome(raw, content_type):
                 outcome = 'failed'
             elif kind in ('response.cancelled', 'response.canceled'):
                 outcome = 'cancelled'
-        return outcome
+        return outcome or 'missing_terminal'
     try:
         payload = json.loads(text)
     except ValueError:
-        return None
+        return 'malformed' if json_body else None
     if not isinstance(payload, dict):
-        return None
+        return 'malformed' if json_body else None
     response = payload.get('response')
     status = response.get('status') if isinstance(response, dict) else payload.get('status')
     if not isinstance(status, str):
@@ -112,7 +118,7 @@ def response_outcome(raw, content_type):
 
 
 def _terminal(status, outcome):
-    if outcome in ('failed', 'incomplete', 'cancelled', 'canceled'):
+    if outcome in ('failed', 'incomplete', 'cancelled', 'canceled', 'malformed', 'missing_terminal'):
         return 'failed', 'response_' + outcome
     return status, None
 
