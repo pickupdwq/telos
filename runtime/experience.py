@@ -103,19 +103,33 @@ class Experience:
     def promote_project(self, project):
         if project['phase'] != 'accepted':
             return
-        accepted_sessions = {t['session_id'] for t in project['tasks'] if t['phase'] == 'accepted'}
-        # Reconstruct missing task records after a crash between grade and memory.
-        for sid in accepted_sessions:
+        # Reconstruct only the canonical record for each currently accepted child.
+        # The project tasks and the child's own acceptance are the authority; never
+        # infer candidates by scanning the experience corpus.
+        targets = []
+        seen = set()
+        for task in project['tasks']:
+            if task['phase'] != 'accepted' or task['session_id'] in seen:
+                continue
+            sid = task['session_id']
+            seen.add(sid)
             state = self.b.read_json(self.b.run_dir(sid) / 'state.json')
-            self.record(sid, state['acceptance'])
+            ident = self.record(sid, state['acceptance'])
+            if ident is not None:
+                targets.append(ident)
+        if not targets:
+            return
+        project_commit = project['integration']['commit']
         with self.locked() as folder:
-            for path in folder.glob('*.json'):
+            for ident in targets:
+                path = folder / (ident + '.json')
                 e = self.b.read_json(path)
-                if e.get('session_id') in accepted_sessions and e['outcome'] == 'accepted':
-                    e['reusable'] = True
-                    e['project_commit'] = project['integration']['commit']
-                    e['content_hash'] = self.b.digest({k: v for k, v in e.items() if k != 'content_hash'})
-                    self.b.write_json(path, e)
+                if e.get('outcome') != 'accepted':
+                    continue
+                e['reusable'] = True
+                e['project_commit'] = project_commit
+                e['content_hash'] = self.b.digest({k: v for k, v in e.items() if k != 'content_hash'})
+                self.b.write_json(path, e)
 
     def valid(self, e):
         return e.get('content_hash') == self.b.digest({k: v for k, v in e.items() if k != 'content_hash'})
