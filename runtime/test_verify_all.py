@@ -77,6 +77,10 @@ def _run_main(argv):
     return status, stdout.getvalue(), stderr.getvalue()
 
 
+def _suite_ids(suite):
+    return [test.id() for test in verify_all._iter_test_cases(suite)]
+
+
 class VerifyAllTests(unittest.TestCase):
     def test_modules_keep_existing_order_and_add_self_last(self):
         self.assertEqual(verify_all.MODULES, EXPECTED_MODULES)
@@ -402,6 +406,403 @@ class VerifyAllTests(unittest.TestCase):
                 self.assertEqual(status, 0, stderr)
         finally:
             report_path.unlink(missing_ok=True)
+
+
+class TestSelectionTests(unittest.TestCase):
+    def test_collect_suite_matches_exact_classes_methods_and_overlap_order(self):
+        prefix = _prefix()
+        module_name = f'{prefix}_selection'
+        sources = {
+            module_name: '''
+                from unittest import TestCase
+
+                class Case(TestCase):
+                    def test_two(self):
+                        pass
+
+                    def test_one(self):
+                        pass
+
+                class CaseExtra(TestCase):
+                    def test_extra(self):
+                        pass
+            ''',
+        }
+        with _FixtureModules(sources):
+            self.assertEqual(_suite_ids(verify_all.collect_suite(
+                [module_name], [f'{module_name}.Case'])), [
+                    f'{module_name}.Case.test_two',
+                    f'{module_name}.Case.test_one',
+                ])
+            self.assertEqual(_suite_ids(verify_all.collect_suite(
+                [module_name], [f'{module_name}.Case.test_one'])), [
+                    f'{module_name}.Case.test_one',
+                ])
+            self.assertEqual(_suite_ids(verify_all.collect_suite(
+                [module_name], [
+                    f'{module_name}.Case.test_one',
+                    f'{module_name}.Case',
+                    f'{module_name}.Case.test_one',
+                    f'{module_name}.CaseExtra',
+                ])), [
+                    f'{module_name}.Case.test_two',
+                    f'{module_name}.Case.test_one',
+                    f'{module_name}.CaseExtra.test_extra',
+                ])
+
+            with self.assertRaises(ValueError) as raised:
+                verify_all.collect_suite(
+                    [module_name],
+                    [f'{module_name}.Missing',
+                     f'{module_name}.Case.test_missing'])
+            message = str(raised.exception)
+            self.assertIn(f'{module_name}.Missing', message)
+            self.assertIn(f'{module_name}.Case.test_missing', message)
+
+    def test_selected_cli_run_is_scoped_ordered_and_reported(self):
+        prefix = _prefix()
+        first_name = f'{prefix}_first'
+        second_name = f'{prefix}_second'
+        with tempfile.TemporaryDirectory(prefix='verify-all-selected-') as directory:
+            root = Path(directory)
+            report_path = root / 'report.json'
+            first_marker = root / 'first-ran'
+            extra_marker = root / 'extra-ran'
+            second_marker = root / 'second-ran'
+            sources = {
+                first_name: f'''
+                    from pathlib import Path
+                    from unittest import TestCase
+
+                    marker = Path({str(first_marker)!r})
+                    extra_marker = Path({str(extra_marker)!r})
+
+                    class FirstCase(TestCase):
+                        def test_alpha(self):
+                            marker.write_text('alpha', encoding='utf-8')
+
+                        def test_beta(self):
+                            marker.write_text('beta', encoding='utf-8')
+
+                    class FirstExtra(TestCase):
+                        def test_extra(self):
+                            extra_marker.write_text('extra', encoding='utf-8')
+                ''',
+                second_name: f'''
+                    from pathlib import Path
+                    from unittest import TestCase
+
+                    marker = Path({str(second_marker)!r})
+
+                    class SecondCase(TestCase):
+                        def test_gamma(self):
+                            marker.write_text('gamma', encoding='utf-8')
+                ''',
+            }
+            selectors = [
+                f'{second_name}.SecondCase',
+                f'{first_name}.FirstCase.test_alpha',
+                f'{first_name}.FirstCase',
+                f'{first_name}.FirstCase.test_alpha',
+            ]
+            expected_ids = [
+                f'{second_name}.SecondCase.test_gamma',
+                f'{first_name}.FirstCase.test_alpha',
+                f'{first_name}.FirstCase.test_beta',
+            ]
+            with _FixtureModules(sources), \
+                    mock.patch.object(
+                        verify_all, 'MODULES', (first_name, second_name)):
+                argv = [str(report_path)]
+                for selector in selectors:
+                    argv.extend(['--test', selector])
+                status, _, stderr = _run_main(argv)
+                self.assertEqual(status, 0, stderr)
+                report = json.loads(report_path.read_text(encoding='utf-8'))
+                self.assertEqual(report['selection'], {
+                    'mode': 'selected',
+                    'modules': [second_name, first_name],
+                    'selectors': [
+                        f'{second_name}.SecondCase',
+                        f'{first_name}.FirstCase.test_alpha',
+                        f'{first_name}.FirstCase',
+                    ],
+                    'test_ids': expected_ids,
+                })
+                self.assertEqual(report['tests'], 3)
+                self.assertTrue(report['passed'])
+                self.assertEqual(
+                    [row['id'] for row in report['test_results']],
+                    expected_ids)
+                self.assertTrue(first_marker.exists())
+                self.assertTrue(second_marker.exists())
+                self.assertFalse(extra_marker.exists())
+
+                first_marker.unlink()
+                second_marker.unlink()
+                report_path.unlink()
+                status, stdout, stderr = _run_main(
+                    ['--list', '--test', f'{second_name}.SecondCase',
+                     '--test', f'{first_name}.FirstCase.test_beta',
+                     '--test', f'{second_name}.SecondCase'])
+                self.assertEqual(status, 0, stderr)
+                self.assertFalse(report_path.exists())
+                self.assertFalse(first_marker.exists())
+                self.assertFalse(second_marker.exists())
+                self.assertFalse(extra_marker.exists())
+                payload = json.loads(stdout)
+                self.assertEqual(payload, {
+                    'modules': [second_name, first_name],
+                    'test_ids': [
+                        f'{second_name}.SecondCase.test_gamma',
+                        f'{first_name}.FirstCase.test_beta',
+                    ],
+                    'count': 2,
+                    'selectors': [
+                        f'{second_name}.SecondCase',
+                        f'{first_name}.FirstCase.test_beta',
+                    ],
+                })
+                self.assertEqual(
+                    set(payload),
+                    {'modules', 'test_ids', 'count', 'selectors'})
+
+    def test_malformed_and_unknown_module_selectors_fail_before_import(self):
+        prefix = _prefix()
+        module_name = f'{prefix}_known'
+        with tempfile.TemporaryDirectory(prefix='verify-all-selector-') as directory:
+            root = Path(directory)
+            report_path = root / 'report.json'
+            import_marker = root / 'imported'
+            test_marker = root / 'ran'
+            sentinel = '{"keep": true}\n'
+            report_path.write_text(sentinel, encoding='utf-8')
+            sources = {
+                module_name: f'''
+                    from pathlib import Path
+                    from unittest import TestCase
+
+                    Path({str(import_marker)!r}).write_text(
+                        'imported', encoding='utf-8')
+
+                    class KnownCase(TestCase):
+                        def test_one(self):
+                            Path({str(test_marker)!r}).write_text(
+                                'ran', encoding='utf-8')
+                ''',
+            }
+            with _FixtureModules(sources), \
+                    mock.patch.object(verify_all, 'MODULES', (module_name,)):
+                status, stdout, stderr = _run_main([
+                    str(report_path), '--test', f'{module_name}.KnownCase',
+                    '--test', 'not a selector',
+                ])
+                self.assertEqual(status, 2)
+                self.assertEqual(stdout, '')
+                self.assertIn('not a selector', stderr)
+                self.assertFalse(import_marker.exists())
+                self.assertFalse(test_marker.exists())
+                self.assertEqual(
+                    report_path.read_text(encoding='utf-8'), sentinel)
+
+                for selector in (
+                        'one_component',
+                        f'{module_name}.KnownCase.test_one.extra',
+                        f'{module_name}/KnownCase',
+                        f'{module_name}.KnownCase.*',
+                        ''):
+                    status, stdout, stderr = _run_main(['--test', selector])
+                    self.assertEqual(status, 2, selector)
+                    self.assertEqual(stdout, '')
+                    self.assertIn('malformed test selector', stderr)
+                    self.assertFalse(import_marker.exists())
+                    self.assertEqual(
+                        report_path.read_text(encoding='utf-8'), sentinel)
+
+                status, stdout, stderr = _run_main([
+                    str(report_path), '--test', 'not_a_module.SomeCase',
+                ])
+                self.assertEqual(status, 2)
+                self.assertEqual(stdout, '')
+                self.assertIn('not_a_module', stderr)
+                self.assertFalse(import_marker.exists())
+                self.assertEqual(
+                    report_path.read_text(encoding='utf-8'), sentinel)
+
+    def test_out_of_scope_selector_fails_before_import(self):
+        prefix = _prefix()
+        first_name = f'{prefix}_first'
+        second_name = f'{prefix}_second'
+        with tempfile.TemporaryDirectory(prefix='verify-all-scope-') as directory:
+            root = Path(directory)
+            report_path = root / 'report.json'
+            first_import = root / 'first-imported'
+            second_import = root / 'second-imported'
+            sentinel = '{"keep": true}\n'
+            report_path.write_text(sentinel, encoding='utf-8')
+            sources = {
+                first_name: f'''
+                    from pathlib import Path
+                    from unittest import TestCase
+
+                    Path({str(first_import)!r}).write_text(
+                        'imported', encoding='utf-8')
+
+                    class FirstCase(TestCase):
+                        def test_one(self):
+                            raise AssertionError('must not run')
+                ''',
+                second_name: f'''
+                    from pathlib import Path
+                    from unittest import TestCase
+
+                    Path({str(second_import)!r}).write_text(
+                        'imported', encoding='utf-8')
+
+                    class SecondCase(TestCase):
+                        def test_two(self):
+                            pass
+                ''',
+            }
+            with _FixtureModules(sources), \
+                    mock.patch.object(
+                        verify_all, 'MODULES', (first_name, second_name)):
+                status, stdout, stderr = _run_main([
+                    str(report_path), '--module', second_name,
+                    '--test', f'{first_name}.FirstCase',
+                ])
+                self.assertEqual(status, 2)
+                self.assertEqual(stdout, '')
+                self.assertIn(f'{first_name}.FirstCase', stderr)
+                self.assertIn('outside the selected module scope', stderr)
+                self.assertFalse(first_import.exists())
+                self.assertFalse(second_import.exists())
+                self.assertEqual(
+                    report_path.read_text(encoding='utf-8'), sentinel)
+
+    def test_unknown_class_or_method_fails_before_running_or_reporting(self):
+        prefix = _prefix()
+        module_name = f'{prefix}_unknown_test'
+        with tempfile.TemporaryDirectory(prefix='verify-all-unknown-') as directory:
+            root = Path(directory)
+            report_path = root / 'report.json'
+            test_marker = root / 'ran'
+            sentinel = '{"keep": true}\n'
+            report_path.write_text(sentinel, encoding='utf-8')
+            sources = {
+                module_name: f'''
+                    from pathlib import Path
+                    from unittest import TestCase
+
+                    class KnownCase(TestCase):
+                        def test_one(self):
+                            Path({str(test_marker)!r}).write_text(
+                                'ran', encoding='utf-8')
+                ''',
+            }
+            with _FixtureModules(sources), \
+                    mock.patch.object(verify_all, 'MODULES', (module_name,)):
+                status, stdout, stderr = _run_main([
+                    str(report_path),
+                    '--test', f'{module_name}.KnownCase',
+                    '--test', f'{module_name}.MissingCase',
+                    '--test', f'{module_name}.KnownCase.test_missing',
+                ])
+                self.assertEqual(status, 2)
+                self.assertEqual(stdout, '')
+                self.assertIn(f'{module_name}.MissingCase', stderr)
+                self.assertIn(
+                    f'{module_name}.KnownCase.test_missing', stderr)
+                self.assertFalse(test_marker.exists())
+                self.assertEqual(
+                    report_path.read_text(encoding='utf-8'), sentinel)
+
+                status, stdout, stderr = _run_main([
+                    '--list', '--test', f'{module_name}.KnownCase',
+                    '--test', f'{module_name}.MissingCase',
+                ])
+                self.assertEqual(status, 2)
+                self.assertEqual(stdout, '')
+                self.assertFalse(test_marker.exists())
+
+    def test_unselected_collection_list_and_report_remain_backward_compatible(self):
+        prefix = _prefix()
+        first_name = f'{prefix}_plain_first'
+        second_name = f'{prefix}_plain_second'
+        with tempfile.TemporaryDirectory(prefix='verify-all-plain-') as directory:
+            root = Path(directory)
+            report_path = root / 'report.json'
+            sources = {
+                first_name: '''
+                    from unittest import TestCase
+
+                    class FirstCase(TestCase):
+                        def test_one(self):
+                            pass
+
+                        def test_two(self):
+                            pass
+                ''',
+                second_name: '''
+                    from unittest import TestCase
+
+                    class SecondCase(TestCase):
+                        def test_three(self):
+                            pass
+                ''',
+            }
+            expected_ids = [
+                f'{first_name}.FirstCase.test_one',
+                f'{first_name}.FirstCase.test_two',
+                f'{second_name}.SecondCase.test_three',
+            ]
+            with _FixtureModules(sources), \
+                    mock.patch.object(
+                        verify_all, 'MODULES', (first_name, second_name)):
+                self.assertEqual(
+                    _suite_ids(verify_all.collect_suite()),
+                    expected_ids)
+                self.assertEqual(
+                    _suite_ids(verify_all.collect_suite(
+                        [first_name, second_name], None)),
+                    expected_ids)
+                self.assertEqual(
+                    _suite_ids(verify_all.collect_suite(
+                        [first_name, second_name], [])),
+                    expected_ids)
+                self.assertEqual(
+                    _suite_ids(verify_all.collect_suite(
+                        [first_name, second_name], ())),
+                    expected_ids)
+
+                status, _, stderr = _run_main([
+                    str(report_path), '--module', second_name,
+                    '--module', first_name, '--module', second_name,
+                ])
+                self.assertEqual(status, 0, stderr)
+                report = json.loads(report_path.read_text(encoding='utf-8'))
+                self.assertEqual(report['selection'], {
+                    'mode': 'selected',
+                    'modules': [second_name, first_name],
+                })
+                self.assertEqual(
+                    [row['id'] for row in report['test_results']],
+                    [expected_ids[2], expected_ids[0], expected_ids[1]])
+
+                status, stdout, stderr = _run_main([
+                    '--list', '--module', second_name,
+                    '--module', first_name, '--module', second_name,
+                ])
+                self.assertEqual(status, 0, stderr)
+                payload = json.loads(stdout)
+                self.assertEqual(payload, {
+                    'modules': [second_name, first_name],
+                    'test_ids': [
+                        expected_ids[2], expected_ids[0], expected_ids[1]],
+                    'count': 3,
+                })
+                self.assertEqual(
+                    set(payload), {'modules', 'test_ids', 'count'})
 
 
 if __name__ == '__main__':
