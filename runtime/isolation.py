@@ -530,6 +530,7 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
             tracker = SSEUsageTracker()
             outcome = None
             lease = None
+            admission_rejected = False
             client_gone = False
             finish_lock = threading.Lock()
             upstream_request_id = None
@@ -586,7 +587,14 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                     elif binding['reasoning_effort'] == 'none':
                         request.pop('reasoning', None)
                         body = json.dumps(request, ensure_ascii=False).encode()
-                lease = closeout.begin(lambda: complete('failed', tracker.usage, 'closeout_timeout'))
+                try:
+                    lease = closeout.begin(lambda: complete('failed', tracker.usage, 'closeout_timeout'))
+                except TimeoutError:
+                    # Only closeout.begin owns admission rejection. Later
+                    # timeouts (validation, transport or an accepted request's
+                    # closeout) remain protocol/transport failures.
+                    admission_rejected = True
+                    raise
                 if usage_ledger is not None:
                     try:
                         request_id = usage_ledger.begin(context.get('phase', 'work'),
@@ -737,7 +745,10 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                     if isinstance(error, (OSError, TimeoutError, urllib.error.URLError)):
                         policy.transport_error = 'Exam endpoint transport failed'
                 try:
-                    self.send_error(400, 'Model protocol or frozen endpoint validation failed')
+                    if admission_rejected:
+                        self.send_error(400, 'Execution admission closed; no upstream request was sent')
+                    else:
+                        self.send_error(400, 'Model protocol or frozen endpoint validation failed')
                 except OSError:
                     pass
                 self.close_connection = True
