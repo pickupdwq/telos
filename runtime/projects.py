@@ -492,12 +492,21 @@ class Projects:
                               'integration': p.get('integration', {}).get('packet_id')})
         if signature == p.get('notice_signature'):
             return
+        # A running-only transition needs no supervisor action. Keep any
+        # outstanding batch (and its existing identity/reminders) alive, but do
+        # not create a fresh courier when there is nothing to deliver.
+        quiet = (p.get('phase') == 'running' and p.get('continuation') == 'active'
+                 and any(t.get('phase') == 'running' for t in p['tasks'])
+                 and all(t.get('phase') in ('pending', 'starting', 'running', 'accepted') for t in p['tasks'])
+                 and not any(t.get('error') for t in p['tasks']))
         # Never overwrite an in-flight courier event: receive always gathers the
         # latest project state, so one outstanding wake-up covers all completions.
         with b.locked(p['project_id']) as root:
             state, _ = b.load_session(root)
             event = state['events'].get(state.get('last_event_id'), {})
             if event.get('status') not in (*b.WATCH_EVENTS, 'received'):
+                if quiet:
+                    return
                 state.update(job_id=uuid.uuid4().hex, phase='project_update')
                 b.record_event(state)
             b.write_json(root / 'state.json', state)

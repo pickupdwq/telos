@@ -1,5 +1,6 @@
 """Behavior tests: real Git worktrees/snapshots/checks, deterministic model boundary."""
 import copy
+import contextlib
 import io
 import json
 import os
@@ -13,6 +14,7 @@ from unittest.mock import patch, Mock
 from test_telos import b, BridgeTests, synthetic_exam
 from test_callbacks import FakeRPC, OWNER, OTHER
 from projects import Projects
+from telos import WATCH_EVENTS, digest
 from usage import BudgetExceeded
 
 
@@ -653,9 +655,208 @@ class ProjectEventViewTests(unittest.TestCase):
                 self.assertEqual(full['return_health'], health)
 
 
+class _ProjectNoticeBridge:
+    """In-memory bridge for publish decisions; no runtime services or Git."""
+
+    WATCH_EVENTS = WATCH_EVENTS
+
+    def __init__(self, root):
+        self.STATE = root
+        self.couriers = {}
+        self.writes = 0
+        self.dispatches = []
+
+    def run_dir(self, sid):
+        return self.STATE / 'runs' / sid
+
+    @staticmethod
+    def digest(value):
+        return digest(value)
+
+    @contextlib.contextmanager
+    def locked(self, sid):
+        yield self.run_dir(sid)
+
+    def load_session(self, root):
+        return copy.deepcopy(self.couriers[root.name]), {}
+
+    def write_json(self, path, value):
+        self.writes += 1
+        self.couriers[Path(path).parent.name] = copy.deepcopy(value)
+
+    def record_event(self, state):
+        eid = state['job_id']
+        state.setdefault('events', {})[eid] = {
+            'id': eid, 'job_id': eid, 'phase': state.get('phase'),
+            'status': 'pending', 'attempts': 0, 'actions': {},
+            'reminder': {'status': 'pending', 'attempts': 0}}
+        state['last_event_id'] = eid
+
+    def spawn_dispatch(self, sid):
+        self.dispatches.append(sid)
+
+
+class ProjectNoticeTests(unittest.TestCase):
+    """Pure publish tests for supervisor wake-up suppression."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.bridge = _ProjectNoticeBridge(Path(self.tmp.name))
+        self.projects = Projects(self.bridge)
+        self.pid = 'a' * 32
+        self.owner = {'thread_id': 'b' * 32}
+
+    def task(self, ident, phase='running', **overrides):
+        task = {'id': ident, 'phase': phase, 'event_id': None, 'error': None}
+        task.update(overrides)
+        return task
+
+    def project(self, phases=('running',), **overrides):
+        p = {'project_id': self.pid, 'phase': 'running', 'continuation': 'active',
+             'owner': copy.deepcopy(self.owner),
+             'tasks': [self.task(chr(97 + index), phase)
+                       for index, phase in enumerate(phases)]}
+        p.update(overrides)
+        return p
+
+    def courier(self, event_status=None):
+        courier = {'session_id': self.pid, 'project_id': self.pid,
+                   'notification_only': True, 'phase': 'project_update',
+                   'continuation': 'active', 'events': {}}
+        if event_status is not None:
+            eid = 'c' * 32
+            courier['last_event_id'] = eid
+            courier['events'][eid] = {
+                'id': eid, 'job_id': eid, 'phase': 'project_update',
+                'created_at': 123.5, 'status': event_status, 'attempts': 2,
+                'retry_at': 456.0, 'actions': {'telos_receive': {'result': 'private'}},
+                'reminder': {'status': 'pending', 'attempts': 1, 'next_at': 789.0}}
+        self.bridge.couriers[self.pid] = courier
+        self.bridge.writes = 0
+        self.bridge.dispatches.clear()
+        return courier
+
+    def test_fresh_running_only_transition_creates_no_courier(self):
+        for status in (None, 'processed'):
+            with self.subTest(latest_event=status):
+                before = copy.deepcopy(self.courier(status))
+                p = self.project(('pending', 'starting', 'running', 'accepted'))
+                self.projects.publish(p)
+                self.assertEqual(self.bridge.writes, 0)
+                self.assertEqual(self.bridge.dispatches, [])
+                self.assertEqual(self.bridge.couriers[self.pid], before)
+                self.assertNotIn('notice_signature', p)
+                p['notice_signature'] = 'previous'
+                self.projects.publish(p)
+                self.assertEqual(p['notice_signature'], 'previous')
+                self.assertEqual(self.bridge.writes, 0)
+                self.assertEqual(self.bridge.dispatches, [])
+
+    def test_running_only_suppression_accepts_allowed_phases_and_empty_errors(self):
+        cases = [
+            ('running only', ('running',), [None]),
+            ('allowed phase set', ('pending', 'starting', 'running', 'accepted'), [None] * 4),
+            ('empty error text', ('running',), ['']),
+        ]
+        for label, phases, errors in cases:
+            with self.subTest(label=label):
+                self.courier()
+                p = self.project(phases)
+                for task, error in zip(p['tasks'], errors):
+                    task['error'] = error
+                self.projects.publish(p)
+                self.assertEqual(self.bridge.writes, 0)
+                self.assertEqual(self.bridge.dispatches, [])
+                self.assertNotIn('notice_signature', p)
+
+    def test_conservative_eligibility_boundary_creates_couriers(self):
+        cases = [
+            ('other project phase', {'phase': 'awaiting_review'}, ('running',), [None]),
+            ('paused continuation', {'continuation': 'paused'}, ('running',), [None]),
+            ('cancelled continuation', {'continuation': 'cancelled'}, ('running',), [None]),
+            ('no running child', {}, ('pending', 'starting', 'accepted'), [None] * 3),
+            ('ready child', {}, ('running', 'ready'), [None, None]),
+            ('responded child', {}, ('running', 'responded'), [None, None]),
+            ('awaiting review child', {}, ('running', 'awaiting_review'), [None, None]),
+            ('not accepted child', {}, ('running', 'not_accepted'), [None, None]),
+            ('setup error child', {}, ('running', 'setup_error'), [None, None]),
+            ('stale child', {}, ('running', 'stale'), [None, None]),
+            ('unknown child', {}, ('running', 'unknown'), [None, None]),
+            ('child error', {}, ('running',), ['failed']),
+            ('pending child error', {}, ('running', 'pending'), [None, 'setup failed']),
+        ]
+        for label, overrides, phases, errors in cases:
+            with self.subTest(label=label):
+                self.courier()
+                p = self.project(phases, **overrides)
+                for task, error in zip(p['tasks'], errors):
+                    task['error'] = error
+                self.projects.publish(p)
+                self.assertEqual(self.bridge.writes, 1)
+                self.assertEqual(self.bridge.dispatches, [self.pid])
+                courier = self.bridge.couriers[self.pid]
+                self.assertIn('last_event_id', courier)
+                self.assertEqual(len(courier['events']), 1)
+                self.assertIn('notice_signature', p)
+
+    def test_outstanding_courier_keeps_identity_reminders_and_dispatch(self):
+        for status in ('pending', 'sending', 'uncertain', 'queued', 'delivered', 'received'):
+            with self.subTest(status=status):
+                before = copy.deepcopy(self.courier(status))
+                p = self.project(('running', 'pending'))
+                self.projects.publish(p)
+                self.assertEqual(self.bridge.writes, 1)
+                self.assertEqual(self.bridge.dispatches, [self.pid])
+                self.assertEqual(self.bridge.couriers[self.pid], before)
+                self.assertIn('notice_signature', p)
+
+    def test_signature_deduplication_and_suppressed_retries(self):
+        self.courier()
+        p = self.project(('running',))
+        self.projects.publish(p)
+        self.projects.publish(p)
+        self.assertEqual(self.bridge.writes, 0)
+        self.assertEqual(self.bridge.dispatches, [])
+        self.assertNotIn('notice_signature', p)
+
+        p['tasks'][0]['phase'] = 'responded'
+        self.projects.publish(p)
+        signature = p['notice_signature']
+        courier = copy.deepcopy(self.bridge.couriers[self.pid])
+        self.projects.publish(p)
+        self.assertEqual(self.bridge.writes, 1)
+        self.assertEqual(self.bridge.dispatches, [self.pid])
+        self.assertEqual(p['notice_signature'], signature)
+        self.assertEqual(self.bridge.couriers[self.pid], courier)
+
+    def test_completion_and_integration_transitions_notify(self):
+        cases = [
+            ('child completion', {}, ('running', 'responded')),
+            ('child review', {}, ('running', 'awaiting_review')),
+            ('all accepted integration readiness', {}, ('accepted', 'accepted')),
+            ('integrated', {'phase': 'integrated', 'integration': {'packet_id': 'd' * 64}},
+             ('accepted', 'accepted')),
+            ('integration failed', {'phase': 'integration_failed', 'integration': {'packet_id': 'e' * 64}},
+             ('accepted', 'accepted')),
+            ('awaiting final review', {'phase': 'awaiting_final_review',
+                                       'integration': {'packet_id': 'f' * 64}},
+             ('accepted', 'accepted')),
+            ('acceptance invalidation', {'phase': 'changed_after_acceptance'}, ('accepted',)),
+        ]
+        for label, overrides, phases in cases:
+            with self.subTest(label=label):
+                self.courier()
+                p = self.project(phases, **overrides)
+                self.projects.publish(p)
+                self.assertEqual(self.bridge.writes, 1)
+                self.assertEqual(self.bridge.dispatches, [self.pid])
+                self.assertIn('notice_signature', p)
+
+
 def load_tests(loader, tests, pattern):
     suite = unittest.TestSuite()
-    for cls in (ProjectTests, ProviderTests, RobustnessTests, ProjectEventViewTests):
+    for cls in (ProjectTests, ProviderTests, RobustnessTests, ProjectEventViewTests, ProjectNoticeTests):
         for name in cls.__dict__:
             if name.startswith('test_'):
                 suite.addTest(cls(name))
