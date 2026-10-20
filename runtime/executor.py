@@ -6,6 +6,7 @@ import shutil
 import signal
 import subprocess
 import uuid
+import activity
 import preflight
 import providers
 from identity import data_path
@@ -243,13 +244,21 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
     command = ["/usr/bin/sandbox-exec", "-p", profile, *args]
     if closeout is not None:
         closeout.start(cfg["job_timeout"])
+    recorder = activity.for_state(b, state, phase, secrets=(key, probe['token'] if probe else ''))
+    if recorder:
+        recorder.emit('status', 'Executor started' if not exam else 'Closed-book exam started')
     p = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     try:
-        stdout, stderr = p.communicate(prompt.encode(), timeout=cfg["job_timeout"])
-    except subprocess.TimeoutExpired:
-        os.killpg(p.pid, signal.SIGKILL)
-        out, err = p.communicate()
+        stdout, stderr = (activity.communicate(p, prompt.encode(), cfg["job_timeout"], recorder)
+                          if recorder else p.communicate(prompt.encode(), timeout=cfg["job_timeout"]))
+    except subprocess.TimeoutExpired as expired:
+        if recorder:
+            out, err = expired.output or b'', expired.stderr or b''
+            recorder.emit('error', 'Execution timed out; no acceptance')
+        else:
+            os.killpg(p.pid, signal.SIGKILL)
+            out, err = p.communicate()
         detail = err.decode(errors='replace')[-1800:] + out.decode(errors='replace')[-1200:]
         if key:
             detail = detail.replace(key, '[REDACTED]')
@@ -258,7 +267,9 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
     events = []
     for line in stdout.decode(errors="replace").splitlines():
         try:
-            events.append(json.loads(line))
+            value = json.loads(line)
+            if isinstance(value, dict):
+                events.append(value)
         except ValueError:
             pass
     thread = state.get("thread_id")

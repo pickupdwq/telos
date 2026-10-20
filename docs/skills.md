@@ -50,7 +50,13 @@ python3 install.py --upgrade
 
 Both runtime and Skill use the same version. `--upgrade` supports the 3.3.0 manifest without a Skill as well as later installations. Custom runtime locations must use their original `--prefix` and `--bin-dir`; an installed Skill keeps its recorded location. `--skills-dir /path/to/skills` selects another root for a fresh install, including isolated smoke tests. Custom locations must be made discoverable by the intended client.
 
-The upgrade checks owned-file hashes and refuses modified/added/missing managed files or unexpected symlinks. It preserves `config.json` bytes and permissions, the existing launcher and MCP registration, external credentials, task state and caches. Launcher modification detection applies when its hash is recorded in the manifest; legacy launchers are retained unchanged. An unmanaged or conflicting user Skill is preserved and blocks installation into the normal user roots.
+The upgrade checks owned-file hashes and refuses modified/added/missing managed files or unexpected symlinks. It preserves `config.json` bytes and permissions, the existing launcher, external credentials, task state and caches. MCP registration is preserved except for the explicit `--register` environment update described below. Launcher modification detection applies when its hash is recorded in the manifest; legacy launchers are retained unchanged. An unmanaged or conflicting user Skill is preserved and blocks installation into the normal user roots.
+
+When `--register` is supplied, the installer also merges `TMUX` and `TMUX_PANE`
+into the Telos MCP entry's `env_vars` and backs up the original Codex config.
+Other model/MCP settings remain intact. This enables the optional
+[live observer panel](watch.md); upgrade without `--register` keeps registration
+bytes unchanged.
 
 Running jobs (including paused jobs that have not finished), stale jobs and project checks block upgrade. Pause or finish active projects, wait for their workers/checks, and recover stale jobs through the runtime before retrying. The installer does not pause/cancel tasks itself. The installation and coordinator locks prevent concurrent publishing/scheduling against the checked state directory. Use the same `TELOS_STATE_DIR` / legacy state override as the running installation when one is configured.
 

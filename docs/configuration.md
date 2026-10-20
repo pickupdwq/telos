@@ -179,6 +179,16 @@ When available, a bounded `x-request-id` response header is saved as `upstream_r
 
 Project `allowed_paths` are literal relative files/directory prefixes, not globs. Avoid `.` unless the task really needs the whole repository. `.git` and parent traversal are forbidden. Whole-project checks inherit child dependency grants; project-level grants add read access only for final checks.
 
+## Read-only executor observer
+
+Activity recording is enabled for new execution attempts. `watch.auto_tmux`
+defaults to `true`: a task launched from Codex CLI inside tmux opens or reuses
+one right-side observer pane without changing focus. Set it to `false` to
+retain logs and manual `telos watch` access without automatic panes.
+This setting does not change model bindings, budgets, or acceptance gates.
+See [observer setup](watch.md) for MCP environment forwarding, history,
+task switching, and Ghostty/iTerm2 usage.
+
 ## 中文要点
 
 - 全新安装将根目录配置示例复制为 `~/.local/share/telos/config.json`；`--upgrade` 保留现有配置。修改后重启 MCP。直接运行未配置的源码会使用历史默认值，不能视为已完成安装。
@@ -193,3 +203,4 @@ Project `allowed_paths` are literal relative files/directory prefixes, not globs
 - 可为新任务或项目子任务冻结 `task_budget`（请求数与 token 上限）。请求数上限为硬预留；token 上限在已观测用量达到后阻止下一次请求。评测所需用量未知时停止后续付费请求，不重试、不降级。没有真实价格时不估算费用。
 - `dependency_paths` 只开放依赖目录读取；`command_network` 和检查的 `network` 分别控制工作/检查的网络权限，闭卷阶段不获得这些权限。
 - 旧 `EXAM_LOOP_STATE_DIR` / `EXAM_LOOP_CACHE_DIR` 仍兼容，同名 `TELOS_*` 设置优先；历史合同按原来的绑定执行，不强行迁移。
+- `watch.auto_tmux` 默认开启；设为 `false` 可关闭自动分屏，保留日志和手动 `telos watch`。配置 MCP 环境转发后，在 Ghostty/iTerm2 的 tmux 中启动 Codex 即可使用[只读观察面板](watch.md)。

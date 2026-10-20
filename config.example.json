@@ -40,5 +40,8 @@
   "http_timeout": 180,
   "exam_max_tokens": 8192,
   "exam_format_attempts": 3,
-  "experience_enabled": true
+  "experience_enabled": true,
+  "watch": {
+    "auto_tmux": true
+  }
 }

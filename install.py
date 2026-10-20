@@ -23,6 +23,91 @@ MIN_CODEX = (0, 163, 0)
 SKILL_MANIFEST = ".telos-skill.json"
 
 
+def watch_environment(config_file: Path, launcher: Path) -> dict:
+    """Forward dynamic tmux context, never persist a particular socket/pane.
+
+    Change only this managed MCP entry; preserve other settings and retain a
+    private byte-for-byte backup. Unsupported TOML layouts fail without a write.
+    """
+    if config_file.is_symlink():
+        raise RuntimeError("MCP config is a symlink; add TMUX and TMUX_PANE to telos.env_vars explicitly.")
+    original = config_file.read_bytes()
+    text = original.decode()
+    parsed = tomllib.loads(text)
+    entry = parsed.get('mcp_servers', {}).get('telos', {})
+    if entry.get('command') != str(launcher) or entry.get('args') != ['serve']:
+        raise RuntimeError("Telos MCP registration changed; watcher environment was not modified.")
+    values = entry.get('env_vars', [])
+    if not isinstance(values, list):
+        raise RuntimeError("Invalid telos MCP env_vars; existing configuration preserved.")
+    names = {v if isinstance(v, str) else v.get('name')
+             for v in values if isinstance(v, (str, dict))}
+    required = ['TMUX', 'TMUX_PANE']
+    missing = [name for name in required if name not in names]
+    if not missing:
+        return {'changed': False, 'forwarded': required}
+    values = [*values, *missing]
+    def toml_value(value):
+        if isinstance(value, str):
+            return json.dumps(value, ensure_ascii=False)
+        if isinstance(value, dict) and all(isinstance(v, str) for v in value.values()):
+            return '{ ' + ', '.join(json.dumps(k) + ' = ' + json.dumps(v)
+                                    for k, v in value.items()) + ' }'
+        raise RuntimeError("Unsupported telos env_vars value; existing configuration preserved.")
+    lines = text.splitlines(keepends=True)
+    headers = [i for i, line in enumerate(lines) if re.fullmatch(
+        r'\s*\[\s*mcp_servers\s*\.\s*(?:telos|"telos"|\'telos\')\s*\]\s*(?:#.*)?', line)]
+    if len(headers) != 1:
+        raise RuntimeError("Cannot locate a standalone [mcp_servers.telos] table. "
+                           "Add env_vars = [\"TMUX\", \"TMUX_PANE\"] there explicitly.")
+    start, end = headers[0] + 1, len(lines)
+    for i in range(start, len(lines)):
+        if lines[i].lstrip().startswith('['):
+            try:
+                tomllib.loads(lines[i] + '\n__watch_header__ = true\n')
+                end = i
+                break
+            except tomllib.TOMLDecodeError:
+                pass
+    replace_start, replace_end = start, start
+    for i in range(start, end):
+        if re.match(r'\s*(?:env_vars|"env_vars"|\'env_vars\')\s*=', lines[i]):
+            for j in range(i + 1, end + 1):
+                try:
+                    value = tomllib.loads(''.join(lines[i:j]))
+                    if 'env_vars' in value:
+                        replace_start, replace_end = i, j
+                        break
+                except tomllib.TOMLDecodeError:
+                    pass
+            else:
+                raise RuntimeError("Could not safely update env_vars; configuration preserved.")
+            break
+    newline = '\r\n' if '\r\n' in text else '\n'
+    assignment = 'env_vars = [' + ', '.join(toml_value(v) for v in values) + ']' + newline
+    before = ''.join(lines[:replace_start])
+    if before and not before.endswith('\n'):
+        before += newline
+    updated = (before + assignment + ''.join(lines[replace_end:])).encode()
+    entry['env_vars'] = values
+    if tomllib.loads(updated.decode()) != parsed:
+        raise RuntimeError("Watcher setup would change unrelated configuration; refused.")
+    backup = config_file.with_name(config_file.name + '.telos-watch-' + uuid.uuid4().hex + '.bak')
+    fd = os.open(backup, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    with os.fdopen(fd, 'wb') as stream:
+        stream.write(original)
+    fd, temporary = tempfile.mkstemp(prefix='.telos-watch-', dir=config_file.parent)
+    try:
+        with os.fdopen(fd, 'wb') as stream:
+            stream.write(updated)
+        if config_file.read_bytes() != original:
+            raise RuntimeError("MCP configuration changed during setup; retry after edits finish.")
+        os.replace(temporary, config_file)
+    finally:
+        Path(temporary).unlink(missing_ok=True)
+    return {'changed': True, 'forwarded': required, 'backup': str(backup)}
+
+
 def preflight(home: Path) -> tuple[Path, str]:
     if sys.platform != "darwin" or sys.version_info < (3, 12):
         raise RuntimeError("Telos requires macOS and Python 3.12+ (Seatbelt isolation).")
@@ -312,7 +397,9 @@ def install(prefix: Path, bin_dir: Path, *, register: bool = False,
         except (subprocess.SubprocessError, OSError) as exc:
             raise RuntimeError(f"Installed at {prefix}, but MCP registration failed. Retry: "
                                f"{shlex.join([str(codex), 'mcp', 'add', 'telos', '--', str(launcher), 'serve'])}") from exc
-    return {**manifest, "registered": register, "upgraded": upgrade, "backups": backups}
+    watch_setup = watch_environment(config_file, launcher) if register else None
+    return {**manifest, "registered": register, "upgraded": upgrade, "backups": backups,
+            "watch_environment": watch_setup}
 
 
 def main() -> None:

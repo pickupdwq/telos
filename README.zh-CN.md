@@ -98,6 +98,10 @@ python3 install.py --upgrade
 
 升级保留现有配置、凭据、任务记录及启动入口，并保留运行时与 Skill 备份。检测到受管理文件被修改、Skill 冲突或任务正在运行时会拒绝升级。先暂停或完成活跃项目，等待作业及检查结束，升级后重新加载 MCP 客户端。自定义安装需沿用原来的 `--prefix`、`--bin-dir`，详见[升级说明](docs/skills.md#中文说明)。
 
+首次启用 tmux 自动观察面板时，使用 `--upgrade --register`：安装器备份 Codex
+配置，并为 Telos 补充动态 `TMUX`/`TMUX_PANE` 转发；之后在 tmux 中重启 Codex。
+详见[观察面板说明](docs/watch.md)。
+
 ### 3. 配置执行者凭据
 
 ```sh
@@ -189,7 +193,14 @@ cd /你的/干净Git项目/绝对路径
 
 ## 日常操作与数据
 
+`telos watch` 提供执行者实时记录、任务切换和历史回看。在 Ghostty 或 iTerm2
+中通过 tmux 启动 Codex CLI 后，多个执行者共用一个自动打开的右侧观察面板，
+焦点留在主对话；关闭面板不停止任务。非 tmux 环境可手动查看。
+首次启用需要配置 MCP 环境转发，详见[观察面板使用说明](docs/watch.md)。
+
 ```sh
+"$HOME/.local/bin/telos" watch
+"$HOME/.local/bin/telos" watch <session_id> --history --no-follow
 "$HOME/.local/bin/telos" status <session_id>
 "$HOME/.local/bin/telos" pause <session_id>
 "$HOME/.local/bin/telos" resume <session_id>

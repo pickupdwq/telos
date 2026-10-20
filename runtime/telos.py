@@ -27,6 +27,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 from codex_rpc import CodexRPC, RPCError
 from desktop_rpc import DesktopRPC
 import compact as compact_views
+import activity
+import watch as watch_runtime
 import providers
 from providers import ProviderError as GateError
 from processes import process_start, process_running, reap_background
@@ -388,6 +390,7 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
     if task_type == 'audit':
         audit_runtime.initialize(bridge_services(), state, frozen)
     write_json(root / "state.json", state)
+    activity.status(bridge_services(), state)
     return {"session_id": sid, "worktree": str(worktree), "model": model, "phase": "ready",
             'task_type': task_type,
             **({'audit_artifacts': str(audit_runtime.artifacts(bridge_services(), state))} if task_type == 'audit' else {}),
@@ -590,6 +593,7 @@ def return_control(sid, action):
                 latest['reminder']['status'] = 'cancelled'
         state["last_control"] = receipt
         write_json(root / "state.json", state)
+        activity.status(bridge_services(), state)
     if action == "resume":
         spawn_dispatch(sid)
     return {"session_id": sid, "continuation": state["continuation"],
@@ -1011,6 +1015,7 @@ def _start_job(sid, kind, message="", event_id=None):
         state.pop('job_process_start', None)
         state.update(phase="running", job_id=job, job_kind=kind, job_started=time.time(), last_error=None,
                      active_provider=backend_bindings(contract)['exam' if kind == 'evaluate' else 'executor']['provider'])
+        watch_runtime.prepare(bridge_services(), state)
         state.pop("acceptance", None)
         write_json(root / f"job-{job}.json", {"kind": kind, "message": message, "reserved_round": state['rounds'] if kind == 'evaluate' else None})
         write_json(root / "state.json", state)
@@ -1021,6 +1026,7 @@ def _start_job(sid, kind, message="", event_id=None):
         except OSError:
             before_start["last_error"] = "Background process could not start; counters and phase restored"
             write_json(root / "state.json", before_start)
+            activity.status(bridge_services(), before_start, before_start["last_error"])
             (root / f"job-{job}.json").unlink(missing_ok=True)
             raise GateError(before_start["last_error"])
         state["job_pid"] = p.pid
@@ -1030,6 +1036,8 @@ def _start_job(sid, kind, message="", event_id=None):
                   "return": "automatic completion event" if state.get("owner") else "poll telos_status"}
         record_action(state, event_id, kind, {"message": message}, result)
         write_json(root / "state.json", state)
+        activity.status(bridge_services(), state)
+        watch_runtime.after_start(bridge_services(), state)
         return result
 
 
@@ -1331,6 +1339,7 @@ def background_job(sid, job):
             result = peer_turn(state, contract, request["message"])
             update = {"phase": "responded", "thread_id": result["thread_id"], "last_result": result}
         else:
+            activity.status(bridge_services(), state, 'Running private executable checks')
             commit, tree = snapshot(state, job)
             submission = review_submission(state, contract, commit) if contract.get('assessment_mode') == 'code_review' else None
             audit_evidence = None
@@ -1345,6 +1354,8 @@ def background_job(sid, job):
             write_json(root / f"attempt-{state['rounds']}-checks.json", check_evidence)
             write_json(root / f"job-{job}-checks.json", check_evidence)
             checks_passed = bool(checks) and all(x['status'] == 'passed' for x in checks)
+            activity.status(bridge_services(), state,
+                            'Executable checks passed' if checks_passed else 'Executable checks failed; exam skipped')
             if not checks_passed:
                 exam = {'skipped': 'executable_checks_failed'}
             elif contract.get('workflow_version') == 3:
@@ -1407,12 +1418,21 @@ def background_job(sid, job):
                        'message': detail[:3000], 'retryable': False, 'at': time.time()})
         if isinstance(error, ExamFormatError) and hasattr(error, "diagnostics"):
             write_json(root / f"attempt-{state['rounds']}-format-error.json", error.diagnostics)
+    if request['kind'] == 'send' and contract.get('task_type') != 'audit':
+        activity.files(bridge_services(), state)
     with locked(sid) as root:
         current, _ = load_session(root)
         if current.get("job_id") == job:
             current.update(update, job_finished=time.time())
             record_event(current)
             write_json(root / "state.json", current)
+            activity.status(bridge_services(), current)
+            if update.get('last_error'):
+                recorder = activity.for_state(bridge_services(), current, 'lifecycle')
+                # Evaluation exceptions can contain private checks or answers.
+                recorder.emit('error', update['last_error'] if request['kind'] == 'send'
+                              else 'Evaluation failed; inspect private review through the supervisor.',
+                              status=update.get('last_failure_kind'))
     if request['kind'] == 'evaluate' and 'tree' in locals():
         # A disposable check tree is never reused: checks may mutate it. Immutable
         # Git refs and private evidence retain the exact input without N full copies.
@@ -1450,6 +1470,7 @@ def status(sid, detail='full'):
                                  last_failure_kind='infrastructure')
                 record_event(state)
                 write_json(root / "state.json", state)
+                activity.status(bridge_services(), state)
         timeout = (config()['job_timeout'] if state.get('notification_only') else
                    backend_bindings(contract)['exam' if state.get('job_kind') == 'evaluate' else 'executor']['job_timeout'])
         if state["phase"] == "running" and time.time() - state["job_started"] > timeout + 1800:
@@ -1619,6 +1640,7 @@ def _grade(sid, packet_id, scores, blockers, event_id=None, public_lessons=None,
             state['public_lessons'] = public_lessons
         record_action(state, event_id, "grade", grade_arguments, verdict)
         write_json(root / "state.json", state)
+        activity.status(bridge_services(), state)
         return verdict
 
 
@@ -1912,8 +1934,10 @@ def main():
     if sys.argv[1:2] == ['compare']:
         from comparison import main as compare_main
         return compare_main(sys.argv[2:])
+    if sys.argv[1:2] == ['watch']:
+        return watch_runtime.main(bridge_services(), sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["serve", "doctor", "auth", "local", "status", "review", "receive", "pause", "resume", "cancel", "recover", "cache", "compare", "_job", "_dispatch", "_project_check"])
+    parser.add_argument("command", choices=["serve", "doctor", "auth", "local", "status", "review", "receive", "pause", "resume", "cancel", "recover", "cache", "compare", "watch", "_job", "_dispatch", "_project_check"])
     parser.add_argument("ids", nargs="*")
     parser.add_argument('--action', choices=['inventory', 'archive', 'cleanup'], default='inventory')
     parser.add_argument('--apply', action='store_true', help='Apply explicit archive/cleanup; default is preview')

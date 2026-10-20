@@ -64,6 +64,10 @@ class InstallerTests(unittest.TestCase):
         command = subprocess.run([str(self.prefix / "commands/codex"), "--version"],
                                  capture_output=True, text=True, check=True)
         self.assertIn("0.163.0", command.stdout)
+        observer = subprocess.run([str(self.bin_dir / "telos"), "watch", "--help"],
+                                  capture_output=True, text=True, check=True, timeout=10, env=env)
+        self.assertIn("--history", observer.stdout)
+        self.assertIn("--pane", observer.stdout)
 
     def test_existing_install_is_never_overwritten(self):
         self.prefix.mkdir()
@@ -101,11 +105,13 @@ class InstallerTests(unittest.TestCase):
         self.assertFalse(self.state.exists())
 
     def test_register_passes_literal_paths_and_never_changes_model_settings(self):
-        with patch.object(install.subprocess, "run") as run:
+        with patch.object(install.subprocess, "run") as run, \
+                patch.object(install, 'watch_environment') as watch_setup:
             install.install(self.prefix, self.bin_dir, register=True)
         self.assertEqual(run.call_args.args[0], [str(self.codex), "mcp", "add", "telos", "--",
                                                str(self.bin_dir / "telos"), "serve"])
         self.assertFalse((self.home / ".codex/config.toml").exists())
+        watch_setup.assert_called_once_with(self.home / '.codex/config.toml', self.bin_dir / 'telos')
 
     def test_unmanaged_or_duplicate_user_skill_is_preserved(self):
         for destination in (self.skill, self.home / ".codex/skills/telos"):
@@ -155,7 +161,11 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(config.read_bytes(), content)
         self.assertEqual(config.stat().st_mode & 0o777, 0o600)
         for path, data in untouched.items():
-            self.assertEqual(path.read_bytes(), data)
+            if path == registration:
+                self.assertEqual(path.read_bytes().replace(b'env_vars = ["TMUX", "TMUX_PANE"]\n', b''), data)
+                self.assertEqual(Path(result['watch_environment']['backup']).read_bytes(), data)
+            else:
+                self.assertEqual(path.read_bytes(), data)
         self.assertEqual(credentials.stat().st_mode & 0o777, 0o600)
         self.assertEqual(install.hashes(Path(result["backups"]["runtime"])), runtime_before)
         skill_backup = Path(result["backups"]["skill"])
@@ -163,6 +173,26 @@ class InstallerTests(unittest.TestCase):
         self.assertNotIn(self.skill.parent, skill_backup.parents)
         install.managed_tree(self.prefix, "install-manifest.json", "telos")
         install.managed_tree(self.skill, install.SKILL_MANIFEST, "telos-skill")
+
+    def test_watch_environment_preserves_other_settings_multiline_values_and_is_idempotent(self):
+        config = self.home / 'config.toml'
+        original = ('model = "keep-model"\n[mcp_servers.telos]\ncommand = '
+                    + json.dumps(str(self.bin_dir / 'telos')) + '\nargs = ["serve"]\n'
+                    'env_vars = [\n "EXISTING",\n { name = "OTHER", source = "local" },\n]\n'
+                    '[mcp_servers.telos.env]\nCUSTOM = "keep"\n'
+                    '[mcp_servers.other]\ncommand = "unrelated"\n').encode()
+        config.write_bytes(original)
+        result = install.watch_environment(config, self.bin_dir / 'telos')
+        self.assertEqual(Path(result['backup']).read_bytes(), original)
+        parsed = install.tomllib.loads(config.read_text())
+        self.assertEqual(parsed['model'], 'keep-model')
+        self.assertEqual(parsed['mcp_servers']['telos']['env_vars'],
+                         ['EXISTING', {'name': 'OTHER', 'source': 'local'}, 'TMUX', 'TMUX_PANE'])
+        self.assertEqual(parsed['mcp_servers']['telos']['env'], {'CUSTOM': 'keep'})
+        self.assertEqual(parsed['mcp_servers']['other'], {'command': 'unrelated'})
+        updated = config.read_bytes()
+        self.assertFalse(install.watch_environment(config, self.bin_dir / 'telos')['changed'])
+        self.assertEqual(config.read_bytes(), updated)
 
     def test_upgrade_supports_legacy_manifest_and_retains_launcher(self):
         install.install(self.prefix, self.bin_dir)

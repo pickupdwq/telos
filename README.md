@@ -98,6 +98,10 @@ python3 install.py --upgrade
 
 Upgrade preserves the installed configuration, credentials, task state and launcher, and retains runtime/Skill backups. It refuses modified managed files, conflicting Skills and running jobs. Pause/finish active projects and wait for their jobs/checks first; then reload the MCP client. Custom installations must retain their original `--prefix` and `--bin-dir`. See the [upgrade details](docs/skills.md#install-and-upgrade).
 
+To enable automatic tmux observer panes, use `--upgrade --register`. This also
+backs up Codex's config and adds dynamic `TMUX`/`TMUX_PANE` forwarding to the
+Telos entry. Restart Codex inside tmux afterward. [Observer setup →](docs/watch.md)
+
 ### 3. Add the executor credential
 
 ```sh
@@ -189,7 +193,14 @@ Default: at most five evaluation rounds, including the first. Infrastructure fai
 
 ## Operations and data
 
+Use `telos watch` for a live, read-only executor view with task switching and
+history. In Ghostty or iTerm2 with Codex CLI inside tmux, tasks share one
+automatic right-side panel and focus stays on the supervisor. Outside tmux,
+open the viewer manually. See [observer setup and controls](docs/watch.md).
+
 ```sh
+"$HOME/.local/bin/telos" watch
+"$HOME/.local/bin/telos" watch <session_id> --history --no-follow
 "$HOME/.local/bin/telos" status <session_id>
 "$HOME/.local/bin/telos" pause <session_id>
 "$HOME/.local/bin/telos" resume <session_id>
