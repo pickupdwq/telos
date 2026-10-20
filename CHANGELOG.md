@@ -1,5 +1,13 @@
 # Changelog / 更新记录
 
+## 3.7.1 — 2026-10-20
+
+- Recover automatic observer panes when the shared Codex background server loses both `TMUX` and `TMUX_PANE`. Match the trusted CLI caller's exact working directory to a unique attached pane with a Codex process on the default tmux server.
+- Preserve explicit pane bindings and skip ambiguous, detached, unrelated and observer panes. Desktop callers do not use this fallback; custom tmux sockets still require environment forwarding. Discovery failures leave task execution unaffected.
+- Add regression coverage for pane discovery, executable ancestry, missing environments and caller boundaries, and document the shared-server behavior.
+
+修复 Codex 共享后台服务未继承 tmux 环境变量时观察面板无法自动打开的问题。仅对可信 CLI 会话匹配默认 tmux 服务中唯一的已连接 Codex 窗格，保留显式绑定；无法匹配时继续正常执行。补充回归测试与使用说明。
+
 ## 3.7.0 — 2026-10-20
 
 - Add persistent, read-only executor activity logs and `telos watch` for live following, task selection and history. Show messages, tool calls, command results, file changes, errors and task state while excluding private exam content and reasoning.
