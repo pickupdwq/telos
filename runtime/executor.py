@@ -73,7 +73,7 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
                 f"model_providers.{provider_id}.base_url={json.dumps(endpoint)}",
                 f"model_providers.{provider_id}.env_key={json.dumps(key_env)}",
                 f'model_providers.{provider_id}.wire_api="responses"',
-                'shell_environment_policy.exclude=["ARK_API_KEY","DEEPSEEK_API_KEY","OPENAI_API_KEY","CODEX_API_KEY","TELOS_RELAY_TOKEN","EXAM_LOOP_RELAY_TOKEN"]',
+                'shell_environment_policy.exclude=["ARK_API_KEY","DEEPSEEK_API_KEY","DASHSCOPE_API_KEY","OPENAI_API_KEY","CODEX_API_KEY","TELOS_RELAY_TOKEN","EXAM_LOOP_RELAY_TOKEN"]',
                 # macOS cannot apply a second Seatbelt sandbox inside this process.
                 # The mandatory OUTER profile supplies the write/read/IPC restrictions.
                 "approval_policy=\"never\"", "sandbox_mode=\"danger-full-access\"",
@@ -87,6 +87,15 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
         settings += [f'model_catalog_json={json.dumps(str(catalog_path))}',
                      'model_reasoning_summary="none"', 'show_raw_agent_reasoning=true',
                      'model_supports_reasoning_summaries=true']
+    if binding['provider'] == 'bailian':
+        # Keep Bailian's tested tool/context capabilities in the isolated
+        # session, never the supervisor; no remote compaction endpoint is used.
+        catalog_path = peer_home / 'bailian_models.json'
+        if not catalog_path.exists():
+            write_json(catalog_path, read_json(INSTALL / 'bailian_models.json'))
+        settings += [f'model_catalog_json={json.dumps(str(catalog_path))}',
+                     'features.remote_compaction=false', 'model_reasoning_summary="none"',
+                     'model_supports_reasoning_summaries=false']
     if binding['provider'] == 'local':
         settings += ['features.remote_compaction=false', 'model_reasoning_summary="none"',
                      'model_supports_reasoning_summaries=false']

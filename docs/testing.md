@@ -74,6 +74,37 @@ python3 "$HOME/.local/share/telos/verify_live_providers.py" \
 
 Run from a directory containing `.artifacts/`. This explicit opt-in check uses the installed DeepSeek and Ark profiles/credentials and can incur API charges or consume Coding Plan quota. Read the script and confirm both providers are configured first. Live checks are excluded from CI. Do not commit generated reports: even non-secret usage logs can contain local paths and task details.
 
+## Bailian contract simulation
+
+The Bailian provider regression in `test_providers.py` runs the real isolated
+Codex CLI against a deterministic local HTTP model. It checks shell/patch tool
+round trips, explicit history, the same-thread zero-tool exam, usage accounting,
+frozen model/effort, and credential isolation. The HTTP fixture enforces adjacent
+tool results, including a historical parallel batch. Malformed history is rejected
+before spending a request. This is not a live model test.
+
+An additional local Postman fixture is based on the official Responses contract;
+it is maintained in this repository, not an Alibaba-published mock. With the
+Postman CLI already installed, run these in separate terminals:
+
+```sh
+postman simulation run postman/simulations/bailian.sim.yaml --port 4918 --output ndjson --no-history
+python3 runtime/verify_bailian_simulation.py --base-url http://127.0.0.1:4918/bailian/compatible-mode/v1
+```
+
+The verifier sends only synthetic credentials through the real relay. It checks
+a two-call historical batch across JSON and SSE responses, its ordered results,
+the disabled parallel-call flag, and both total and reasoning token accounting.
+Inspect the simulation's two request events, then stop it with
+Ctrl-C. No Postman login, remote publication, API key or model quota is required.
+Generated logs/reports belong under `.artifacts/`, outside Git.
+
+For live evidence, use a small disposable repository with
+`executor_profile=bailian_deepseek`, freeze checks/questions and a request/token
+budget, and complete work → exam → original-supervisor review. A successful direct
+API response alone does not prove that workflow, image understanding or long
+context behavior. Keep real paid calls out of the default test suite.
+
 ## CI
 
 GitHub Actions runs portable installer tests on Ubuntu and the runtime suite plus a fresh-install smoke test on macOS. The workflow uses Codex CLI 0.163.0 and a local stub model; it needs no repository secrets. Reports are retained as Actions artifacts, not committed source files. CI results are additional evidence, not a promise of compatibility with every machine/provider.

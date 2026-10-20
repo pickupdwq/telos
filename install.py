@@ -195,6 +195,7 @@ def install(prefix: Path, bin_dir: Path, *, register: bool = False,
             already_registered = True
     files = sorted((ROOT / "runtime").glob("*.py"))
     files.append(ROOT / "runtime/deepseek_models.json")
+    files.append(ROOT / "runtime/bailian_models.json")
     files.append(ROOT / 'runtime/audit_browser.cjs')
     if not files or not all(p.is_file() and not p.is_symlink() for p in files):
         raise RuntimeError("Runtime source is missing or contains unexpected symlinks.")

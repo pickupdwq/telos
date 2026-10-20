@@ -6,6 +6,7 @@ import os
 from pathlib import Path
 import shlex
 import sys
+import tempfile
 import threading
 import unittest
 import urllib.error
@@ -26,6 +27,27 @@ def configured():
 
 
 class BindingTests(unittest.TestCase):
+    def test_bailian_snapshot_profile_and_frozen_destination(self):
+        cfg = configured()
+        cfg['profiles']['bailian_deepseek'] = {'provider': 'bailian', 'model': 'deepseek-v4.1-flash-1017', 'reasoning_effort': 'max'}
+        binding = p.resolve_executor(cfg, executor_profile='bailian_deepseek')
+        self.assertEqual(binding['provider'], 'bailian')
+        self.assertEqual(binding['model'], 'deepseek-v4.1-flash-1017')
+        self.assertEqual(binding['base_url'], 'https://dashscope.aliyuncs.com/compatible-mode/v1')
+        self.assertEqual(binding['wire_api'], 'responses')
+        self.assertEqual(binding['exam_wire_api'], 'responses')
+        self.assertEqual(binding['credential_ref'], {'env': 'DASHSCOPE_API_KEY', 'opencode_provider': None})
+        self.assertEqual(binding['reasoning_effort'], 'max')
+        self.assertEqual(p.resolve_executor(cfg)['provider'], 'deepseek')
+        for effort in p.EFFORTS:
+            self.assertEqual(p.resolve_executor(cfg, provider='bailian', reasoning_effort=effort)['reasoning_effort'], effort)
+        cfg['profiles']['bailian_deepseek']['reasoning_effort'] = 'low'
+        self.assertEqual(p.contract_bindings({'workflow_version': 3, 'executor': binding}, cfg)['executor'], binding)
+        with self.assertRaises(p.ProviderError):
+            p.validate_binding({**binding, 'base_url': 'https://elsewhere.example/v1'})
+        with self.assertRaises(p.ProviderError):
+            p.resolve_executor(cfg, provider='bailian', model='deepseek-flash')
+
     def test_default_roles_max_and_explicit_legacy_arguments(self):
         pair = p.resolve_pair(configured())
         self.assertEqual(pair['executor']['provider'], 'deepseek')
@@ -78,6 +100,22 @@ class BindingTests(unittest.TestCase):
 class CredentialAndExamTests(unittest.TestCase):
     setUp = BridgeTests.setUp
     tearDown = BridgeTests.tearDown
+
+    def test_bailian_private_credentials_do_not_reuse_other_providers(self):
+        binding = p.resolve_binding({}, provider='bailian')
+        with self.assertRaises(p.ProviderError):
+            p.credential(binding, self.base, {'DEEPSEEK_API_KEY': 'OTHER_PROVIDER'})
+        with patch.object(b, 'HOME', self.base), patch.object(sys.stdin, 'isatty', return_value=True), \
+                patch('getpass.getpass', return_value='BAILIAN_FIXTURE_ONLY'):
+            result = b.configure_credential('bailian')
+        path = Path(result['path'])
+        self.assertEqual(path.stat().st_mode & 0o777, 0o600)
+        self.assertNotIn('BAILIAN_FIXTURE_ONLY', json.dumps(result))
+        self.assertEqual(p.credential(binding, self.base, {})[0], 'BAILIAN_FIXTURE_ONLY')
+        b.write_json(path, {'bailian': {'base_url': 'https://wrong.example/v1', 'api_key': 'WRONG_HOST'}})
+        with self.assertRaises(p.ProviderError):
+            p.credential(binding, self.base, {})
+
 
     def test_credentials_never_cross_provider_hosts(self):
         binding = p.resolve_pair(configured())['executor']
@@ -216,9 +254,176 @@ class FrozenProjectTests(ProjectTests):
         return sid
 
 
+class BailianRelayTests(unittest.TestCase):
+    def setUp(self):
+        self.binding = p.resolve_binding({}, provider='bailian')
+        self.captured = []
+        captured = self.captured
+        class Model(BaseHTTPRequestHandler):
+            def log_message(self, *_): pass
+            def do_POST(self):
+                captured.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
+                data = b'{"status":"completed","usage":{"input_tokens":100,"output_tokens":20,"total_tokens":120}}'
+                self.send_response(200); self.send_header('Content-Type', 'application/json')
+                self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
+        self.server = ThreadingHTTPServer(('127.0.0.1', 0), Model)
+        self.worker = threading.Thread(target=self.server.serve_forever, daemon=True); self.worker.start()
+        self.endpoint = f'http://127.0.0.1:{self.server.server_port}/v1'
+        self.call = {'type': 'function_call', 'call_id': 'a', 'name': 'shell_command', 'arguments': '{"command":"pwd"}'}
+        self.result = {'type': 'function_call_output', 'call_id': 'a', 'output': 'fixture'}
+        self.payload = {'model': self.binding['model'], 'parallel_tool_calls': True,
+                        'input': [self.call, self.result], 'reasoning': {'effort': 'max'}}
+
+    def tearDown(self):
+        self.server.shutdown(); self.server.server_close(); self.worker.join()
+
+    def send(self, url, token, payload):
+        request = urllib.request.Request(url + '/responses', data=json.dumps(payload).encode(),
+                    headers={'Authorization': 'Bearer ' + token, 'Content-Type': 'application/json'})
+        with urllib.request.build_opener(urllib.request.ProxyHandler({})).open(request, timeout=5) as response:
+            return json.loads(response.read())
+
+    def test_parallel_history_is_paired_without_losing_items_or_usage(self):
+        from usage import UsageLedger
+        call2 = {'type': 'custom_tool_call', 'call_id': 'b', 'name': 'apply_patch', 'input': 'synthetic patch'}
+        result2 = {'type': 'custom_tool_call_output', 'call_id': 'b', 'output': 'patched'}
+        before = {'type': 'reasoning', 'id': 'rs1', 'summary': []}
+        after = {'role': 'user', 'content': 'continue'}
+        payload = {**self.payload, 'input': [before, self.call, call2, result2, self.result, after]}
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = UsageLedger(Path(folder) / 'usage.json', {'max_requests': 2, 'max_total_tokens': 1000})
+            with model_relay(self.endpoint, '', binding=self.binding, usage_ledger=ledger) as (url, token, _):
+                self.send(url, token, payload)
+                from closed_book import ExamPolicy, fingerprint
+                policy = ExamPolicy(self.binding)
+            with model_relay(self.endpoint, '', binding=self.binding, policy=policy, usage_ledger=ledger) as (url, token, _):
+                # This upstream fixture omits exam output; policy rejects its reply,
+                # but the prepared request must still fingerprint the actual wire input.
+                with self.assertRaises(urllib.error.HTTPError): self.send(url, token, payload)
+            self.assertEqual(ledger.snapshot()['totals']['total_tokens'], 240)
+        expected = [before, self.call, self.result, call2, result2, after]
+        self.assertEqual(self.captured[0]['input'], expected)
+        self.assertIs(self.captured[0]['parallel_tool_calls'], False)
+        self.assertEqual(self.captured[0]['reasoning'], payload['reasoning'])
+        self.assertEqual(policy.requests[0]['input_hash'], fingerprint(self.captured[1]['input']))
+        self.assertEqual(self.captured[1]['tools'], [])
+        self.assertEqual(self.captured[1]['tool_choice'], 'none')
+        self.assertEqual(payload['input'], [before, self.call, call2, result2, self.result, after])
+
+    def test_ambiguous_history_and_model_changes_never_reach_upstream(self):
+        from usage import UsageLedger
+        histories = [[self.result], [self.call], [self.call, self.call, self.result],
+                     [self.call, self.result, self.result],
+                     [self.call, {**self.result, 'call_id': 'other'}],
+                     [self.call, {**self.result, 'type': 'custom_tool_call_output'}],
+                     [self.call, {'role': 'user', 'content': 'interruption'}, self.result],
+                     [{**self.call, 'call_id': ''}, self.result]]
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = UsageLedger(Path(folder) / 'usage.json', {'max_requests': 1})
+            with model_relay(self.endpoint, '', binding=self.binding, usage_ledger=ledger) as (url, token, _):
+                for history in histories:
+                    with self.subTest(history=history), self.assertRaises(urllib.error.HTTPError):
+                        self.send(url, token, {**self.payload, 'input': history})
+                with self.assertRaises(urllib.error.HTTPError):
+                    self.send(url, token, {**self.payload, 'model': 'other-model'})
+            self.assertEqual(ledger.snapshot()['totals']['requests'], 0)
+        self.assertEqual(self.captured, [])
+
+    def test_other_cloud_history_is_not_rewritten(self):
+        with model_relay(self.endpoint, '', binding={'provider': 'ark'}) as (url, token, _):
+            self.send(url, token, self.payload)
+        self.assertEqual(self.captured, [self.payload])
+
+
 class ExecutorIntegrationTests(unittest.TestCase):
     setUp = BridgeTests.setUp
     tearDown = BridgeTests.tearDown
+
+    def test_real_codex_bailian_tools_and_same_thread_exam(self):
+        import isolation
+        from chat_adapter import encode
+        captured = []
+        def call(name, args, number):
+            return {'type': 'function_call', 'id': f'fc_{number}', 'call_id': f'call_{number}',
+                    'name': name, 'arguments': json.dumps(args)}
+        class Model(BaseHTTPRequestHandler):
+            def log_message(self, *_): pass
+            def do_POST(self):
+                req = json.loads(self.rfile.read(int(self.headers['Content-Length'])))
+                captured.append((self.path, self.headers.get('Authorization'), req))
+                history = req.get('input', [])
+                for index, item in enumerate(history):
+                    if item.get('type') in ('function_call', 'custom_tool_call') and (
+                            index + 1 == len(history) or history[index + 1].get('type') != item['type'] + '_output'
+                            or history[index + 1].get('call_id') != item['call_id']):
+                        self.send_error(400, 'Bailian requires adjacent tool results'); return
+                number = len(captured)
+                if number == 1:
+                    item = call('shell_command', {'command': 'cat calc.py'}, number)
+                elif number == 2:
+                    item = {'type': 'custom_tool_call', 'id': 'ctc_patch', 'call_id': 'call_patch', 'name': 'apply_patch',
+                            'input': '*** Begin Patch\n*** Update File: calc.py\n@@\n def add(a, b): return a + b\n+# BAILIAN_MEMORY_742\n*** End Patch'}
+                elif number == 3:
+                    code = "import os; from calc import add; assert add(-2,5)==3; assert not os.environ.get('DASHSCOPE_API_KEY'); assert not os.environ.get('TELOS_RELAY_TOKEN'); print('Bailian tool check passed')"
+                    item = call('shell_command', {'command': shlex.quote(sys.executable) + ' -c ' + shlex.quote(code)}, number)
+                else:
+                    text = json.dumps({'answers': [{'id': 'q1', 'answer': '5'}, {'id': 'q2', 'answer': '3'}]}) if req.get('tool_choice') == 'none' else 'Work complete.'
+                    item = {'type': 'message', 'id': f'msg_{number}', 'role': 'assistant', 'status': 'completed',
+                            'content': [{'type': 'output_text', 'text': text, 'annotations': []}]}
+                output = [item]
+                if number == 3:
+                    # Exercise a historical parallel batch even if the server ignores
+                    # parallel_tool_calls=false (or the CLI resumes older history).
+                    output.append(call('shell_command', {'command': 'git diff -- calc.py'}, 'parallel'))
+                response = {'id': f'resp_{number}', 'object': 'response', 'status': 'completed', 'model': req['model'],
+                            'output': output, 'usage': {'input_tokens': 100, 'output_tokens': 20, 'total_tokens': 120,
+                                                      'output_tokens_details': {'reasoning_tokens': 12}}}
+                data, content_type = encode(response, req.get('stream', False))
+                self.send_response(200); self.send_header('Content-Type', content_type)
+                self.send_header('Content-Length', str(len(data))); self.end_headers(); self.wfile.write(data)
+        server = ThreadingHTTPServer(('127.0.0.1', 0), Model)
+        worker = threading.Thread(target=server.serve_forever, daemon=True); worker.start()
+        b.write_json(b.CONFIG, {**configured(), 'job_timeout': 45})
+        sid = b.create_session(str(self.repo), 'Inspect calc.py, add the assigned comment and verify addition.',
+                               self.q, self.checks, provider='bailian', budget={'max_requests': 8})['session_id']
+        state, contract = b.load_session(b.run_dir(sid))
+        def relay(endpoint, key, timeout, **kwargs):
+            self.assertEqual(endpoint, p.PROVIDERS['bailian']['base_url'])
+            return model_relay(f'http://127.0.0.1:{server.server_port}/compatible-mode/v1', key, timeout, **kwargs)
+        try:
+            with patch.object(b, 'provider_credential', return_value=('SYNTHETIC_BAILIAN', 'test')), \
+                    patch.object(isolation, 'model_relay', side_effect=relay), \
+                    patch.dict(os.environ, {'DASHSCOPE_API_KEY': 'PARENT_ONLY_SECRET'}):
+                result = b.peer_turn(state, contract, 'Perform the task using shell_command and apply_patch.')
+                state['thread_id'] = result['thread_id']
+                commit, _ = b.snapshot(state, 'bailian-probe')
+                exam = b.closed_book_exam(state, contract, commit)
+            self.assertEqual(exam['executor_thread_id'], result['thread_id'])
+            self.assertEqual(exam['tool_call_count'], 0)
+            self.assertEqual(exam['answers'][0]['answer'], '5')
+            self.assertIn('BAILIAN_MEMORY_742', (Path(state['worktree']) / 'calc.py').read_text())
+            self.assertEqual(len(captured), 5)
+            for path, auth, req in captured:
+                self.assertEqual(path, '/compatible-mode/v1/responses')
+                self.assertEqual(auth, 'Bearer SYNTHETIC_BAILIAN')
+                self.assertEqual(req['model'], 'deepseek-v4.1-flash-1017')
+                self.assertEqual(req['reasoning']['effort'], 'max')
+                self.assertFalse(req.get('store', False))
+                if req.get('tool_choice') != 'none':
+                    self.assertIs(req['parallel_tool_calls'], False)
+                self.assertTrue(all(t['type'] in ('function', 'custom') for t in req.get('tools', [])))
+                self.assertNotIn('PARENT_ONLY_SECRET', json.dumps(req))
+                self.assertNotIn(self.q[0]['reference'], json.dumps(req))
+            self.assertEqual(captured[-1][2]['tools'], [])
+            self.assertEqual(captured[-1][2]['tool_choice'], 'none')
+            self.assertIn('Bailian tool check passed', json.dumps(captured[-1][2]['input']))
+            usage = b.usage_snapshot(state, contract)
+            self.assertEqual(usage['totals']['requests'], 5)
+            self.assertEqual(usage['totals']['failed_requests'], 0)
+            self.assertEqual(usage['totals']['total_tokens'], 600)
+            self.assertEqual(usage['phases']['exam']['requests'], 1)
+        finally:
+            server.shutdown(); server.server_close(); worker.join()
 
     def test_real_codex_ark_max_and_legacy_provider_id(self):
         captured = []
@@ -330,7 +535,7 @@ class ExecutorIntegrationTests(unittest.TestCase):
 
 def load_tests(loader, tests, pattern):
     suite = unittest.TestSuite()
-    for cls in (BindingTests, CredentialAndExamTests, FrozenProjectTests, ExecutorIntegrationTests):
+    for cls in (BindingTests, CredentialAndExamTests, FrozenProjectTests, BailianRelayTests, ExecutorIntegrationTests):
         for name in cls.__dict__:
             if name.startswith('test_'): suite.addTest(cls(name))
     return suite

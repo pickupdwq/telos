@@ -1046,8 +1046,9 @@ def peer_turn(state, contract, message, phase="work", policy=None):
     ledger = usage_ledger(state, contract)
     usage_context = {'phase': phase, 'provider': binding['provider'], 'model': binding['model'],
                      'job': state.get('job_id')}
-    options = {'binding': binding, 'validate': lambda: assert_active(bridge_services(), binding),
-               'diagnostics': diagnostics} if local else {}
+    options = {'binding': binding, 'diagnostics': diagnostics} if local or binding['provider'] == 'bailian' else {}
+    if local:
+        options['validate'] = lambda: assert_active(bridge_services(), binding)
     with (lease(bridge_services(), binding) if local else contextlib.nullcontext()), \
             model_relay(binding['base_url'], key, binding['http_timeout'], policy=policy,
                         usage_ledger=ledger, usage_context=usage_context, budget_failure=budget_failure,
@@ -1087,7 +1088,8 @@ def peer_turn(state, contract, message, phase="work", policy=None):
             if policy and policy.failure:
                 raise GateError(policy.failure) from None
             if diagnostics.get('failure'):
-                raise GateError('Local executor relay: ' + diagnostics['failure']) from error
+                label = 'Local' if local else 'Bailian'
+                raise GateError(label + ' executor relay: ' + diagnostics['failure']) from error
             raise
 
 

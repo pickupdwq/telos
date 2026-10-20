@@ -36,13 +36,15 @@ class InstallerTests(unittest.TestCase):
 
     def test_install_manifest_launchers_and_mcp_with_shell_metacharacters(self):
         result = install.install(self.prefix, self.bin_dir)
-        self.assertEqual(result["version"], "3.5.0")
+        self.assertEqual(result["version"], "3.6.0")
         self.assertTrue((self.prefix / 'audit_browser.cjs').is_file())
         self.assertTrue((self.prefix / 'local_executor.py').is_file())
         self.assertTrue((self.prefix / 'chat_adapter.py').is_file())
+        self.assertTrue((self.prefix / 'bailian_models.json').is_file())
         cfg = json.loads((self.prefix / "config.json").read_text())
         self.assertEqual(cfg["default_executor_profile"], "deepseek_official")
         self.assertEqual(cfg['local_executor'], {'active': None, 'endpoints': {}})
+        self.assertEqual(cfg['profiles']['bailian_deepseek']['provider'], 'bailian')
         self.assertFalse((self.prefix / "credentials.json").exists())
         manifest = json.loads((self.prefix / "install-manifest.json").read_text())
         for relative, digest in manifest["files"].items():
@@ -174,7 +176,7 @@ class InstallerTests(unittest.TestCase):
         launcher = self.bin_dir / "telos"
         before = launcher.read_bytes()
         result = install.install(self.prefix, self.bin_dir, upgrade=True)
-        self.assertEqual(result["version"], "3.5.0")
+        self.assertEqual(result["version"], "3.6.0")
         self.assertEqual(launcher.read_bytes(), before)
         self.assertTrue((self.skill / "SKILL.md").is_file())
         self.assertEqual(set(result["backups"]), {"runtime"})

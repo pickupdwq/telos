@@ -153,6 +153,7 @@ The installed example selects:
 | Default: `deepseek_official` | DeepSeek official | `deepseek-flash` | `max` |
 | Optional: `ark_coding_plan` | Volcengine Ark Coding Plan | `glm-5.3-flash` | `max` |
 | Optional: `openai_executor` | OpenAI API | `gpt-6.1-sol` | `xhigh` (explicit example override) |
+| Optional: `bailian_deepseek` | Alibaba Cloud Bailian, Beijing | `deepseek-v4.1-flash-1017` | `max` |
 | Optional: `local` | Active local endpoint | Locally configured model ID | `none` by default; reasoning parameter omitted upstream |
 
 Cloud executor bindings default to `max` unless explicitly overridden. Local endpoints omit reasoning parameters by default and support explicit configuration. The supervisor's effort comes from the original Codex session; Telos does not silently change it. Model availability and supported reasoning levels depend on the provider; unsupported settings fail rather than silently downgrade.
@@ -164,6 +165,8 @@ To select another executor, tell the supervisor:
 > Use Telos with `executor_profile=ark_coding_plan` for this task.
 
 Profiles live in `~/.local/share/telos/config.json`. Each task freezes its provider, model and effort; changing defaults affects new tasks. Replacing an executor uses a new session or the constrained project reassignment flow. [Configuration details →](docs/configuration.md)
+
+Bailian uses its own `DASHSCOPE_API_KEY` / `telos auth bailian` credential and the native Responses API. Select `executor_profile=bailian_deepseek`; upgrading preserves your old configuration, so add this optional profile explicitly. [Bailian setup and region boundaries →](docs/configuration.md#alibaba-cloud-bailian)
 
 Save local endpoints with `telos local add`, activate one with `telos local select`, and choose `executor_profile=local` for tasks. Ark and DeepSeek profiles remain available. Existing local tasks retain their original address/model and require that endpoint to be selected again before resuming. [Local executor setup and examples →](docs/local-executors.md)
 

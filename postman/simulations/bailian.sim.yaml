@@ -1,0 +1,5 @@
+simulation: telos-bailian
+routing: path
+mocks:
+  - routeKey: bailian
+    path: ../mocks/bailian/default.js

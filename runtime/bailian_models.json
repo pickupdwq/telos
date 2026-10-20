@@ -1,0 +1,36 @@
+{
+  "models": [
+    {
+      "slug": "deepseek-v4.1-flash-1017",
+      "display_name": "Bailian DeepSeek V4.1 Flash 1017",
+      "description": "Alibaba Cloud Bailian Responses API snapshot with shell and patch tools.",
+      "default_reasoning_level": "max",
+      "supported_reasoning_levels": [
+        {"effort": "none", "description": "Request no reasoning"},
+        {"effort": "minimal", "description": "Request minimal reasoning"},
+        {"effort": "low", "description": "Request low reasoning"},
+        {"effort": "medium", "description": "Request medium reasoning"},
+        {"effort": "high", "description": "Request high reasoning"},
+        {"effort": "xhigh", "description": "Request extra high reasoning"},
+        {"effort": "max", "description": "Request maximum reasoning"}
+      ],
+      "context_window": 1000000,
+      "effective_context_window_percent": 80,
+      "auto_compact_token_limit": 700000,
+      "supports_parallel_tool_calls": false,
+      "supports_image_detail_original": true,
+      "input_modalities": ["text", "image"],
+      "apply_patch_tool_type": "freeform",
+      "shell_type": "shell_command",
+      "prefer_websockets": false,
+      "visibility": "list",
+      "supported_in_api": true,
+      "priority": 1,
+      "base_instructions": "You are an independent coding assistant. Follow the assigned task and workspace restrictions. Use available local tools to inspect, implement and verify the change. Report results accurately.",
+      "support_verbosity": false,
+      "supports_reasoning_summaries": false,
+      "experimental_supported_tools": [],
+      "truncation_policy": {"mode": "tokens", "limit": 10000}
+    }
+  ]
+}

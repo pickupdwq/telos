@@ -91,7 +91,7 @@ def snapshot_runtime(source, destination, cfg):
     for path in sorted(source.iterdir()):
         # Installed credentials, manifests, caches, reports and launchers are
         # not runtime source. Both sides use the same dedicated Codex CLI.
-        if path.suffix not in ('.py', '.cjs') and path.name != 'deepseek_models.json':
+        if path.suffix not in ('.py', '.cjs') and path.name not in ('deepseek_models.json', 'bailian_models.json'):
             continue
         if path.is_symlink() or not path.is_file():
             raise ComparisonError('Runtime source must consist of regular files')

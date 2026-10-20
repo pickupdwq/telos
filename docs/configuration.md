@@ -50,11 +50,74 @@ Only add an alias after checking that its effective Codex configuration uses the
 | `deepseek` | `https://api.deepseek.com` | `DEEPSEEK_API_KEY` | `telos auth deepseek` |
 | `ark` | `https://ark.cn-beijing.volces.com/api/coding/v3` | `ARK_API_KEY` | `telos auth ark` |
 | `openai` | `https://api.openai.com/v1` | `OPENAI_API_KEY` | `telos auth openai` |
+| `bailian` | `https://dashscope.aliyuncs.com/compatible-mode/v1` | `DASHSCOPE_API_KEY` | `telos auth bailian` |
 | `local` | One active loopback endpoint | Dedicated `--key-env`, or none | `telos auth local` |
 
 Lookup order: matching environment variable, Telos local credential store, then an eligible OpenCode configuration/auth entry with a matching endpoint. The built-in OpenCode provider IDs are `deepseek` and `huoshancodingplan`. Credentials are resolved at request time and can be rotated without changing frozen task contracts.
 
 The interactive command accepts no key argument and writes `~/.config/telos/credentials.json` with mode `0600`. Keep keys out of task arguments, configuration examples, command history and Git. The original supervisor uses its own Codex authentication; Telos does not copy that login to executor sessions.
+
+## Alibaba Cloud Bailian
+
+The built-in `bailian` provider pins `deepseek-v4.1-flash-1017` at the **Beijing**
+pay-as-you-go endpoint `https://dashscope.aliyuncs.com/compatible-mode/v1`.
+It uses the native Responses API for work and the same-thread closed-book exam.
+It has separate credentials; it never reuses the official DeepSeek or Ark key.
+
+Fresh installs include `bailian_deepseek`. For an existing installation, upgrade
+the runtime and merge this entry into `profiles` in the installed `config.json`,
+preserving your default and other profiles:
+
+```json
+"bailian_deepseek": {
+  "provider": "bailian",
+  "model": "deepseek-v4.1-flash-1017",
+  "reasoning_effort": "max"
+}
+```
+
+Run `telos auth bailian` to enter the key privately, reload MCP, then select
+`executor_profile=bailian_deepseek`. Explicit `provider=bailian` also selects the
+snapshot without requiring a named profile. Telos sends the selected effort
+unchanged as `reasoning.effort`, including `none`; it does not translate it or
+silently retry at a lower level. Available Telos values are `none`, `minimal`,
+`low`, `medium`, `high`, `xhigh`, `max`. These are request values, not a claim of
+seven distinct native reasoning levels: Bailian can map levels internally.
+`max` and `none` were checked against this snapshot; other levels and their
+quality differences need separate validation.
+
+The isolated executor includes a dedicated model catalog for the one-million-token
+window and its tested shell/patch tools. Its effective input window is 80%, with
+local history compaction starting at 700,000 tokens, to leave room before the
+Responses API's documented truncation boundary. Remote `/responses/compact`
+is disabled. The catalog is copied once per executor conversation and does not
+alter the original supervisor's settings. Long-context compaction and visual
+tasks are not established by a small coding smoke test.
+
+For Bailian work requests, the relay explicitly sends `parallel_tool_calls=false`.
+It also pairs complete historical tool-call batches with their matching results,
+because Bailian requires each result immediately after its call. Missing,
+duplicate or ambiguous results are rejected locally without a paid request;
+other providers' history is unchanged. Closed-book exams still disable all tools.
+
+API keys and model availability are region-specific. The shared Beijing domain
+continues to accept keys from Beijing workspaces. Other regions or a dedicated
+workspace URL require a separately named HTTPS provider under `providers`, a
+matching key and independent executor compatibility validation; do not replace
+the frozen built-in endpoint or send this key to another region.
+
+百炼使用独立的北京入口与凭据，保留本地、火山及 DeepSeek 官方配置。通过
+`executor_profile=bailian_deepseek` 选择，默认请求 `max`；工作、考试、用量统计、
+预算和原大总管验收仍走原流程。Key 只保存在仓库外的私有凭据文件。
+
+Official references (checked 2026-10-20):
+[API keys](https://docs.bailian.console.aliyun.com/zh/model-studio/get-api-key),
+[regional endpoints](https://docs.bailian.console.aliyun.com/zh/model-studio/base-url),
+[snapshot capabilities](https://docs.bailian.console.aliyun.com/zh/model-studio/deepseek-v4-1-flash),
+[Responses contract](https://docs.bailian.console.aliyun.com/zh/model-studio/qwen-api-via-openai-responses),
+[Codex configuration](https://docs.bailian.console.aliyun.com/zh/model-studio/codex).
+The live snapshot also accepted the CLI's freeform `custom` patch tool; this
+compatibility was measured separately from the documented function-tool API.
 
 ## Local executor endpoints
 

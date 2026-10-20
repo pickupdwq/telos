@@ -1,11 +1,17 @@
 # Changelog / 更新记录
 
-## Unreleased
+## 3.6.0 — 2026-10-20
+
+- Add the Beijing Bailian executor profile `bailian_deepseek`, pinned to `deepseek-v4.1-flash-1017`, with independent credentials, native Responses work/exams and configurable reasoning effort (default `max`).
+- Supply the isolated Bailian model catalog and enforce serial tool requests at its relay boundary. Pair complete historical tool-call batches with their results; reject missing, duplicate or ambiguous results before forwarding. Preserve other providers and existing installation configuration.
+- Add real-CLI provider regressions and a local Postman HTTP simulation for tool history, same-thread closed-book exams, credential isolation and usage accounting. A separate small real-model coding task completed the current-supervisor acceptance gate; long-context and visual capabilities remain unverified.
 
 - Add an explicitly started `telos compare` CLI with frozen runtime/configuration snapshots, 20 public development tasks, paired/counterbalanced ordering and independent trial state.
 - Reuse the existing original-supervisor work/exam/repair/acceptance gate in explicit manual experiments; preserve the ordinary MCP catalog and task workflow.
 - Report outcome regressions, independent outcome checks, code-audit detection, requests/tokens including failed attempts, unknown usage and separately labelled provider/wall time. Add bounded trials, pause/cancel and a serial experiment lease. No automatic grading, promotion, installation or main-branch changes.
 - Fix the isolated native verifier's outdated runtime copy list so newly imported modules are included in MCP startup verification.
+
+新增阿里百炼北京入口与 `deepseek-v4.1-flash-1017` 执行者，默认请求 `max`，保留本地、火山和 DeepSeek 官方配置。修复百炼工具结果顺序兼容问题，并完成真实编码、同会话闭卷考试与原大总管验收的小型验证。
 
 新增独立评测与版本对比入口，复用现有验收流程，隔离实验状态与经验。内置 20 个公开开发样例，输出质量、用量、耗时和成对退步记录；不代表私有盲测、真实页面走查或已经实现 RSI。
 

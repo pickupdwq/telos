@@ -116,7 +116,7 @@ def main():
         # Match the installer's runtime payload. A fixed module list silently
         # misses newly imported modules and breaks only the isolated MCP process.
         for source in sorted(args.source.iterdir()):
-            if source.suffix in (".py", ".cjs") or source.name == "deepseek_models.json":
+            if source.suffix in (".py", ".cjs") or source.name in ("deepseek_models.json", "bailian_models.json"):
                 shutil.copy2(source, runtime / source.name)
         state_root = base / "private"
         cache = base / "cache"

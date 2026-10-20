@@ -30,6 +30,11 @@ PROVIDERS = {
     'openai': {'base_url': 'https://api.openai.com/v1', 'env': 'OPENAI_API_KEY',
                'credential_provider': None, 'default_model': None, 'models': None,
                'exam_wire_api': 'responses', 'billing': 'tokens'},
+    'bailian': {'base_url': 'https://dashscope.aliyuncs.com/compatible-mode/v1',
+                'env': 'DASHSCOPE_API_KEY', 'credential_provider': None,
+                'default_model': 'deepseek-v4.1-flash-1017',
+                'models': ('deepseek-v4.1-flash-1017',),
+                'exam_wire_api': 'responses', 'billing': 'tokens'},
 }
 LIMITS = {'http_timeout': (1, 3600, 180), 'job_timeout': (1, 86400, 600),
           'exam_max_tokens': (1, 131072, 8192), 'exam_format_attempts': (1, 3, 3)}

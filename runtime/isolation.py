@@ -245,12 +245,65 @@ def _terminal(status, outcome):
     return status, None
 
 
+def _bailian_request(raw, binding):
+    """Pair historical tool results as required by Bailian's Responses API.
+
+    Codex can retain [call1, call2, result1, result2] even when the catalogue
+    disables parallel tools. Only reorder a complete, contiguous tool batch;
+    never move results across messages or discard ambiguous history.
+    """
+    request = json.loads(raw)
+    if request.get('model') != binding['model']:
+        raise ValueError('Bailian request changed the frozen model')
+    request['parallel_tool_calls'] = False
+    history = request.get('input')
+    if isinstance(history, list):
+        pairs = {'function_call': 'function_call_output', 'custom_tool_call': 'custom_tool_call_output'}
+        output_types = set(pairs.values())
+        ordered, seen = [], set()
+        index = 0
+        while index < len(history):
+            item = history[index]
+            kind = item.get('type')
+            if kind not in pairs:
+                if kind in output_types:
+                    raise ValueError('Bailian history has an unmatched tool result')
+                ordered.append(item)
+                index += 1
+                continue
+            calls = []
+            while index < len(history) and history[index].get('type') in pairs:
+                call = history[index]
+                call_id = call.get('call_id')
+                if not isinstance(call_id, str) or not call_id or call_id in seen:
+                    raise ValueError('Bailian history has a missing or duplicate tool call ID')
+                seen.add(call_id)
+                calls.append(call)
+                index += 1
+            outputs = {}
+            while index < len(history) and history[index].get('type') in output_types:
+                output = history[index]
+                call_id = output.get('call_id')
+                if not isinstance(call_id, str) or not call_id or call_id in outputs:
+                    raise ValueError('Bailian history has a missing or duplicate tool result ID')
+                outputs[call_id] = output
+                index += 1
+            if set(outputs) != {call['call_id'] for call in calls} or any(
+                    outputs[call['call_id']]['type'] != pairs[call['type']] for call in calls):
+                raise ValueError('Bailian history requires complete adjacent tool call/result batches')
+            for call in calls:
+                ordered.extend((call, outputs[call['call_id']]))
+        request['input'] = ordered
+    return json.dumps(request, ensure_ascii=False).encode()
+
+
 @contextlib.contextmanager
 def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=None, diagnostics=None,
                 usage_ledger=None, usage_context=None, budget_failure=None):
     """Only the bridge holds upstream credentials. No arbitrary URL/proxy methods."""
     token = secrets.token_urlsafe(48)
     local = binding is not None and binding.get('provider') == 'local'
+    bailian = binding is not None and binding.get('provider') == 'bailian'
     opener = urllib.request.build_opener(NoRedirect(), *([urllib.request.ProxyHandler({})] if local else []))
     context = usage_context or {}
 
@@ -261,7 +314,7 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
         def do_POST(self):
             if not hmac.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + token):
                 self.send_error(403); return
-            allowed = ('/v1/responses',) if policy or local else ('/v1/responses', '/v1/responses/compact')
+            allowed = ('/v1/responses',) if policy or local or bailian else ('/v1/responses', '/v1/responses/compact')
             if self.path not in allowed:
                 self.send_error(404); return
             if budget_failure and budget_failure.get('message'):
@@ -302,6 +355,8 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                 if not 0 < length <= 16 * 1024 * 1024:
                     self.send_error(413); return
                 body = self.rfile.read(length)
+                if bailian:
+                    body = _bailian_request(body, binding)
                 if policy:
                     body = policy.prepare(body)
                 suffix = self.path.removeprefix('/v1')

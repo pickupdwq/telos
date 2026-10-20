@@ -153,6 +153,7 @@ cd /你的/干净Git项目/绝对路径
 | 默认：`deepseek_official` | DeepSeek 官方 | `deepseek-flash` | `max` |
 | 可选：`ark_coding_plan` | 火山 Ark Coding Plan | `glm-5.3-flash` | `max` |
 | 可选：`openai_executor` | OpenAI API | `gpt-6.1-sol` | `xhigh`，示例中显式覆盖 |
+| 可选：`bailian_deepseek` | 阿里云百炼，北京地域 | `deepseek-v4.1-flash-1017` | `max` |
 | 可选：`local` | 当前选中的本地入口 | 本机配置的模型 ID | 默认 `none`，不向上游发送推理参数 |
 
 云端执行者绑定未显式指定时默认 `max`；本地入口默认不发送推理参数，可以显式配置。大总管的推理强度继承原 Codex 对话，Telos 不会暗中修改。模型权限和可用强度以服务商支持为准，不兼容时明确失败，不静默降级。
@@ -164,6 +165,8 @@ cd /你的/干净Git项目/绝对路径
 > 这个任务使用 Telos，执行者选 `executor_profile=ark_coding_plan`。
 
 配置文件位于 `~/.local/share/telos/config.json`。任务创建时冻结服务商、模型和强度，修改默认配置只影响新任务。更换执行者需要新会话，或使用受约束的项目重新分配流程。详见[配置指南](docs/configuration.md)。
+
+百炼使用独立的 `DASHSCOPE_API_KEY` 或 `telos auth bailian` 凭据，通过 Responses API 接入。任务选择 `executor_profile=bailian_deepseek`；已有安装升级会保留配置，需补加此可选配置项。详见[百炼配置与地域边界](docs/configuration.md#alibaba-cloud-bailian)。
 
 本地入口通过 `telos local add` 保存、`telos local select` 切换，任务选择 `executor_profile=local`。火山与 DeepSeek 配置继续保留。已创建的本地任务绑定原地址和模型，切换后需选回原入口才能续跑。[本地执行者配置与示例](docs/local-executors.md)
 
