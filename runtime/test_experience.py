@@ -609,9 +609,324 @@ class SourceIdentityTests(unittest.TestCase):
         self.assertEqual(path.read_bytes(), before)
 
 
+class PromotionTargetTests(unittest.TestCase):
+    """Promotion must touch only the canonical record of each accepted child."""
+
+    pid = 'p' * 32
+    integration_commit = 'd' * 40
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.repo = self.root / 'repo'
+        self.repo.mkdir()
+        self.state = self.root / 'state'
+        self.folder = self.state / 'experience'
+        self.projects = {}
+        self.reads = []
+        self.writes = []
+        manager = SimpleNamespace(load=self.load_project)
+        self.bridge = SimpleNamespace(
+            STATE=self.state, GateError=b.GateError, digest=b.digest,
+            read_json=self.read_json, write_json=self.write_json,
+            run_dir=self.run_dir, load_session=self.load_session,
+            deny_leak=lambda text, contract: None, git=self.git,
+            project_manager=lambda: manager)
+        self.experience = Experience(self.bridge)
+
+    def read_json(self, path):
+        path = Path(path)
+        self.reads.append(path)
+        return b.read_json(path)
+
+    def write_json(self, path, value):
+        path = Path(path)
+        self.writes.append(path)
+        b.write_json(path, value)
+
+    def run_dir(self, session_id):
+        return self.state / 'runs' / session_id
+
+    def load_session(self, root):
+        root = Path(root)
+        return b.read_json(root / 'state.json'), b.read_json(root / 'contract.json')
+
+    def load_project(self, project_id):
+        return self.projects[project_id]
+
+    @staticmethod
+    def git(tree, *args):
+        if args[:2] == ('diff', '--name-only'):
+            return 'a.py\n'
+        raise AssertionError('unexpected git arguments: %r' % (args,))
+
+    def session_id(self, label):
+        return b.digest({'promotion-session': label})[:32]
+
+    def canonical_id(self, session_id, packet_id):
+        return b.digest({'session_id': session_id, 'packet_id': packet_id})
+
+    def add_session(self, session_id, *, packet_id='packet-a', commit='c' * 40,
+                    lessons=('Preserve the reviewed public behavior.',)):
+        contract = {'task': 'Implement the accepted child', 'allowed_paths': ['a.py'],
+                    'assessment_mode': 'closed_book', 'questions': [], 'threshold': 90}
+        state = {'session_id': session_id, 'repo': str(self.repo), 'project_id': self.pid,
+                 'base_commit': 'b' * 40, 'worktree': str(self.root / 'trees' / session_id),
+                 'model': 'test-model', 'rounds': 1, 'provider': 'test',
+                 'public_lessons': list(lessons), 'public_repair_feedback': [],
+                 'infra_failures': 0, 'contract_hash': b.digest(contract),
+                 'acceptance': {'accepted': True, 'commit': commit, 'packet_id': packet_id,
+                                'checks_passed': True, 'blockers': [], 'critical_failed': False,
+                                'score': 100, 'threshold': 90}}
+        b.write_json(self.run_dir(session_id) / 'state.json', state)
+        b.write_json(self.run_dir(session_id) / 'contract.json', contract)
+        return state
+
+    def project(self, children, *, phase='accepted', commit=None):
+        tasks = [{'id': 'task-%d' % index, 'phase': child_phase, 'session_id': session_id}
+                 for index, (session_id, child_phase) in enumerate(children)]
+        project = {
+            'project_id': self.pid, 'phase': phase, 'tasks': tasks,
+            'contract': {'task': 'Project acceptance', 'allowed_paths': ['a.py'],
+                         'assessment_mode': 'closed_book'},
+            'integration': {'commit': commit or self.integration_commit,
+                            'packet_id': 'i' * 64,
+                            'worktree': str(self.root / 'integration')}}
+        self.projects[self.pid] = project
+        return project
+
+    def seed(self, ident, session_id, packet_id, *, project_id=None, project_commit=None,
+             source_commit='a' * 40, created_at=1, task='Old experience',
+             lessons=('Old lesson.',), outcome='accepted', reusable=False, disabled=False):
+        entry = {'id': ident, 'repo': str(self.repo), 'session_id': session_id,
+                 'project_id': project_id, 'source_commit': source_commit,
+                 'source_packet_id': packet_id, 'created_at': created_at,
+                 'task': task, 'paths': ['a.py'], 'changed_files': ['a.py'],
+                 'public_lessons': list(lessons), 'outcome': outcome,
+                 'reusable': reusable, 'disabled': disabled}
+        if project_commit is not None:
+            entry['project_commit'] = project_commit
+        entry['content_hash'] = b.digest({k: v for k, v in entry.items() if k != 'content_hash'})
+        path = self.folder / (ident + '.json')
+        b.write_json(path, entry)
+        return entry, path
+
+    def guard_experience_reads(self, allowed=()):
+        real_read = self.bridge.read_json
+        allowed = {Path(path).name for path in allowed}
+
+        def read_json(path):
+            path = Path(path)
+            if path.parent == self.folder and path.name not in allowed:
+                raise AssertionError('unexpected experience read: ' + path.name)
+            return real_read(path)
+
+        return patch.object(self.bridge, 'read_json', side_effect=read_json)
+
+    def experience_reads(self):
+        return [path for path in self.reads if path.parent == self.folder]
+
+    def experience_writes(self):
+        return [path for path in self.writes if path.parent == self.folder]
+
+    def test_unrelated_valid_and_malformed_corpus_is_never_read_or_rewritten(self):
+        sid = self.session_id('only')
+        self.add_session(sid, lessons=['Keep the accepted behavior stable.'])
+        project = self.project([(sid, 'accepted')])
+        target = self.folder / (self.canonical_id(sid, 'packet-a') + '.json')
+        unrelated = {}
+
+        for index in range(300):
+            ident = b.digest({'unrelated': index})
+            _, path = self.seed(ident, self.session_id('unrelated-%d' % index),
+                                'packet-%d' % index, created_at=index + 10)
+            unrelated[path] = path.read_bytes()
+        malformed = {
+            'truncated.json': b'{"id": "cut off',
+            'array.json': b'[]',
+            'null.json': b'null',
+            'invalid-utf8.json': b'\xff\xfe\x00broken',
+        }
+        for name, payload in malformed.items():
+            path = self.folder / name
+            path.write_bytes(payload)
+            unrelated[path] = payload
+
+        with self.guard_experience_reads(allowed=[target]):
+            self.experience.promote_project(project)
+
+        promoted = b.read_json(target)
+        self.assertTrue(self.experience.valid(promoted))
+        self.assertTrue(promoted['reusable'])
+        self.assertEqual(promoted['project_commit'], self.integration_commit)
+        self.assertEqual(promoted['session_id'], sid)
+        self.assertEqual(promoted['public_lessons'], ['Keep the accepted behavior stable.'])
+        self.assertEqual(self.experience_reads(), [target])
+        self.assertEqual(self.experience_writes(), [target, target])
+        self.assertEqual({path: path.read_bytes() for path in unrelated}, unrelated)
+
+    def test_missing_record_is_reconstructed_from_current_accepted_source(self):
+        sid = self.session_id('missing')
+        self.add_session(sid, packet_id='packet-current', commit='e' * 40,
+                         lessons=['Reuse the reviewed implementation approach.'])
+        project = self.project([(sid, 'accepted')])
+        target = self.folder / (self.canonical_id(sid, 'packet-current') + '.json')
+        self.assertFalse(target.exists())
+
+        self.experience.promote_project(project)
+
+        promoted = b.read_json(target)
+        self.assertTrue(self.experience.valid(promoted))
+        self.assertEqual(promoted['source_commit'], 'e' * 40)
+        self.assertEqual(promoted['source_packet_id'], 'packet-current')
+        self.assertEqual(promoted['project_id'], self.pid)
+        self.assertEqual(promoted['public_lessons'], ['Reuse the reviewed implementation approach.'])
+        self.assertTrue(promoted['reusable'])
+        self.assertFalse(promoted['disabled'])
+        self.assertEqual(promoted['project_commit'], self.integration_commit)
+        self.assertEqual(self.experience_reads(), [target])
+        self.assertEqual(self.experience_writes(), [target, target])
+
+    def test_stale_canonical_content_is_reconstructed_not_trusted(self):
+        sid = self.session_id('stale-content')
+        state = self.add_session(sid, packet_id='packet-current', commit='f' * 40,
+                                 lessons=['Current reviewed lesson.'])
+        project = self.project([(sid, 'accepted')])
+        target = self.folder / (self.canonical_id(sid, 'packet-current') + '.json')
+        self.seed(self.canonical_id(sid, 'packet-current'), sid, 'packet-old',
+                  project_id='foreign-project', source_commit='0' * 40,
+                  task='Unauthorized old content', lessons=['Stale lesson.'], reusable=False)
+
+        with self.guard_experience_reads(allowed=[target]):
+            self.experience.promote_project(project)
+
+        promoted = b.read_json(target)
+        self.assertTrue(self.experience.valid(promoted))
+        self.assertEqual(promoted['source_commit'], state['acceptance']['commit'])
+        self.assertEqual(promoted['source_packet_id'], 'packet-current')
+        self.assertEqual(promoted['project_id'], self.pid)
+        self.assertEqual(promoted['public_lessons'], ['Current reviewed lesson.'])
+        self.assertEqual(promoted['task'], 'Implement the accepted child')
+        self.assertEqual(promoted['project_commit'], self.integration_commit)
+        self.assertTrue(promoted['reusable'])
+        self.assertEqual(self.experience_reads(), [target, target])
+
+    def test_disabled_choice_is_preserved_across_repeat_promotion(self):
+        sid = self.session_id('disabled')
+        self.add_session(sid)
+        project = self.project([(sid, 'accepted')])
+        target = self.folder / (self.canonical_id(sid, 'packet-a') + '.json')
+        self.seed(self.canonical_id(sid, 'packet-a'), sid, 'packet-a',
+                  project_id=self.pid, disabled=True)
+
+        with self.guard_experience_reads(allowed=[target]):
+            self.experience.promote_project(project)
+            first = b.read_json(target)
+            self.experience.promote_project(project)
+            second = b.read_json(target)
+
+        for promoted in (first, second):
+            self.assertTrue(self.experience.valid(promoted))
+            self.assertTrue(promoted['disabled'])
+            self.assertTrue(promoted['reusable'])
+            self.assertEqual(promoted['project_commit'], self.integration_commit)
+        self.assertEqual(sorted(path.name for path in self.folder.glob('*.json')),
+                         [target.name])
+        self.assertEqual(set(self.experience_reads()), {target})
+        self.assertEqual(set(self.experience_writes()), {target})
+
+    def test_stale_and_foreign_session_records_remain_byte_unchanged(self):
+        sid = self.session_id('shared-session')
+        self.add_session(sid)
+        project = self.project([(sid, 'accepted')])
+        target = self.folder / (self.canonical_id(sid, 'packet-a') + '.json')
+        stale_id = self.canonical_id(sid, 'packet-old')
+        foreign_id = b.digest({'foreign-owner': sid, 'packet': 'packet-a'})
+        _, stale_path = self.seed(stale_id, sid, 'packet-old', project_id=self.pid,
+                                  project_commit='9' * 40, task='Old packet record')
+        _, foreign_path = self.seed(foreign_id, sid, 'packet-a', project_id='other-project',
+                                    project_commit='8' * 40, task='Foreign project record')
+        before = {stale_path: stale_path.read_bytes(), foreign_path: foreign_path.read_bytes()}
+
+        with self.guard_experience_reads(allowed=[target]):
+            self.experience.promote_project(project)
+
+        self.assertEqual(self.experience_reads(), [target])
+        self.assertEqual(self.experience_writes(), [target, target])
+        self.assertEqual({path: path.read_bytes() for path in before}, before)
+        promoted = b.read_json(target)
+        self.assertEqual(promoted['project_id'], self.pid)
+        self.assertEqual(promoted['session_id'], sid)
+
+    def test_only_accepted_children_are_promoted_when_project_is_accepted(self):
+        accepted = self.session_id('accepted')
+        other = self.session_id('other-accepted')
+        running = self.session_id('running')
+        absent = self.session_id('absent')
+        self.add_session(accepted, packet_id='packet-a')
+        self.add_session(other, packet_id='packet-c', commit='e' * 40)
+        self.add_session(running, packet_id='packet-r')
+        project = self.project([(accepted, 'accepted'), (other, 'accepted'),
+                                (running, 'running'), (absent, 'running')])
+        accepted_target = self.folder / (self.canonical_id(accepted, 'packet-a') + '.json')
+        other_target = self.folder / (self.canonical_id(other, 'packet-c') + '.json')
+        running_target = self.folder / (self.canonical_id(running, 'packet-r') + '.json')
+        absent_target = self.folder / (self.canonical_id(absent, 'packet-x') + '.json')
+        _, running_path = self.seed(self.canonical_id(running, 'packet-r'), running,
+                                    'packet-r', project_id=self.pid,
+                                    task='Unaccepted child record')
+        running_before = running_path.read_bytes()
+
+        with self.guard_experience_reads(allowed=[accepted_target, other_target]):
+            self.experience.promote_project(project)
+
+        self.assertEqual(set(self.experience_reads()), {accepted_target, other_target})
+        self.assertEqual(set(self.experience_writes()), {accepted_target, other_target})
+        for path in (accepted_target, other_target):
+            promoted = b.read_json(path)
+            self.assertTrue(self.experience.valid(promoted))
+            self.assertTrue(promoted['reusable'])
+            self.assertEqual(promoted['project_commit'], self.integration_commit)
+        self.assertTrue(running_target.exists())
+        self.assertEqual(running_target, running_path)
+        self.assertEqual(running_path.read_bytes(), running_before)
+        self.assertFalse(absent_target.exists())
+
+    def test_no_eligible_children_performs_no_experience_io(self):
+        project = self.project([(self.session_id('idle'), 'running'),
+                                (self.session_id('rejected'), 'rejected')])
+        self.reads.clear()
+        self.writes.clear()
+        with patch.object(self.experience, 'record',
+                          side_effect=AssertionError('record called without accepted children')):
+            self.experience.promote_project(project)
+        self.assertEqual(self.reads, [])
+        self.assertEqual(self.writes, [])
+        self.assertFalse(self.folder.exists())
+
+    def test_nonaccepted_project_is_a_noop(self):
+        sid = self.session_id('nonaccepted')
+        self.add_session(sid)
+        project = self.project([(sid, 'accepted')], phase='integration_failed')
+        target = self.folder / (self.canonical_id(sid, 'packet-a') + '.json')
+        _, path = self.seed(self.canonical_id(sid, 'packet-a'), sid, 'packet-a',
+                            project_id=self.pid, disabled=False)
+        before = path.read_bytes()
+        self.reads.clear()
+        self.writes.clear()
+        with patch.object(self.experience, 'record',
+                          side_effect=AssertionError('record called for nonaccepted project')):
+            self.experience.promote_project(project)
+        self.assertEqual(self.reads, [])
+        self.assertEqual(self.writes, [])
+        self.assertEqual(path.read_bytes(), before)
+        self.assertFalse(b.read_json(target)['reusable'])
+
+
 def load_tests(loader, tests, pattern):
     return unittest.TestSuite(case(name) for case in (ExperienceTests, LookupTests, LookupRobustnessTests,
-                                                      SourceIdentityTests)
+                                                      SourceIdentityTests, PromotionTargetTests)
                               for name in case.__dict__ if name.startswith('test_'))
 
 
