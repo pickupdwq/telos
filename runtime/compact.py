@@ -173,11 +173,18 @@ def _project_task(task):
     return result
 
 
+def _return_event(value):
+    if not isinstance(value, dict):
+        return value
+    return {key: value.get(key) for key in ('id', 'status')}
+
+
 def project(full):
     result = {key: full.get(key) for key in (
         'project_id', 'phase', 'accepted', 'continuation', 'execution_mode', 'strategy',
         'effective_parallel', 'max_parallel', 'max_jobs', 'jobs_started', 'base_commit',
         'decision_reason', 'return_health', 'usage', 'contract_hash') if key in full}
+    result['return_event'] = _return_event(full.get('return_event'))
     result['tasks'] = [_project_task(task) for task in full.get('tasks') or []]
     if 'integration' in full:
         result['integration'] = _integration(full.get('integration'))
