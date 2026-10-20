@@ -202,14 +202,16 @@ def tasks(state_dir, group=None, project=None):
 
 
 def _created_at_order(value):
-    """Sort real timestamps numerically while keeping malformed values unknown."""
-    if type(value) is bool:
+    """Sort representable numeric timestamps, with malformed values unknown."""
+    if type(value) is bool or not isinstance(value, (int, float)):
         return 0
-    if isinstance(value, int):
-        return value
-    if isinstance(value, float) and math.isfinite(value):
-        return value
-    return 0
+    if isinstance(value, float) and not math.isfinite(value):
+        return 0
+    try:
+        time.localtime(value)
+    except (TypeError, ValueError, OverflowError, OSError):
+        return 0
+    return value
 
 
 def group_finished(state_dir, group):

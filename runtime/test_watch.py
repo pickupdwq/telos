@@ -246,12 +246,26 @@ class TimestampRobustnessTests(unittest.TestCase):
         state['session_id'] = 'd' * 32
         path.write_text(json.dumps(state))
 
-        expected = [ids[n] for n in (7, 2, 3, 4, 5, 6, 8, 1, 10, 9)]
+        expected = [ids[n] for n in (7, 2, 3, 4, 5, 6, 8, 9, 10, 1)]
         self.assertEqual([row['session_id'] for row in watch.tasks(self.state)], expected)
         self.assertEqual([row['session_id'] for row in watch.tasks(self.state, 'a' * 24)],
                          [ids[2], ids[1]])
         self.assertEqual([row['session_id'] for row in watch.tasks(self.state, project='p' * 32)],
                          [ids[1]])
+
+    def test_platform_unrepresentable_created_at_uses_unknown_order(self):
+        missing = self.task('1' * 32)
+        float_unrepresentable = self.task('2' * 32, 1e20)
+        huge_integer = self.task('3' * 32, 10 ** 30)
+        valid = self.task('4' * 32, 2.5)
+        self.assertEqual([row['session_id'] for row in watch.tasks(self.state)],
+                         [missing, float_unrepresentable, huge_integer, valid])
+
+    def test_unexpected_created_at_conversion_errors_remain_visible(self):
+        self.task('1' * 32, 2.5)
+        with patch.object(watch.time, 'localtime', side_effect=RuntimeError('internal bug')):
+            with self.assertRaisesRegex(RuntimeError, 'internal bug'):
+                watch.tasks(self.state)
 
     def test_history_streams_damaged_timestamps_with_healthy_neighbors(self):
         sid = self.task('1' * 32, 1)
