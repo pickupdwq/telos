@@ -5,12 +5,14 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import tempfile
 import threading
 import time
 import unittest
 from unittest.mock import patch, Mock
 from test_telos import b, BridgeTests, synthetic_exam
 from test_callbacks import FakeRPC, OWNER, OTHER
+from projects import Projects
 from usage import BudgetExceeded
 
 
@@ -518,9 +520,142 @@ class RobustnessTests(ProjectTests):
             self.assertEqual(courier['events'][courier['last_event_id']]['status'], 'pending')
 
 
+class _ProjectViewBridge:
+    """In-memory bridge for project-view identity tests; no runtime services."""
+
+    def __init__(self, root):
+        self.STATE = root
+        self.couriers = {}
+
+    def run_dir(self, sid):
+        return self.STATE / 'runs' / sid
+
+    def read_json(self, path):
+        return self.couriers[Path(path).parent.name]
+
+    @staticmethod
+    def return_health(state):
+        continuation = state.get('continuation', 'active')
+        if continuation != 'active':
+            return {'status': continuation, 'next_action': None}
+        if state.get('return_complete') or state.get('phase') == 'accepted':
+            return {'status': 'complete', 'next_action': None}
+        event = state.get('events', {}).get(state.get('last_event_id'), {})
+        return {'status': event.get('status', 'ready'), 'next_action': None}
+
+
+class ProjectEventViewTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.bridge = _ProjectViewBridge(self.root)
+        self.projects = Projects(self.bridge)
+        self.pid = 'p' * 32
+
+    def project(self, **overrides):
+        p = {'project_id': self.pid, 'phase': 'running', 'continuation': 'active',
+             'execution_mode': 'single', 'strategy': 'single',
+             'decision_reason': 'deterministic project view fixture', 'max_parallel': 1,
+             'max_jobs': 40, 'jobs_started': 0, 'base_commit': 'a' * 40,
+             'contract_hash': 'c' * 64,
+             'tasks': [{'id': 'a', 'task': 'Implement a', 'depends_on': [],
+                        'allowed_paths': ['a.py'], 'session_id': 's' * 32,
+                        'phase': 'running', 'revision': 1}]}
+        p.update(overrides)
+        return p
+
+    def store_courier(self, **overrides):
+        courier = {'session_id': self.pid, 'project_id': self.pid,
+                   'notification_only': True, 'phase': 'project_update',
+                   'continuation': 'active', 'events': {}}
+        courier.update(overrides)
+        self.bridge.couriers[self.pid] = courier
+        return courier
+
+    def test_full_view_uses_state_mapping_key_and_exports_only_identity(self):
+        eid = 'e' * 32
+        courier = self.store_courier(
+            last_event_id=eid,
+            events={eid: {'id': 'inner-event-id', 'job_id': 'child-action-id',
+                          'status': 'queued',
+                          'actions': {'telos_receive': {'result': 'private'}},
+                          'last_error': 'private transport detail'}})
+        p = self.project()
+        p['tasks'][0]['event_id'] = 'child-action-id'
+        courier_before = copy.deepcopy(courier)
+        project_before = copy.deepcopy(p)
+        full = self.projects.view(p, 'full')
+        self.assertEqual(full['return_event'], {'id': eid, 'status': 'queued'})
+        self.assertEqual(set(full['return_event']), {'id', 'status'})
+        self.assertEqual(full['tasks'][0]['event_id'], 'child-action-id')
+        self.assertEqual(full['return_health'], {'status': 'queued', 'next_action': None})
+        self.assertEqual(courier, courier_before)
+        self.assertEqual(p, project_before)
+
+    def test_summary_view_propagates_return_event_identity_without_payload(self):
+        eid = 'f' * 32
+        self.store_courier(
+            last_event_id=eid,
+            events={eid: {'id': 'different-inner-id', 'status': 'received',
+                          'actions': {'private': 'payload'},
+                          'progress': {'status': 'waiting'}}})
+        summary = self.projects.view(self.project(), 'summary')
+        self.assertEqual(summary['return_event'], {'id': eid, 'status': 'received'})
+        self.assertEqual(set(summary['return_event']), {'id', 'status'})
+        self.assertEqual(summary['detail'], 'summary')
+
+    def test_return_event_is_null_when_latest_event_cannot_be_resolved(self):
+        cases = [
+            ('missing last_event_id', {'events': {'a' * 32: {'status': 'queued'}}}),
+            ('missing mapping key', {'last_event_id': 'b' * 32,
+                                     'events': {'a' * 32: {'status': 'queued'}}}),
+            ('inner id is not the mapping key', {'last_event_id': 'b' * 32,
+                                                 'events': {'a' * 32: {'id': 'b' * 32,
+                                                                       'status': 'queued'}}}),
+        ]
+        for label, state in cases:
+            with self.subTest(label):
+                self.store_courier(**state)
+                p = self.project()
+                self.assertIsNone(self.projects.view(p, 'full')['return_event'])
+                self.assertIsNone(self.projects.view(p, 'summary')['return_event'])
+
+    def test_historical_paused_cancelled_and_accepted_identities_stay_visible(self):
+        cases = [
+            ('processed after receipt', {'phase': 'running', 'return_complete': True},
+             'processed', {'status': 'complete', 'next_action': None}, 'running'),
+            ('received', {'phase': 'running'}, 'received',
+             {'status': 'received', 'next_action': None}, 'running'),
+            ('paused courier', {'phase': 'project_update', 'continuation': 'paused'},
+             'queued', {'status': 'paused', 'next_action': None}, 'running'),
+            ('cancelled courier', {'phase': 'project_update', 'continuation': 'cancelled'},
+             'cancelled', {'status': 'cancelled', 'next_action': None}, 'running'),
+            ('accepted project', {'phase': 'project_update'}, 'processed',
+             {'status': 'complete', 'next_action': None}, 'accepted'),
+        ]
+        for index, (label, state, event_status, health, project_phase) in enumerate(cases):
+            with self.subTest(label):
+                eid = f'{index:032x}'
+                courier = {'session_id': self.pid, 'project_id': self.pid,
+                           'notification_only': True, 'phase': 'project_update',
+                           'continuation': 'active', 'events': {}}
+                courier.update(state)
+                courier['last_event_id'] = eid
+                courier['events'] = {eid: {'id': 'inner-' + eid, 'status': event_status,
+                                           'actions': {'private': 'payload'}}}
+                self.bridge.couriers[self.pid] = courier
+                p = self.project(phase=project_phase)
+                full = self.projects.view(p, 'full')
+                summary = self.projects.view(p, 'summary')
+                self.assertEqual(full['return_event'], {'id': eid, 'status': event_status})
+                self.assertEqual(summary['return_event'], {'id': eid, 'status': event_status})
+                self.assertEqual(full['return_health'], health)
+
+
 def load_tests(loader, tests, pattern):
     suite = unittest.TestSuite()
-    for cls in (ProjectTests, ProviderTests, RobustnessTests):
+    for cls in (ProjectTests, ProviderTests, RobustnessTests, ProjectEventViewTests):
         for name in cls.__dict__:
             if name.startswith('test_'):
                 suite.addTest(cls(name))
