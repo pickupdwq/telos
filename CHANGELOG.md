@@ -1,6 +1,6 @@
 # Changelog / 更新记录
 
-## Unreleased
+## 3.7.2 — 2026-10-20
 
 - Automatically close managed tmux observer panes after all associated tasks and projects finish acceptance or cancellation and their execution processes exit. Keep panels open during review, repair, errors, pauses and pending project work.
 - Preserve the supervisor pane and manually opened history viewers. Serialize closure with new task dispatch so new work can reopen a panel safely, including when tmux enables `remain-on-exit`.
