@@ -12,6 +12,21 @@ import providers
 from identity import data_path
 
 
+def _patch_format_guidance():
+    """Advisory apply_patch argument format and bounded recovery for implementation work."""
+    return [
+        'Patch format: apply_patch takes raw patch text, starting with *** Begin Patch and ending with '
+        '*** End Patch, without a JSON wrapper or Markdown fence.',
+        "In that text, '*** Add File: path' is only for new paths. Use '*** Update File: path' with "
+        "matching context for existing files, never Add File to replace one.",
+        'After a patch-format rejection, allow one corrected attempt; if that still fails, use an '
+        'already-available scoped file-edit capability or report a concrete blocker rather than repeating '
+        'the same invalid call.',
+        'A fallback must stay within existing allowed paths and sandbox permissions; it does not authorize '
+        'a new tool, wider access, disabled checks or silent removal of assertions.',
+    ]
+
+
 def _work_guidance(evidence, contract, state, *, artifact_root=None):
     """Compact, allowlisted facts from successful preflight and runtime paths."""
     if evidence.get('status') != 'passed' or not evidence.get('interpreter') or not evidence.get('cwd'):
@@ -52,6 +67,9 @@ def _work_guidance(evidence, contract, state, *, artifact_root=None):
         '- Do not repeat bootstrap, version, interpreter, Git availability, PATH, ancestor, or repository-layout '
         'discovery. If a real command fails with a concrete contradictory error, diagnose only that error narrowly.',
     ]
+    if (artifact_root is None and contract.get('task_type') != 'audit'
+            and 'audit' not in contract):
+        lines += _patch_format_guidance()
     return '\n'.join(lines) + '\n'
 
 
@@ -211,8 +229,6 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
                + "Task:\n" + contract["task"] + "\nPublic context:\n" + contract["context"] + "\n")
     if contract.get('allowed_paths'):
         initial += "Allowed change paths (enforced at submission): " + encoded(contract['allowed_paths']) + "\n"
-    initial += ("Patch guidance: use apply_patch; '*** Add File: path' is only for new paths. "
-                "Use '*** Update File: path' with matching context for existing files, never Add File to replace one.\n")
     if contract.get('experience_context'):
         initial += "\nExperience reference:\n" + contract['experience_context'] + "\n"
     if probe:
