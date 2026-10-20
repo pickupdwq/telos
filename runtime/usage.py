@@ -18,6 +18,8 @@ import uuid
 
 BUDGET_FIELDS = ('max_requests', 'max_input_tokens', 'max_uncached_input_tokens',
                  'max_output_tokens', 'max_total_tokens')
+EXAM_RESERVES = {'exam_reserve_requests': 'max_requests',
+                 'exam_reserve_tokens': 'max_total_tokens'}
 TOKEN_FIELDS = ('input_tokens', 'cached_input_tokens', 'uncached_input_tokens',
                 'output_tokens', 'reasoning_output_tokens', 'total_tokens')
 PHASES = ('work', 'exam')
@@ -83,13 +85,17 @@ def validate_budget(budget):
     """Return a frozen copy of a positive-int budget or raise ValueError."""
     if budget is None:
         return None
-    if not isinstance(budget, dict) or not budget or set(budget) - set(BUDGET_FIELDS):
-        raise ValueError('Task budget must contain only ' + ', '.join(BUDGET_FIELDS))
+    fields = (*BUDGET_FIELDS, *EXAM_RESERVES, 'closeout_reserve_seconds')
+    if not isinstance(budget, dict) or not budget or set(budget) - set(fields):
+        raise ValueError('Task budget must contain only ' + ', '.join(fields))
     result = {}
     for key, value in budget.items():
         if type(value) is not int or value <= 0:
             raise ValueError('Task budget limits must be positive integers: ' + key)
         result[key] = value
+    for reserve, limit in EXAM_RESERVES.items():
+        if reserve in result and (limit not in result or result[reserve] >= result[limit]):
+            raise ValueError(reserve + ' requires a larger ' + limit)
     return result
 
 
@@ -215,9 +221,15 @@ class UsageLedger:
                     phase[key] += value
         budget = data.get('budget') if data.get('budget') is not None else self.budget
         budget_state = self._budget_state(totals, unknown_fields, budget)
-        return {'version': data.get('version', 1), 'budget': budget,
-                'totals': totals, 'phases': phases, 'unknown_fields': unknown_fields,
-                'budget_state': budget_state}
+        result = {'version': data.get('version', 1), 'budget': budget,
+                  'totals': totals, 'phases': phases, 'unknown_fields': unknown_fields,
+                  'budget_state': budget_state}
+        work_limits = {limit: budget[limit] - budget[reserve]
+                       for reserve, limit in EXAM_RESERVES.items() if budget and reserve in budget}
+        if work_limits:
+            result['work_budget'] = work_limits
+            result['work_budget_state'] = self._budget_state(phases['work'], unknown_fields, work_limits)
+        return result
 
     def _budget_state(self, totals, unknown_fields, budget):
         if not budget:
@@ -235,12 +247,12 @@ class UsageLedger:
             remaining[limit] = max(0, limit_value - used)
             if used >= limit_value:
                 exceeded.append(limit)
-            elif used_key != 'requests' and unknown_fields.get(used_key, 0):
+            if used_key != 'requests' and unknown_fields.get(used_key, 0):
                 unknown.append(limit)
         state = 'exceeded' if exceeded else ('unknown' if unknown else 'ok')
         return {'state': state, 'exceeded': exceeded, 'unknown': unknown, 'remaining': remaining}
 
-    def _assert_available(self, data):
+    def _assert_available(self, data, phase=None):
         snapshot = self._snapshot(data)
         state = snapshot['budget_state']
         if state['state'] == 'exceeded':
@@ -249,11 +261,17 @@ class UsageLedger:
         if state['state'] == 'unknown':
             raise BudgetExceeded('Task budget cannot be evaluated because usage is unknown (' + ', '.join(state['unknown'])
                                  + '); ' + _usage_summary(snapshot, state) + '; no upstream request was sent', snapshot)
+        work = snapshot.get('work_budget_state', {})
+        if phase == 'work' and work.get('state') == 'exceeded':
+            raise BudgetExceeded('Work budget exhausted; remaining allocation is reserved for the exam ('
+                                 + ', '.join(work['exceeded']) + '); no upstream request was sent', snapshot)
 
-    def ensure_available(self):
+    def ensure_available(self, phase=None):
+        if phase is not None:
+            phase = self._phase(phase)
         with self._locked():
             data = self._read()
-            self._assert_available(data)
+            self._assert_available(data, phase)
             return self._snapshot(data)
 
     def ensure_known(self):
@@ -261,7 +279,7 @@ class UsageLedger:
         with self._locked():
             snapshot = self._snapshot(self._read())
             state = snapshot['budget_state']
-            if state['state'] == 'unknown':
+            if state['unknown']:
                 raise BudgetExceeded('Task budget cannot be evaluated because usage is unknown ('
                                      + ', '.join(state['unknown']) + '); '
                                      + _usage_summary(snapshot, state)
@@ -274,7 +292,7 @@ class UsageLedger:
             data = self._read()
             if data.get('budget') is not None and self.budget is not None and data['budget'] != self.budget:
                 raise ValueError('Frozen task budget changed after accounting began')
-            self._assert_available(data)
+            self._assert_available(data, phase)
             request_id = uuid.uuid4().hex
             data['requests'][request_id] = {
                 'request_id': request_id, 'phase': phase, 'status': 'reserved',
@@ -283,7 +301,8 @@ class UsageLedger:
             self._write(data)
             return request_id
 
-    def finish(self, request_id, raw_usage, status='completed', *, latency_ms=None, error_kind=None):
+    def finish(self, request_id, raw_usage, status='completed', *, latency_ms=None, error_kind=None,
+               upstream_request_id=None):
         if status not in ('completed', 'failed'):
             raise ValueError('Usage completion status must be completed or failed')
         with self._locked():
@@ -296,6 +315,8 @@ class UsageLedger:
                 entry['latency_ms'] = round(latency_ms, 3)
             if error_kind is not None:
                 entry['error_kind'] = _bounded_error(error_kind)
+            if isinstance(upstream_request_id, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', upstream_request_id):
+                entry['upstream_request_id'] = upstream_request_id
             self._write(data)
             return self._snapshot(data)
 

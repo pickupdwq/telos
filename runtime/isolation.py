@@ -5,6 +5,7 @@ import hmac
 import json
 import secrets
 import shutil
+import socket
 import threading
 import time
 import urllib.error
@@ -28,6 +29,89 @@ def runtime_paths(install, home):
 class NoRedirect(urllib.request.HTTPRedirectHandler):
     def redirect_request(self, *args, **kwargs):
         return None
+
+
+class RelayCloseout:
+    """Stop admissions, then give existing responses bounded time to settle."""
+
+    def __init__(self, duration=None, request_window=0, grace=5):
+        self.deadline = time.monotonic() + duration if duration is not None else None
+        self.request_window = request_window
+        self.grace = grace
+        self.condition = threading.Condition()
+        self.active = {}
+        self.closing_at = None
+        self.reason = None
+
+    def start(self, duration):
+        """Arm once at executor launch, after preflight and local setup."""
+        with self.condition:
+            if self.deadline is not None or self.closing_at is not None:
+                raise RuntimeError('Execution deadline already started or closing')
+            self.deadline = time.monotonic() + duration
+
+    def begin(self, interrupt):
+        with self.condition:
+            if self.closing_at is not None:
+                raise TimeoutError('Execution is closing; no upstream request was sent')
+            if self.deadline is not None and time.monotonic() + self.request_window >= self.deadline:
+                self.stop('execution_deadline')
+                raise TimeoutError('Execution admission deadline reached; no upstream request was sent')
+            lease = object()
+            self.active[lease] = [interrupt, None]
+            return lease
+
+    def stop(self, reason):
+        with self.condition:
+            if self.closing_at is None:
+                self.closing_at = time.monotonic() + self.grace
+                self.reason = reason
+            self.condition.notify_all()
+
+    @staticmethod
+    def response_socket(response):
+        # CPython urllib HTTP(S)Response owns this socket. Other response types
+        # still have the bounded request timeout and interrupted ledger fallback.
+        return getattr(getattr(getattr(response, 'fp', None), 'raw', None), '_sock', None)
+
+    def track(self, lease, response):
+        with self.condition:
+            if lease in self.active:
+                self.active[lease][1] = self.response_socket(response)
+
+    def timeout(self, configured):
+        with self.condition:
+            ends = [x for x in (self.closing_at,
+                               self.deadline + self.grace if self.deadline is not None else None)
+                    if x is not None]
+        remaining = min(ends) - time.monotonic() if ends else configured
+        if remaining <= 0:
+            raise TimeoutError('Execution closeout deadline reached')
+        return min(configured, remaining)
+
+    def end(self, lease):
+        with self.condition:
+            self.active.pop(lease, None)
+            self.condition.notify_all()
+
+    def drain(self):
+        self.stop('execution_finished')
+        with self.condition:
+            while self.active:
+                remaining = self.closing_at - time.monotonic()
+                if remaining <= 0:
+                    break
+                self.condition.wait(remaining)
+            pending = list(self.active.values())
+        for interrupt, sock in pending:
+            if sock is not None:
+                try:
+                    sock.shutdown(socket.SHUT_RDWR)
+                except OSError:
+                    pass
+            # Never leave an interrupted reservation looking like an ongoing
+            # request forever. Missing provider usage remains unknown, not zero.
+            interrupt()
 
 
 # Only the current SSE event is retained. The cap matches the largest response
@@ -299,13 +383,14 @@ def _bailian_request(raw, binding):
 
 @contextlib.contextmanager
 def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=None, diagnostics=None,
-                usage_ledger=None, usage_context=None, budget_failure=None):
+                usage_ledger=None, usage_context=None, budget_failure=None, closeout=None):
     """Only the bridge holds upstream credentials. No arbitrary URL/proxy methods."""
     token = secrets.token_urlsafe(48)
     local = binding is not None and binding.get('provider') == 'local'
     bailian = binding is not None and binding.get('provider') == 'bailian'
     opener = urllib.request.build_opener(NoRedirect(), *([urllib.request.ProxyHandler({})] if local else []))
     context = usage_context or {}
+    closeout = closeout or RelayCloseout()
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -329,24 +414,38 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
             content_type = ''
             tracker = SSEUsageTracker()
             outcome = None
+            lease = None
+            client_gone = False
+            finish_lock = threading.Lock()
+            upstream_request_id = None
 
             def complete(status, raw_usage=None, error_kind=None):
                 nonlocal finished
-                if request_id is None or finished:
-                    return
-                finished = True
-                try:
-                    usage_ledger.finish(request_id, raw_usage, status=status,
-                                        latency_ms=(time.monotonic() - started) * 1000,
-                                        error_kind=error_kind)
-                except Exception as error:
-                    if diagnostics is not None:
-                        diagnostics['usage_failure'] = str(error)[:300]
-                    if budget_failure is not None:
-                        budget_failure['message'] = ('Usage accounting failed; further paid requests are blocked: '
-                                                     + str(error)[:300])
-                        budget_failure['accounting'] = True
-                        budget_failure.setdefault('snapshot', None)
+                with finish_lock:
+                    if request_id is None or finished:
+                        return
+                    finished = True
+                    try:
+                        usage_ledger.finish(request_id, raw_usage, status=status,
+                                            latency_ms=(time.monotonic() - started) * 1000,
+                                            error_kind=error_kind,
+                                            **({'upstream_request_id': upstream_request_id}
+                                               if upstream_request_id else {}))
+                    except Exception as error:
+                        if diagnostics is not None:
+                            diagnostics['usage_failure'] = str(error)[:300]
+                        if budget_failure is not None:
+                            budget_failure['message'] = ('Usage accounting failed; further paid requests are blocked: '
+                                                         + str(error)[:300])
+                            budget_failure['accounting'] = True
+                            budget_failure.setdefault('snapshot', None)
+
+            def track_response(response):
+                nonlocal upstream_request_id
+                closeout.track(lease, response)
+                candidate_id = response.headers.get('x-request-id') if response.headers else None
+                if candidate_id and not any(secret and secret in candidate_id for secret in (key, token)):
+                    upstream_request_id = candidate_id
 
             try:
                 if validate:
@@ -372,6 +471,7 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                     elif binding['reasoning_effort'] == 'none':
                         request.pop('reasoning', None)
                         body = json.dumps(request, ensure_ascii=False).encode()
+                lease = closeout.begin(lambda: complete('failed', tracker.usage, 'closeout_timeout'))
                 if usage_ledger is not None:
                     try:
                         request_id = usage_ledger.begin(context.get('phase', 'work'),
@@ -398,7 +498,7 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                     headers['Authorization'] = 'Bearer ' + key
                 req = urllib.request.Request(endpoint.rstrip('/') + suffix, data=body, headers=headers)
                 try:
-                    response = opener.open(req, timeout=timeout)
+                    response = opener.open(req, timeout=closeout.timeout(timeout))
                 except urllib.error.HTTPError as error:
                     # Provider error bodies can still report the usage of the
                     # attempted request. Extract only bounded usage, never log
@@ -406,8 +506,10 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                     failed_usage = None
                     failed_type = ''
                     try:
-                        failed_type = error.headers.get('Content-Type', '') if error.headers else ''
-                        failed_usage = usage_from_payload(error.read(2 * 1024 * 1024), failed_type)
+                        with error:
+                            track_response(error)
+                            failed_type = error.headers.get('Content-Type', '') if error.headers else ''
+                            failed_usage = usage_from_payload(error.read(2 * 1024 * 1024), failed_type)
                     except Exception:
                         failed_usage = None
                     complete('failed', failed_usage, 'http_' + str(error.code))
@@ -416,6 +518,7 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                         policy.transport_error = 'Exam endpoint HTTP ' + str(error.code)
                     self.send_error(error.code, 'Model endpoint rejected request'); return
                 with response:
+                    track_response(response)
                     validated = None
                     content_type = response.headers.get('Content-Type', 'application/json')
                     if chat_request is not None:
@@ -461,22 +564,47 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                             raise ValueError('Model response exceeds size limit')
                         seen_usage = usage_from_payload(validated, content_type)
                         outcome = response_outcome(validated, content_type)
-                    self.send_response(response.status)
-                    self.send_header('Content-Type', content_type)
-                    self.send_header('Connection', 'close')
-                    self.end_headers()
+                    try:
+                        self.send_response(response.status)
+                        self.send_header('Content-Type', content_type)
+                        self.send_header('Connection', 'close')
+                        self.end_headers()
+                    except OSError:
+                        client_gone = True
+                        closeout.stop('client_disconnected')
                     if validated is not None:
-                        self.wfile.write(validated); self.wfile.flush()
                         status, error_kind = _terminal('completed', outcome)
-                        complete(status, seen_usage, error_kind)
+                        complete('failed' if client_gone else status, seen_usage,
+                                 'client_disconnected' if client_gone else error_kind)
+                        if not client_gone:
+                            self.wfile.write(validated); self.wfile.flush()
                         return
-                    while chunk := response.read1(65536):
-                        self.wfile.write(chunk); self.wfile.flush()
+                    while True:
+                        read_timeout = closeout.timeout(timeout)
+                        sock = closeout.response_socket(response)
+                        if sock is not None:
+                            sock.settimeout(read_timeout)
+                        chunk = response.read1(65536)
+                        if not chunk:
+                            break
+                        # Account before delivery: a broken downstream must not
+                        # discard a terminal usage event that already arrived.
                         tracker.feed(chunk)
+                        if tracker.outcome:
+                            status, error_kind = _terminal('completed', tracker.outcome)
+                            complete('failed' if client_gone else status, tracker.usage,
+                                     'client_disconnected' if client_gone else error_kind)
+                        if not client_gone:
+                            try:
+                                self.wfile.write(chunk); self.wfile.flush()
+                            except OSError:
+                                client_gone = True
+                                closeout.stop('client_disconnected')
                     seen_usage, outcome = tracker.finish()
                     outcome = outcome or 'missing_terminal'
                     status, error_kind = _terminal('completed', outcome)
-                    complete(status, seen_usage, error_kind)
+                    complete('failed' if client_gone else status, seen_usage,
+                             'client_disconnected' if client_gone else error_kind)
             except Exception as error:
                 if seen_usage is None:
                     seen_usage, _ = tracker.finish()
@@ -495,6 +623,9 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                 except OSError:
                     pass
                 self.close_connection = True
+            finally:
+                if lease is not None:
+                    closeout.end(lease)
 
     server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
     server.daemon_threads = True
@@ -503,4 +634,5 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
     try:
         yield f'http://127.0.0.1:{server.server_port}/v1', token, server.server_port
     finally:
+        closeout.drain()
         server.shutdown(); server.server_close(); worker.join(timeout=2)

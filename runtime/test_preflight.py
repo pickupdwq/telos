@@ -51,6 +51,7 @@ class PreflightTests(unittest.TestCase):
         evidence = preflight.run(FakeBridge(), '/bin/sh', self.work, {'PATH': '/usr/bin:/bin'},
                                  'PROFILE', check_repo=True, secrets=('topsecret',), runner=runner)
         self.assertEqual(evidence['status'], 'passed')
+        self.assertEqual(evidence['interpreter'], str(sys.executable))
         self.assertEqual([item['name'] for item in evidence['checks']],
                          ['dedicated CLI', 'Python', 'Git', 'Git worktree'])
         self.assertEqual(len(runner.calls), 4)
@@ -70,6 +71,16 @@ class PreflightTests(unittest.TestCase):
         self.assertEqual(python_probe[isolated + 1], '-c')
         # One CLI version probe per invocation, not one per request/retry.
         self.assertEqual(sum(command.count('--version') for command, _ in runner.calls), 2)
+
+    def test_interpreter_evidence_preserves_the_exact_preflight_executable_path(self):
+        interpreter = self.root / 'python-entrypoint'
+        interpreter.symlink_to(sys.executable)
+        runner = FakeRunner()
+        with patch.object(preflight.sys, 'executable', str(interpreter)):
+            evidence = preflight.run(FakeBridge(), '/bin/sh', self.work, {'PATH': '/usr/bin:/bin'},
+                                     'PROFILE', runner=runner)
+        self.assertEqual(evidence['interpreter'], str(interpreter))
+        self.assertNotEqual(evidence['interpreter'], str(interpreter.resolve()))
 
     def test_python_probe_isolated_mode_ignores_repository_modules_and_startup_paths(self):
         marker = self.root / 'repo-import-ran'
@@ -142,7 +153,7 @@ class ExecutorPreflightOrderTests(unittest.TestCase):
         self.work = self.root / 'worktree'
         self.work.mkdir()
         self.state = {'session_id': 'a' * 32, 'worktree': str(self.work), 'thread_id': None,
-                      'job_id': 'job'}
+                      'job_id': 'job', 'base_commit': 'a' * 40}
         self.contract = {'task': 'task', 'context': 'context', 'executor': binding()}
         self.bridge = SimpleNamespace(
             HOME=self.root / 'home', CACHE=self.root / 'cache', INSTALL=self.root / 'install',
@@ -157,6 +168,140 @@ class ExecutorPreflightOrderTests(unittest.TestCase):
 
     def tearDown(self):
         self.temp.cleanup()
+
+    def _capture_prompt(self, *, thread_id=None, phase='work', contract=None, evidence=None):
+        self.state['thread_id'] = thread_id
+        prompts = []
+
+        class CapturingProcess:
+            returncode = 1
+
+            def communicate(self, payload, timeout=None):
+                prompts.append(payload.decode())
+                return b'', b''
+
+        with patch.object(preflight, 'git_executable', return_value=sys.executable), \
+                patch.object(preflight, 'run', return_value=evidence or {}) as probe, \
+                patch.object(executor.subprocess, 'Popen', return_value=CapturingProcess()):
+            with self.assertRaises(providers.ProviderError):
+                executor._run(self.bridge, self.state, contract or self.contract, 'message',
+                              'http://127.0.0.1:9/v1', 'KEY', 1234, phase=phase)
+        if phase == 'work':
+            self.assertEqual(probe.call_count, 1)
+        else:
+            probe.assert_not_called()
+        self.assertEqual(len(prompts), 1)
+        return prompts[0]
+
+    def test_initial_work_prompt_has_compact_verified_guidance_without_probe_output(self):
+        evidence = {'status': 'passed', 'cwd': str(self.work), 'interpreter': '/verified/python',
+                    'checks': [{'name': 'Python', 'output': 'RAW PROBE OUTPUT KEY'}]}
+        prompt = self._capture_prompt(evidence=evidence)
+        self.assertIn('Task:\ntask', prompt)
+        self.assertIn('Verified work guidance', prompt)
+        self.assertIn('/verified/python', prompt)
+        self.assertIn(str(self.work), prompt)
+        self.assertIn('Do not repeat bootstrap, version, interpreter, Git availability', prompt)
+        self.assertIn('diagnose only that error narrowly', prompt)
+        self.assertNotIn('RAW PROBE OUTPUT', prompt)
+        self.assertNotIn('KEY', prompt)
+        guidance = prompt.split('Verified work guidance', 1)[1].split('Codex message:', 1)[0]
+        self.assertLessEqual(len(guidance), 2500)
+
+    def test_resumed_work_prompt_includes_guidance_without_replaying_the_task(self):
+        evidence = {'status': 'passed', 'cwd': str(self.work), 'interpreter': '/verified/python',
+                    'checks': [{'name': 'Python', 'output': 'Python 3.12.1'}]}
+        prompt = self._capture_prompt(thread_id='thread', evidence=evidence)
+        self.assertIn('Verified work guidance', prompt)
+        self.assertIn('/verified/python', prompt)
+        self.assertNotIn('Task:\ntask', prompt)
+        self.assertTrue(prompt.endswith('Codex message:\nmessage'))
+
+    def test_audit_guidance_scopes_source_artifacts_and_frozen_identity(self):
+        evidence = {'status': 'passed', 'cwd': str(self.root / 'audit_room'),
+                    'interpreter': '/verified/python', 'checks': []}
+        contract = {**self.contract, 'audit': {'targets': []}}
+        artifacts = self.root / 'artifacts'
+        text = executor._work_guidance(evidence, contract, self.state, artifact_root=artifacts)
+        self.assertIn(str(self.work), text)
+        self.assertIn(str(artifacts), text)
+        self.assertIn(str(artifacts / 'report.json'), text)
+        self.assertIn(str(artifacts / 'audit-report-help.json'), text)
+        self.assertIn(self.state['base_commit'], text)
+        self.assertIn('read-only', text)
+        self.assertIn('offline source', text)
+        self.assertNotIn('audit-probe-help.json', text)
+        self.assertIn('Git metadata and whole-root listings are not granted', text)
+        self.assertIn('scoped file bytes/hashes', text)
+        self.assertIn('Do not run source Git or repository-root discovery', text)
+        self.assertLessEqual(len(text), 2500)
+
+    def test_online_audit_guidance_keeps_scoped_broker_without_probe_output(self):
+        evidence = {'status': 'passed', 'cwd': str(self.root / 'audit_room'),
+                    'interpreter': '/verified/python', 'checks': [{'output': 'RAW SECRET'}]}
+        contract = {**self.contract, 'audit': {'targets': [{'origin': 'http://127.0.0.1:8000'}]}}
+        artifacts = self.root / 'artifacts'
+        text = executor._work_guidance(evidence, contract, self.state, artifact_root=artifacts)
+        self.assertIn('online/mixed', text)
+        self.assertIn('authenticated local broker', text)
+        self.assertIn('declared targets', text)
+        self.assertIn('never direct network', text)
+        self.assertIn(str(artifacts / 'audit-report-help.json'), text)
+        self.assertIn(str(artifacts / 'audit-probe-help.json'), text)
+        self.assertNotIn('RAW SECRET', text)
+        self.assertLessEqual(len(text), 2500)
+
+    def test_guidance_rejects_incomplete_preflight_evidence(self):
+        with self.assertRaisesRegex(ValueError, 'incomplete'):
+            executor._work_guidance({'status': 'passed', 'interpreter': '/verified/python'},
+                                    self.contract, self.state)
+
+    def test_exam_prompt_remains_exactly_message_only(self):
+        contract = {**self.contract, 'task_type': 'audit', 'audit': {'targets': [], 'scope_paths': []}}
+        prompt = self._capture_prompt(thread_id='thread', phase='exam', contract=contract)
+        self.assertEqual(prompt, 'Codex message:\nmessage')
+        self.assertNotIn('Verified work guidance', prompt)
+        self.assertNotIn(str(self.work), prompt)
+        self.assertNotIn('audit-report-help', prompt)
+
+    def test_work_guidance_reports_remaining_capacity_without_private_ledger_data(self):
+        self.bridge.usage_snapshot = lambda *args: {
+            'budget_state': {'remaining': {'max_requests': 8, 'max_total_tokens': 3000}},
+            'work_budget_state': {'remaining': {'max_requests': 5, 'max_total_tokens': 2000}},
+            'private': 'DO_NOT_FORWARD'}
+        contract = {**self.contract, 'budget': {'max_requests': 10, 'exam_reserve_requests': 3}}
+        evidence = {'status': 'passed', 'cwd': str(self.work), 'interpreter': '/verified/python'}
+        prompt = self._capture_prompt(thread_id='thread', contract=contract, evidence=evidence)
+        self.assertIn('"max_requests":5', prompt)
+        self.assertIn('"max_total_tokens":2000', prompt)
+        self.assertIn('reserve one work request for a final factual report', prompt)
+        self.assertNotIn('DO_NOT_FORWARD', prompt)
+        self.assertEqual(self._capture_prompt(thread_id='thread', phase='exam', contract=contract),
+                         'Codex message:\nmessage')
+
+    def test_timeout_keeps_cli_thread_identity_without_successful_submission(self):
+        class TimedOut:
+            pid = 1234
+
+            def communicate(self, payload=None, timeout=None):
+                if payload is not None:
+                    raise subprocess.TimeoutExpired('codex', timeout)
+                return b'{"type":"thread.started","thread_id":"original-executor"}\n', b''
+
+        evidence = {'status': 'passed', 'cwd': str(self.work), 'interpreter': sys.executable}
+        with patch.object(preflight, 'git_executable', return_value=sys.executable), \
+                patch.object(preflight, 'run', return_value=evidence), \
+                patch.object(executor.subprocess, 'Popen', return_value=TimedOut()), \
+                patch.object(executor.os, 'killpg') as kill:
+            with self.assertRaises(providers.ExecutionTimeout) as caught:
+                executor._run(self.bridge, self.state, self.contract, 'message',
+                              'http://127.0.0.1:9/v1', 'KEY', 1234)
+        self.assertEqual(caught.exception.thread_id, 'original-executor')
+        kill.assert_called_once()
+        other = providers.ExecutionTimeout('interrupted')
+        executor._retain_thread(other, b'{"type":"thread.started","thread_id":"different"}\n',
+                                {'thread_id': 'original-executor'})
+        self.assertFalse(hasattr(other, 'thread_id'))
 
     def test_work_preflight_runs_once_before_any_cli_process(self):
         calls = []
@@ -176,6 +321,27 @@ class ExecutorPreflightOrderTests(unittest.TestCase):
         self.assertEqual(args[4], 'PROFILE')
         self.assertEqual(kwargs['check_repo'], True)
         self.assertIn('KEY', kwargs['secrets'])
+
+    def test_execution_deadline_starts_at_launch_after_preflight(self):
+        clock = [100]
+        closeout = isolation.RelayCloseout(request_window=1)
+
+        def probe(*args, **kwargs):
+            self.assertIsNone(closeout.deadline)
+            clock[0] += 80
+            return {'status': 'passed', 'cwd': str(self.work), 'interpreter': sys.executable}
+
+        def launch(*args, **kwargs):
+            self.assertEqual(closeout.deadline, 182)
+            raise RuntimeError('launch checked')
+
+        with patch.object(preflight, 'git_executable', return_value=sys.executable), \
+                patch.object(preflight, 'run', side_effect=probe), \
+                patch.object(isolation.time, 'monotonic', side_effect=lambda: clock[0]), \
+                patch.object(executor.subprocess, 'Popen', side_effect=launch):
+            with self.assertRaisesRegex(RuntimeError, 'launch checked'):
+                executor.run(self.bridge, self.state, self.contract, 'message',
+                             'http://127.0.0.1:9/v1', 'KEY', 1234, closeout=closeout)
 
     def test_exam_never_runs_the_worktree_preflight_or_repo_probe(self):
         self.state['thread_id'] = 'thread'

@@ -16,6 +16,10 @@ class ProviderError(Exception):
     pass
 
 
+class ExecutionTimeout(ProviderError):
+    """The local execution time limit fired, independently of account quota."""
+
+
 ARK_MODELS = ('glm-5.3', 'glm-5.3-flash', 'deepseek-v4-1-flash-260910', 'deepseek-v4.1-flash')
 EFFORTS = ('none', 'minimal', 'low', 'medium', 'high', 'xhigh', 'max')
 PROVIDERS = {

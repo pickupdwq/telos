@@ -317,6 +317,8 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
         effective_budget = _budget if _budget is not _BUDGET_UNSET else (
             budget if budget is not None else cfg.get('task_budget'))
         budget = validate_budget(effective_budget)
+        if budget and budget.get('closeout_reserve_seconds', 0) >= backends['executor']['job_timeout']:
+            raise ValueError('closeout_reserve_seconds must be smaller than the executor job_timeout')
     except ValueError as error:
         raise GateError('Invalid task budget: ' + str(error)) from None
     if task_type == 'audit':
@@ -974,7 +976,7 @@ def _start_job(sid, kind, message="", event_id=None):
         if state["rounds"] >= contract["max_rounds"]:
             raise GateError("Maximum exam rounds reached; do not lower the threshold")
         try:
-            usage_ledger(state, contract).ensure_available()
+            usage_ledger(state, contract).ensure_available('exam' if kind == 'evaluate' else 'work')
         except BudgetExceeded:
             raise
         except (OSError, ValueError) as error:
@@ -1036,7 +1038,7 @@ def minimal_env():
 
 
 def peer_turn(state, contract, message, phase="work", policy=None):
-    from isolation import model_relay
+    from isolation import model_relay, RelayCloseout
     binding = backend_bindings(contract)['executor']
     key, _ = provider_credential(binding['provider'], binding)
     from local_executor import lease, assert_active
@@ -1049,48 +1051,68 @@ def peer_turn(state, contract, message, phase="work", policy=None):
     options = {'binding': binding, 'diagnostics': diagnostics} if local or binding['provider'] == 'bailian' else {}
     if local:
         options['validate'] = lambda: assert_active(bridge_services(), binding)
+    # New work admission uses an explicit frozen reserve. Historical contracts
+    # without one retain their original job deadline.
+    margin = (contract.get('budget') or {}).get('closeout_reserve_seconds', 0) if phase == 'work' else 0
+    closeout = RelayCloseout(request_window=margin)
+    failure = None
     with (lease(bridge_services(), binding) if local else contextlib.nullcontext()), \
             model_relay(binding['base_url'], key, binding['http_timeout'], policy=policy,
                         usage_ledger=ledger, usage_context=usage_context, budget_failure=budget_failure,
+                        closeout=closeout,
                         **options) as (endpoint, token, port):
         try:
-            result = isolated_peer_turn(state, contract, message, endpoint, token, port, phase=phase)
-            if budget_failure:
-                raise BudgetExceeded(budget_failure.get('message', 'Task budget exhausted'),
-                                     budget_failure.get('snapshot'))
-            try:
-                ledger.ensure_known()
-            except BudgetExceeded:
-                raise
-            except (OSError, ValueError) as error:
-                message = ('Usage accounting unavailable; configured task budget cannot be verified, '
-                           'so further paid requests are blocked: ' + str(error)[:200])
-                if contract.get('budget'):
-                    raise BudgetExceeded(message, None) from None
-                raise GateError(message) from None
-            return result
-        except GateError as error:
-            if budget_failure:
-                raise BudgetExceeded(budget_failure.get('message', 'Task budget exhausted'),
-                                     budget_failure.get('snapshot')) from None
-            try:
-                ledger.ensure_known()
-            except BudgetExceeded:
-                raise
-            except (OSError, ValueError) as error:
-                message = ('Usage accounting unavailable; configured task budget cannot be verified, '
-                           'so further paid requests are blocked: ' + str(error)[:200])
-                if contract.get('budget'):
-                    raise BudgetExceeded(message, None) from None
-                raise GateError(message) from None
-            if policy and policy.transport_error:
-                raise InfrastructureError(policy.transport_error) from None
-            if policy and policy.failure:
-                raise GateError(policy.failure) from None
-            if diagnostics.get('failure'):
-                label = 'Local' if local else 'Bailian'
-                raise GateError(label + ' executor relay: ' + diagnostics['failure']) from error
-            raise
+            result = isolated_peer_turn(state, contract, message, endpoint, token, port,
+                                        phase=phase, closeout=closeout)
+        except Exception as error:
+            failure = error
+    # The relay has now stopped admissions and drained/interrupted its current
+    # requests. Checking earlier misclassified still-settling usage as unknown.
+    origin = str(failure)[:1200] + '; ' if failure else ''
+    for secret in (key, token):
+        if secret:
+            origin = origin.replace(secret, '[REDACTED]')
+    if closeout.reason == 'execution_deadline':
+        origin = 'Execution admission deadline reached; ' + origin
+    try:
+        if budget_failure:
+            raise BudgetExceeded(budget_failure.get('message', 'Task budget exhausted'),
+                                 budget_failure.get('snapshot'))
+        ledger.ensure_known()
+    except BudgetExceeded as error:
+        combined = BudgetExceeded(origin + str(error), error.snapshot)
+        if isinstance(failure, providers.ExecutionTimeout) or closeout.reason == 'execution_deadline':
+            combined.origin_kind = 'execution_timeout'
+        if getattr(failure, 'thread_id', None):
+            combined.thread_id = failure.thread_id
+        raise combined from None
+    except (OSError, ValueError) as error:
+        message = (origin + 'Usage accounting unavailable; configured task budget cannot be verified, '
+                   'so further paid requests are blocked: ' + str(error)[:200])
+        if contract.get('budget'):
+            raise BudgetExceeded(message, None) from None
+        raise GateError(message) from None
+    if failure:
+        if isinstance(failure, providers.ExecutionTimeout):
+            raise failure
+        if policy and policy.transport_error:
+            raise InfrastructureError(policy.transport_error) from failure
+        if policy and policy.failure:
+            raise GateError(policy.failure) from failure
+        if closeout.reason == 'execution_deadline':
+            error = providers.ExecutionTimeout('Execution admission deadline reached; current responses were '
+                                               'given bounded closeout time; no new upstream request was sent')
+            if getattr(failure, 'thread_id', None):
+                error.thread_id = failure.thread_id
+            raise error from failure
+        if diagnostics.get('failure'):
+            label = 'Local' if local else 'Bailian'
+            error = GateError(label + ' executor relay: ' + diagnostics['failure'])
+            if getattr(failure, 'thread_id', None):
+                error.thread_id = failure.thread_id
+            raise error from failure
+        raise failure
+    return result
 
 
 def bridge_services():
@@ -1098,9 +1120,9 @@ def bridge_services():
     return SimpleNamespace(**globals())
 
 
-def isolated_peer_turn(state, contract, message, endpoint, key, relay_port, phase='work'):
+def isolated_peer_turn(state, contract, message, endpoint, key, relay_port, phase='work', closeout=None):
     from executor import run
-    return run(bridge_services(), state, contract, message, endpoint, key, relay_port, phase)
+    return run(bridge_services(), state, contract, message, endpoint, key, relay_port, phase, closeout)
 
 
 def closed_book_exam(state, contract, commit):
@@ -1354,6 +1376,9 @@ def background_job(sid, job):
         # Credential strings must never enter durable errors, even through subprocess diagnostics.
         detail = redact_credentials(str(error), backend_bindings(contract).values())
         update = {"phase": "error", "last_error": detail[:3000], "last_result": None}
+        interrupted_thread = getattr(error, 'thread_id', None)
+        if request['kind'] == 'send' and interrupted_thread and state.get('thread_id') in (None, interrupted_thread):
+            update['thread_id'] = interrupted_thread
         exhausted = isinstance(error, BudgetExceeded)
         if exhausted:
             # A budget stop is a terminal accounting state, never infrastructure
@@ -1368,11 +1393,18 @@ def background_job(sid, job):
                           next_retry_at=time.time() + min(300, config()['infra_backoff_seconds'] * 2 ** min(failures - 1, 5)) if retryable else 0)
             write_json(root / f'job-{job}-error.json', {'kind': update['last_failure_kind'], 'message': detail[:3000],
                        'retryable': retryable, 'code_round_consumed': False, 'at': time.time(),
+                       'origin_kind': getattr(error, 'origin_kind', None),
                        **({'usage': error.snapshot} if exhausted and error.snapshot else {})})
         elif exhausted:
             write_json(root / f'job-{job}-error.json', {'kind': 'budget', 'message': detail[:3000],
                        'retryable': False, 'code_round_consumed': False, 'at': time.time(),
+                       'origin_kind': getattr(error, 'origin_kind', None),
                        **({'usage': error.snapshot} if error.snapshot else {})})
+        else:
+            update['last_failure_kind'] = ('execution_timeout' if isinstance(error, providers.ExecutionTimeout)
+                                           else 'execution')
+            write_json(root / f'job-{job}-error.json', {'kind': update['last_failure_kind'],
+                       'message': detail[:3000], 'retryable': False, 'at': time.time()})
         if isinstance(error, ExamFormatError) and hasattr(error, "diagnostics"):
             write_json(root / f"attempt-{state['rounds']}-format-error.json", error.diagnostics)
     with locked(sid) as root:
@@ -1670,7 +1702,8 @@ SID = {"session_id": STR}
 DETAIL = {"type": "string", "enum": ["summary", "full"]}
 BUDGET = {"type": "object", "additionalProperties": False, "properties": {
     key: {"type": "integer", "minimum": 1} for key in
-    ('max_requests', 'max_input_tokens', 'max_uncached_input_tokens', 'max_output_tokens', 'max_total_tokens')}}
+    ('max_requests', 'max_input_tokens', 'max_uncached_input_tokens', 'max_output_tokens', 'max_total_tokens',
+     'exam_reserve_requests', 'exam_reserve_tokens', 'closeout_reserve_seconds')}}
 QUESTION = obj({"id": STR, "prompt": STR, "reference": STR, "points": {"type": "integer"}, "minimum": {"type": "integer"}}, ["id", "prompt", "reference", "points"])
 CHECK = obj({"id": STR, "argv": {"type": "array", "items": STR}, "timeout_seconds": {"type": "integer"}, "network": {"type": "boolean"}}, ["id", "argv"])
 TOOLS = [
@@ -1700,6 +1733,12 @@ PROJECT_TASK = obj({'id': STR, 'task': STR, 'message': STR, 'context': STR,
 PROJECT_TASK['properties']['budget'] = BUDGET
 TOOLS[0]['inputSchema']['properties']['budget'] = BUDGET
 TOOLS[0]['description'] += (' Optional frozen budget: max_requests is a hard reservation limit; token thresholds stop the next request after observed spend reaches a limit; an in-flight response may overshoot. Unknown usage needed for a configured token limit stops further paid requests. Omit budget for legacy unlimited behavior.')
+TOOLS[0]['description'] += (' Optional exam_reserve_requests and exam_reserve_tokens carve exam capacity out of '
+                            'max_requests and max_total_tokens respectively; each reserve must be smaller than its '
+                            'total limit. Work and repairs share the remaining work allocation; all phases still share '
+                            'the original total cap. Token reservations remain observed-spend thresholds. '
+                            'Optional closeout_reserve_seconds stops new work requests that many seconds before '
+                            'job_timeout; it must be smaller than job_timeout. No reserve is added to old contracts.')
 PID = {'project_id': STR}
 SCORES = {'type': 'array', 'items': obj({'id': STR, 'points': {'type': 'integer'}, 'rationale': STR})}
 TOOLS += [

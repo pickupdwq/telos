@@ -11,15 +11,92 @@ import providers
 from identity import data_path
 
 
-def run(b, state, contract, message, endpoint, key, relay_port, phase="work"):
+def _work_guidance(evidence, contract, state, *, artifact_root=None):
+    """Compact, allowlisted facts from successful preflight and runtime paths."""
+    if evidence.get('status') != 'passed' or not evidence.get('interpreter') or not evidence.get('cwd'):
+        raise ValueError('Verified preflight evidence is incomplete')
+    lines = [
+        'Verified work guidance (sandbox preflight passed):',
+        '- Python interpreter: ' + evidence['interpreter'] + ' (use this exact executable).',
+        '- Work cwd: ' + evidence['cwd'] + '.',
+    ]
+    if artifact_root is not None:
+        root = Path(artifact_root)
+        report = root / 'report.json'
+        report_help = root / 'audit-report-help.json'
+        lines += [
+            '- Audit source: ' + state['worktree'] + ' (read-only; frozen source ' + state['base_commit'] + ').',
+            '- Audit artifacts: ' + str(root) + ' (writable).',
+            '- Write the report only to ' + str(report) + '; evidence stays in the artifact directory.',
+            '- Read report help once at ' + str(report_help) + ' (report/finding schemas and evidence rules).',
+        ]
+        if contract['audit'].get('targets'):
+            lines.append('- Audit mode: online/mixed. API/browser actions must use the authenticated local broker for '
+                         'declared targets only, never direct network. Read probe help once at '
+                         + str(root / 'audit-probe-help.json') + ' for request shapes.')
+        else:
+            lines.append('- Audit mode: offline source. Inspect the scoped source and produce complete evidence. '
+                         'Do not read probe help or discover, start or test a network/browser environment.')
+        lines += [
+            '- Source access is file-scoped to declared audit scope paths: Git metadata and whole-root listings are '
+            'not granted. Do not run source Git or repository-root discovery; use the frozen source commit and '
+            'scoped file bytes/hashes.',
+        ]
+        lines.append('- Writes are limited to the artifact directory and session scratch; the source root is read-only.')
+    else:
+        lines.append('- Writes are limited to the worktree and session scratch; the shared Git directory is protected.')
+    lines += [
+        '- Scope: preflight checked only the selected CLI, this Python interpreter, and Git version/availability; '
+        'other tools and the wider environment are untested.',
+        '- Do not repeat bootstrap, version, interpreter, Git availability, PATH, ancestor, or repository-layout '
+        'discovery. If a real command fails with a concrete contradictory error, diagnose only that error narrowly.',
+    ]
+    return '\n'.join(lines) + '\n'
+
+
+def _execution_guidance(b, state, contract, binding):
+    duration = binding['job_timeout']
+    margin = (contract.get('budget') or {}).get('closeout_reserve_seconds', 0)
+    text = f'Execution limit: {duration}s. '
+    if margin:
+        text += f'New requests stop {margin}s early. '
+    text += 'Limit reads, use the supplied test command, and reserve one work request for a final factual report.\n'
+    if contract.get('budget'):
+        snapshot = b.usage_snapshot(state, contract)
+        remaining = snapshot.get('budget_state', {}).get('remaining', {})
+        work = snapshot.get('work_budget_state', {}).get('remaining', {})
+        limits = {key: min(remaining[key], work.get(key, remaining[key]))
+                  for key in ('max_requests', 'max_total_tokens') if type(remaining.get(key)) is int}
+        text += 'Remaining work allowance: ' + json.dumps(limits, separators=(',', ':')) + '. '
+        text += 'Exam reserves are unavailable to work/repair; token thresholds may be overshot by one response.\n'
+    return text
+
+
+def _retain_thread(error, stdout, state):
+    """Preserve a CLI-issued identity without treating interrupted work as done."""
+    for line in stdout.decode(errors='replace').splitlines():
+        try:
+            event = json.loads(line)
+        except ValueError:
+            continue
+        if isinstance(event, dict) and event.get('type') == 'thread.started':
+            thread = event.get('thread_id')
+            if (isinstance(thread, str) and 0 < len(thread) <= 128
+                    and not any(c.isspace() for c in thread)
+                    and state.get('thread_id') in (None, thread)):
+                error.thread_id = thread
+    return error
+
+
+def run(b, state, contract, message, endpoint, key, relay_port, phase="work", closeout=None):
     if contract.get('task_type') == 'audit' and phase == 'work':
         from audit_probe import service
         with service(b, state, contract) as probe:
-            return _run(b, state, contract, message, endpoint, key, relay_port, phase, probe)
-    return _run(b, state, contract, message, endpoint, key, relay_port, phase)
+            return _run(b, state, contract, message, endpoint, key, relay_port, phase, probe, closeout)
+    return _run(b, state, contract, message, endpoint, key, relay_port, phase, closeout=closeout)
 
 
-def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", probe=None):
+def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", probe=None, closeout=None):
     """Run or resume exactly one executor; work/exam differ only in capabilities."""
     if phase not in ("work", "exam"):
         raise b.GateError("Unknown executor phase")
@@ -138,13 +215,14 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
     if contract.get('experience_context'):
         initial += "\nExperience reference:\n" + contract['experience_context'] + "\n"
     if probe:
-        initial += audit.public_prompt(b, state, contract)
-    prompt = (initial if not state.get("thread_id") else "") + "Codex message:\n" + message
+        initial += audit.public_prompt(b, state, contract, artifact_root=artifact_root)
     readable_cache = [peer_home] if exam else [state["worktree"], peer_home, common_git]
     writable = [peer_home] if exam else [state['worktree'], peer_home]
     protected = [p for p in (common_git, Path(state['worktree']) / '.git') if p is not None]
+    audit_sources = []
     if probe:
-        readable_cache = [peer_home, artifact_root, *audit.source_paths(state, contract['audit'])]
+        audit_sources = audit.source_paths(state, contract['audit'])
+        readable_cache = [peer_home, artifact_root, *audit_sources]
         writable = [peer_home, artifact_root]
         protected.append(state['worktree'])
     profile = sandbox_profile(network=False if exam else contract.get('command_network', False),
@@ -152,12 +230,19 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
                               protected=protected, service_ports=[probe['port']] if probe else [],
                               readable=[] if exam else contract.get('dependency_paths', []),
                               readable_cache=readable_cache)
+    guidance = ''
     if phase == 'work':
         # One bounded probe per work invocation, in the same sandbox/env/cwd as
         # the CLI. Exams never probe the worktree; audits use their isolated room.
-        preflight.run(b, cli, cwd, env, profile, check_repo=(probe is None and contract.get('task_type') != 'audit'),
-                      secrets=(key,))
+        evidence = preflight.run(b, cli, cwd, env, profile,
+                                 check_repo=(probe is None and contract.get('task_type') != 'audit'),
+                                 secrets=(key,))
+        guidance = _work_guidance(evidence, contract, state, artifact_root=artifact_root if probe else None)
+        guidance += _execution_guidance(b, state, contract, binding)
+    prompt = (initial if not state.get("thread_id") else "") + guidance + "Codex message:\n" + message
     command = ["/usr/bin/sandbox-exec", "-p", profile, *args]
+    if closeout is not None:
+        closeout.start(cfg["job_timeout"])
     p = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE,
                          stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     try:
@@ -168,7 +253,8 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
         detail = err.decode(errors='replace')[-1800:] + out.decode(errors='replace')[-1200:]
         if key:
             detail = detail.replace(key, '[REDACTED]')
-        raise GateError("Execution model timed out; no acceptance. " + detail) from None
+        error = providers.ExecutionTimeout("Execution model timed out; no acceptance. " + detail)
+        raise _retain_thread(error, out, state) from None
     events = []
     for line in stdout.decode(errors="replace").splitlines():
         try:
@@ -192,7 +278,7 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
             if key:
                 extra = extra.replace(key, "[REDACTED]")
             detail += extra[-1200:]
-        raise GateError("Execution model failed: " + detail)
+        raise _retain_thread(GateError("Execution model failed: " + detail), stdout, state)
     if exam and thread != state["thread_id"]:
         raise GateError("Closed-book exam resumed a different executor conversation")
     summary = output.read_text()

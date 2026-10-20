@@ -431,18 +431,32 @@ def repair_source(b, value, repo, caller=None):
     return {**value, 'packet_id': state['packet_id'], 'source_commit': state['submitted_commit']}
 
 
-def public_prompt(b, state, contract):
+def public_prompt(b, state, contract, artifact_root=None):
+    root = Path(artifact_root) if artifact_root is not None else artifacts(b, state)
+    report = root / 'report.json'
+    report_help = root / 'audit-report-help.json'
+    if contract['audit'].get('targets'):
+        access = ('API/browser actions must use the authenticated local audit probe service for declared targets only, '
+                  'never direct network access. Use Python urllib.request: POST JSON to os.environ["TELOS_AUDIT_URL"] '
+                  'with Authorization: Bearer + os.environ["TELOS_AUDIT_TOKEN"]. Read the report help at '
+                  + str(report_help) + ' and the probe help at ' + str(root / 'audit-probe-help.json')
+                  + ' for report/finding schemas, evidence rules and probe request shapes. ')
+    else:
+        access = ('This is an offline source audit: inspect the scoped source and produce complete evidence. Read '
+                  'the report help at ' + str(report_help) + ' for report/finding schemas and evidence rules. '
+                  'Do not read probe help and do not discover, start or test a network/browser environment. ')
     return ('You are conducting a SYSTEM AUDIT. The source is read-only. Do not fix source or expand scope. '
-            'Write report.json and evidence only in TELOS_AUDIT_ARTIFACTS. Inspect the public checklist with tools; '
+            'Write the report only to ' + str(report) + ' and evidence files only under ' + str(root) + '. '
+            'Inspect the public checklist with tools; '
             'private assessment questions are separate. Findings are not acceptance. Mark unavailable checks blocked/not_tested '
             'with reasons; do not invent evidence or equate an untested system with a healthy one. Record out-of-scope '
             'leads and continue independent in-scope work; stop affected steps at the frozen boundaries. '
-            'API/browser actions must use the authenticated local audit probe service, never direct network access. '
-            'Use Python urllib.request: POST JSON to os.environ["TELOS_AUDIT_URL"] with Authorization: Bearer '
-            '+ os.environ["TELOS_AUDIT_TOKEN"]. Read audit-report-help.json and audit-probe-help.json in the artifact directory '
-            'for report/finding schemas, evidence rules and probe request shapes. '
+            'Source access is file-scoped to declared audit scope paths: Git metadata and whole-root listings are not '
+            'granted. Use the frozen source commit and scoped file bytes/hashes; do not run source Git or '
+            'repository-root discovery. '
+            + access +
             'Additional read-only dependencies: ' + b.encoded(contract.get('dependency_paths', [])) + '\n'
-            'Source root: ' + state['worktree'] + ' (also TELOS_AUDIT_SOURCE). '
+            'Source root: ' + state['worktree'] + ' (frozen identity only; also TELOS_AUDIT_SOURCE). '
             'Source commit: ' + state['base_commit'] + '\nPUBLIC AUDIT CONTRACT:\n' + b.encoded(contract['audit']) + '\n')
 
 

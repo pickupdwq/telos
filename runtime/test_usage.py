@@ -3,8 +3,11 @@ import contextlib
 import json
 import os
 from pathlib import Path
+import socket
+import struct
 import tempfile
 import threading
+import time
 import unittest
 import urllib.error
 import urllib.request
@@ -357,9 +360,249 @@ class PeerBudgetTests(unittest.TestCase):
                 self.run_peer(ledger, {'input_tokens': 1, 'output_tokens': 1, 'total_tokens': 2})
         self.assertIn('Usage accounting unavailable', str(caught.exception))
 
+    def test_relay_settles_before_usage_check_and_keeps_original_timeout(self):
+        for settle in (True, False):
+            with self.subTest(settle=settle):
+                path = self.path.with_name(str(settle) + '.json')
+                ledger = usage.UsageLedger(path, {'max_total_tokens': 1000})
+                request_id = None
+
+                def interrupted(*args, **kwargs):
+                    nonlocal request_id
+                    request_id = ledger.begin('work')
+                    raise telos.providers.ExecutionTimeout('Execution model timed out; KEY')
+
+                @contextlib.contextmanager
+                def draining(*args, **kwargs):
+                    try:
+                        yield 'http://127.0.0.1:9/v1', 'relay-token', 9
+                    finally:
+                        ledger.finish(request_id, responses_usage() if settle else None,
+                                      status='failed', error_kind='transport')
+
+                with patch.object(telos, 'backend_bindings', return_value={'executor': self.binding}), \
+                        patch.object(telos, 'provider_credential', return_value=('KEY', 'env')), \
+                        patch.object(telos, 'usage_ledger', return_value=ledger), \
+                        patch.object(telos, 'isolated_peer_turn', side_effect=interrupted), \
+                        patch.object(isolation, 'model_relay', draining):
+                    expected = telos.providers.ExecutionTimeout if settle else usage.BudgetExceeded
+                    with self.assertRaises(expected) as caught:
+                        telos.peer_turn(self.state, self.contract, 'message')
+                self.assertIn('timed out', str(caught.exception))
+                if not settle:
+                    self.assertNotIn('KEY', str(caught.exception))
+                    self.assertEqual(caught.exception.origin_kind, 'execution_timeout')
+                    self.assertEqual(caught.exception.snapshot['totals']['in_flight_requests'], 0)
+                else:
+                    self.assertEqual(ledger.snapshot()['totals']['total_tokens'], 120)
+
+
+class ExamReserveTests(unittest.TestCase):
+    def test_reserve_is_frozen_shared_by_repairs_and_available_to_exams(self):
+        with tempfile.TemporaryDirectory() as root:
+            path = Path(root) / 'usage.json'
+            budget = {'max_requests': 4, 'exam_reserve_requests': 2,
+                      'max_total_tokens': 500, 'exam_reserve_tokens': 200}
+            ledger = usage.UsageLedger(path, budget)
+            for phase in ('work', 'repair'):
+                ledger.finish(ledger.begin(phase), responses_usage())
+            with self.assertRaisesRegex(usage.BudgetExceeded, 'reserved for the exam'):
+                ledger.ensure_available('work')
+            # A reopened ledger cannot reset either the work allowance or reserve.
+            reopened = usage.UsageLedger(path, budget)
+            with self.assertRaises(usage.BudgetExceeded):
+                reopened.begin('repair')
+            for _ in range(2):
+                reopened.finish(reopened.begin('exam'), responses_usage())
+            self.assertEqual(reopened.snapshot()['totals']['total_tokens'], 480)
+            with self.assertRaises(usage.BudgetExceeded):
+                reopened.begin('exam')
+            with self.assertRaises(ValueError):
+                usage.UsageLedger(path, {**budget, 'exam_reserve_requests': 1})
+
+    def test_token_reserve_blocks_more_work_without_inventing_a_hard_token_cap(self):
+        with tempfile.TemporaryDirectory() as root:
+            ledger = usage.UsageLedger(Path(root) / 'usage.json',
+                                      {'max_total_tokens': 200, 'exam_reserve_tokens': 100})
+            ledger.finish(ledger.begin('work'), responses_usage())  # observed overshoot: 120 > 100
+            with self.assertRaises(usage.BudgetExceeded):
+                ledger.begin('work')
+            ledger.finish(ledger.begin('exam'), responses_usage(30, 0, 10, 0, 40))
+            self.assertEqual(ledger.snapshot()['totals']['total_tokens'], 160)
+
+    def test_invalid_reserves_and_unknown_usage_cannot_bypass_total_caps(self):
+        for budget in ({'exam_reserve_requests': 1}, {'max_requests': 2, 'exam_reserve_requests': 2},
+                       {'max_total_tokens': 5, 'exam_reserve_tokens': 6},
+                       {'max_requests': 2, 'exam_reserve_requests': False}):
+            with self.subTest(budget=budget), self.assertRaises(ValueError):
+                usage.validate_budget(budget)
+        with tempfile.TemporaryDirectory() as root:
+            ledger = usage.UsageLedger(Path(root) / 'usage.json',
+                                      {'max_requests': 3, 'exam_reserve_requests': 1, 'max_total_tokens': 10})
+            first = ledger.begin('work')
+            ledger.finish(first, None, status='failed')
+            # Unknown data must also be reported when a different known limit is exhausted.
+            with self.assertRaises(usage.BudgetExceeded):
+                ledger.begin('exam')
+            with self.assertRaises(usage.BudgetExceeded):
+                ledger.ensure_known()
+            exhausted = usage.UsageLedger(Path(root) / 'exhausted.json',
+                                          {'max_requests': 1, 'max_total_tokens': 10})
+            exhausted.finish(exhausted.begin('work'), None, status='failed')
+            self.assertEqual(exhausted.snapshot()['budget_state']['state'], 'exceeded')
+            with self.assertRaises(usage.BudgetExceeded):
+                exhausted.ensure_known()
+
 
 @contextlib.contextmanager
-def upstream(reply):
+def streaming_upstream(emit):
+    seen = []
+
+    class Handler(BaseHTTPRequestHandler):
+        def log_message(self, *_):
+            pass
+
+        def do_POST(self):
+            seen.append(json.loads(self.rfile.read(int(self.headers['Content-Length']))))
+            self.send_response(200)
+            self.send_header('Content-Type', 'text/event-stream')
+            self.send_header('x-request-id', 'fixture-upstream-12345')
+            self.send_header('Connection', 'close')
+            self.end_headers()
+            try:
+                emit(self.wfile, len(seen))
+            except (OSError, ValueError):
+                pass
+
+    server = ThreadingHTTPServer(('127.0.0.1', 0), Handler)
+    server.daemon_threads = True
+    worker = threading.Thread(target=server.serve_forever, daemon=True)
+    worker.start()
+    try:
+        yield server.server_port, seen
+    finally:
+        server.shutdown(); server.server_close(); worker.join(timeout=2)
+
+
+class RelayCloseoutTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.ledger = usage.UsageLedger(Path(self.temp.name) / 'usage.json', {'max_total_tokens': 1000})
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    @staticmethod
+    def terminal():
+        event = {'type': 'response.completed', 'response': {'status': 'completed', 'usage': responses_usage()}}
+        return b'data: ' + json.dumps(event).encode() + b'\n\n'
+
+    @staticmethod
+    def disconnect(relay):
+        _, token, port = relay
+        sock = socket.create_connection(('127.0.0.1', port), timeout=3)
+        payload = b'{"model":"m"}'
+        sock.sendall((f'POST /v1/responses HTTP/1.1\r\nHost: localhost\r\nAuthorization: Bearer {token}\r\n'
+                      f'Content-Type: application/json\r\nContent-Length: {len(payload)}\r\n\r\n').encode() + payload)
+        sock.recv(4096)  # Real HTTP headers have arrived; the upstream call is in flight.
+        sock.setsockopt(socket.SOL_SOCKET, socket.SO_LINGER, struct.pack('ii', 1, 0))
+        sock.close()
+
+    def test_admission_deadline_does_not_reserve_or_send_a_request(self):
+        def reply(request, n):
+            return 200, 'application/json', b'{}'
+        with upstream(reply) as (port, seen):
+            closeout = isolation.RelayCloseout(duration=0, grace=0.05)
+            with isolation.model_relay(f'http://127.0.0.1:{port}', '', usage_ledger=self.ledger,
+                                       closeout=closeout) as relay:
+                with self.assertRaises(urllib.error.HTTPError):
+                    post(relay)
+            self.assertEqual(seen, [])
+        self.assertEqual(self.ledger.snapshot()['totals']['requests'], 0)
+
+    def test_deadline_cannot_be_reset_or_reopen_closeout(self):
+        closeout = isolation.RelayCloseout()
+        closeout.start(10)
+        with self.assertRaises(RuntimeError):
+            closeout.start(20)
+        closed = isolation.RelayCloseout()
+        closed.stop('finished')
+        with self.assertRaises(RuntimeError):
+            closed.start(10)
+
+    def test_http_failure_keeps_safe_provider_request_id_and_reported_usage(self):
+        def reply(request, n):
+            return 429, 'application/json', json.dumps({'usage': responses_usage()}).encode()
+
+        with upstream(reply, request_id='failed-upstream-12345') as (port, seen):
+            with isolation.model_relay(f'http://127.0.0.1:{port}', '', usage_ledger=self.ledger) as relay:
+                with self.assertRaises(urllib.error.HTTPError):
+                    post(relay)
+        entry = next(iter(json.loads(self.ledger.path.read_text())['requests'].values()))
+        self.assertEqual(entry['upstream_request_id'], 'failed-upstream-12345')
+        self.assertEqual(entry['status'], 'failed')
+        self.assertEqual(entry['usage']['total_tokens'], 120)
+
+    def test_disconnect_drains_terminal_usage_and_blocks_new_paid_requests(self):
+        release = threading.Event()
+        done = threading.Event()
+        terminal = self.terminal()
+
+        def emit(stream, n):
+            stream.write(b': first\n\n'); stream.flush()
+            release.wait(2)
+            stream.write(b'data: {"type":"response.output_text.delta","delta":"x"}\n\n'); stream.flush()
+            time.sleep(0.05)
+            stream.write(terminal); stream.flush()
+            done.set()
+
+        with streaming_upstream(emit) as (port, seen):
+            closeout = isolation.RelayCloseout(grace=0.5)
+            with isolation.model_relay(f'http://127.0.0.1:{port}', '', timeout=2,
+                                       usage_ledger=self.ledger, closeout=closeout) as relay:
+                self.disconnect(relay)
+                release.set()
+                self.assertTrue(done.wait(2))
+                # drain() also waits for the handler to commit the receipt.
+                closeout.drain()
+                with self.assertRaises(urllib.error.HTTPError):
+                    post(relay)
+            self.assertEqual(len(seen), 1)
+        totals = self.ledger.snapshot()['totals']
+        self.assertEqual(totals['total_tokens'], 120)
+        self.assertEqual(totals['unknown_usage_requests'], 0)
+        self.assertEqual(totals['in_flight_requests'], 0)
+        entry = next(iter(json.loads(self.ledger.path.read_text())['requests'].values()))
+        self.assertEqual(entry['upstream_request_id'], 'fixture-upstream-12345')
+
+    def test_hanging_stream_has_bounded_closeout_and_remains_unknown(self):
+        release = threading.Event()
+
+        def emit(stream, n):
+            stream.write(b': no terminal yet\n\n'); stream.flush()
+            release.wait(3)
+
+        try:
+            with streaming_upstream(emit) as (port, seen):
+                closeout = isolation.RelayCloseout(grace=0.05)
+                started = time.monotonic()
+                with isolation.model_relay(f'http://127.0.0.1:{port}', '', timeout=2,
+                                           usage_ledger=self.ledger, closeout=closeout) as relay:
+                    self.disconnect(relay)
+                self.assertLess(time.monotonic() - started, 1.5)
+                self.assertEqual(len(seen), 1)
+                totals = self.ledger.snapshot()['totals']
+                self.assertEqual(totals['in_flight_requests'], 0)
+                self.assertEqual(totals['unknown_usage_requests'], 1)
+                self.assertEqual(totals['failed_requests'], 1)
+                with self.assertRaises(usage.BudgetExceeded):
+                    self.ledger.ensure_available()
+        finally:
+            release.set()
+
+
+@contextlib.contextmanager
+def upstream(reply, request_id=None):
     requests = []
 
     class Handler(BaseHTTPRequestHandler):
@@ -371,6 +614,8 @@ def upstream(reply):
             requests.append(request)
             status, content_type, data = reply(request, len(requests))
             self.send_response(status)
+            if request_id:
+                self.send_header('x-request-id', request_id)
             self.send_header('Content-Type', content_type)
             self.send_header('Content-Length', str(len(data)))
             self.end_headers()

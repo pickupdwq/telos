@@ -22,6 +22,8 @@ With automatic return enabled, yield while waiting instead of repeatedly polling
 
 `telos_status`, `telos_receive` and `telos_review` default to summary detail. The review summary keeps every question, private reference, answer, rubric, check outcome and identity/blocker needed for grading; request `detail="full"` only for complete successful logs, raw attempts or static task prose. Failed snippets remain bounded. A frozen `task_budget` counts all work, repair and exam requests: request count is a hard limit, token limits stop the next request after observed spend, and unknown required usage stops further paid requests. Report that budget state instead of retrying it as infrastructure or treating it as acceptance.
 
+If the task reserves exam capacity, inspect `usage.work_budget_state` as well as the shared total. Exhausted work capacity is not an exhausted provider account. An execution timeout is also not evidence of insufficient credit. Report the original failure and any missing receipt separately; do not turn an interrupted work phase into completed work just because some budget was reserved for an exam.
+
 Only standalone `accepted=true` completes a standalone task. Projects additionally require integrated checks and `telos_project_finish` returning project `accepted=true`; see [planning](planning.md).
 
 ## Deliver the result

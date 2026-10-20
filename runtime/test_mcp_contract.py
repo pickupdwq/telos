@@ -103,6 +103,52 @@ class MCPBoundaryTests(unittest.TestCase):
         with self.assertRaises(b.GateError):
             self.open_with_budget()
 
+    def test_exam_reserves_freeze_at_mcp_boundary_and_gate_work_only(self):
+        budget = {'max_requests': 3, 'exam_reserve_requests': 1,
+                  'max_total_tokens': 1000, 'exam_reserve_tokens': 200, 'closeout_reserve_seconds': 1}
+        opened = self.open_with_budget(budget)
+        sid = opened['session_id']
+        root = b.run_dir(sid)
+        state, contract = b.load_session(root)
+        self.assertEqual(contract['budget'], budget)
+        ledger = b.usage_ledger(state, contract)
+        for _ in range(2):
+            ledger.finish(ledger.begin('work'), {'input_tokens': 10, 'output_tokens': 2, 'total_tokens': 12})
+        state.update(phase='responded', thread_id='existing-executor')
+        b.write_json(root / 'state.json', state)
+        with patch.object(b.subprocess, 'Popen', return_value=Mock(pid=os.getpid())) as launch:
+            with self.assertRaisesRegex(BudgetExceeded, 'reserved for the exam'):
+                b.start_job(sid, 'send', 'More work')
+            launch.assert_not_called()
+            self.assertEqual(b.start_job(sid, 'evaluate')['phase'], 'running')
+            launch.assert_called_once()
+        self.assertIn('work_budget_state', b.call_tool('telos_status', {'session_id': sid})['usage'])
+        for invalid in ({'exam_reserve_tokens': 10}, {'max_requests': 1, 'exam_reserve_requests': 1}):
+            with self.subTest(invalid=invalid), self.assertRaises(b.GateError):
+                self.open_with_budget(invalid)
+        with self.assertRaisesRegex(b.GateError, 'job_timeout'):
+            self.open_with_budget({'closeout_reserve_seconds': contract['executor']['job_timeout']})
+
+    def test_execution_timeout_is_saved_as_a_local_failure_not_a_quota_diagnosis(self):
+        sid = self.create()
+        with patch.object(b.subprocess, 'Popen', return_value=Mock(pid=os.getpid())):
+            job = b.start_job(sid, 'send', 'Do the bounded task')['job_id']
+        error = b.providers.ExecutionTimeout('Execution model timed out')
+        error.thread_id = 'interrupted-executor'
+        with patch.object(b, 'peer_turn', side_effect=error):
+            b.background_job(sid, job)
+        state = b.read_json(b.run_dir(sid) / 'state.json')
+        failure = b.read_json(b.run_dir(sid) / f'job-{job}-error.json')
+        self.assertEqual(state['phase'], 'error')
+        self.assertEqual(state['last_failure_kind'], 'execution_timeout')
+        self.assertEqual(state['thread_id'], 'interrupted-executor')
+        self.assertEqual(failure['kind'], 'execution_timeout')
+        self.assertFalse(failure['retryable'])
+        self.assertFalse(b.status(sid)['accepted'])
+        # Preserving the thread must not make an incomplete work turn examinable.
+        with self.assertRaisesRegex(b.GateError, 'completed execution-model turn'):
+            b.start_job(sid, 'evaluate')
+
     def test_exhausted_budget_error_is_not_retried_as_infrastructure(self):
         sid = self.create()
         root = b.run_dir(sid)

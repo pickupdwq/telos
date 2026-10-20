@@ -33,6 +33,45 @@ QUALITY = [{'id': 'quality', 'argv': ['{python}', '-c',
     'import json,os; r=json.load(open(os.environ["TELOS_AUDIT_REPORT"])); assert len(r["results"])>=1']}]
 
 
+class PublicAuditPromptTests(unittest.TestCase):
+    def prompt(self, policy):
+        bridge = Mock()
+        bridge.encoded.side_effect = json.dumps
+        state = {'session_id': 's' * 32, 'worktree': '/srv/source', 'base_commit': 'a' * 40}
+        contract = {'audit': policy, 'dependency_paths': ['/srv/dependency']}
+        return audit.public_prompt(bridge, state, contract, artifact_root=Path('/srv/artifacts'))
+
+    def test_offline_audit_uses_report_help_and_avoids_probe_discovery(self):
+        text = self.prompt(boundary())
+        self.assertIn('offline source audit', text)
+        self.assertIn('inspect the scoped source and produce complete evidence', text)
+        self.assertIn('/srv/artifacts/report.json', text)
+        self.assertIn('/srv/artifacts/audit-report-help.json', text)
+        self.assertNotIn('audit-probe-help.json', text)
+        self.assertNotIn('TELOS_AUDIT_URL', text)
+        self.assertNotIn('Authorization: Bearer', text)
+        self.assertIn('Git metadata and whole-root listings are not granted', text)
+        self.assertIn('scoped file bytes/hashes', text)
+        self.assertIn('do not run source Git or repository-root discovery', text)
+        self.assertIn('Source root: /srv/source', text)
+        self.assertIn('Source commit: ' + 'a' * 40, text)
+
+    def test_online_and_mixed_audits_keep_scoped_authenticated_broker_instructions(self):
+        online = {**boundary(), 'targets': [{'origin': 'http://127.0.0.1:8000', 'path_prefix': '/ui',
+                                             'methods': ['GET']}]}
+        mixed = copy.deepcopy(online)
+        mixed['checklist'].append({'id': 'api', 'kind': 'api', 'prompt': 'Check API',
+                                   'expected': 'Declared API behavior', 'required': True})
+        for policy in (online, mixed):
+            with self.subTest(policy=policy):
+                text = self.prompt(policy)
+                self.assertIn('authenticated local audit probe service for declared targets only', text)
+                self.assertIn('Authorization: Bearer', text)
+                self.assertIn('/srv/artifacts/audit-report-help.json', text)
+                self.assertIn('/srv/artifacts/audit-probe-help.json', text)
+                self.assertIn('never direct network access', text)
+
+
 class AuditTests(unittest.TestCase):
     setUp = BridgeTests.setUp
     tearDown = BridgeTests.tearDown

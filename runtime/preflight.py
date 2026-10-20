@@ -97,7 +97,8 @@ def run(b, cli, cwd, env, profile, *, check_repo=False, secrets=(), timeout=20,
     if check_repo:
         probes.append(('Git worktree', [git, '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
                                        '-C', str(cwd), 'rev-parse', '--show-toplevel']))
-    evidence = {'status': 'passed', 'cwd': str(cwd), 'checks': []}
+    evidence = {'status': 'passed', 'cwd': str(cwd),
+                'interpreter': str(sys.executable), 'checks': []}
     for label, argv in probes:
         command = [sandbox_exec, '-p', profile, *argv]
         try:
