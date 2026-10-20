@@ -161,6 +161,129 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(self.events()[-1]['kind'], 'diagnostic')
 
 
+class TailReaderTests(unittest.TestCase):
+    """Pure byte-cursor tests for Reader.seek_tail (no subprocesses)."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.log = self.root / activity.FILENAME
+
+    @staticmethod
+    def record(text):
+        return (json.dumps({'version': 1, 'kind': 'message', 'text': text},
+                           ensure_ascii=False) + '\n').encode('utf-8')
+
+    @staticmethod
+    def offset_after_tail_newline(data, count):
+        newlines = [i for i, byte in enumerate(data) if byte == 10]
+        if len(newlines) <= count:
+            return 0
+        return newlines[-count - 1] + 1
+
+    def reader_for(self, data):
+        self.log.write_bytes(data)
+        return activity.Reader(self.log)
+
+    def sized_record(self, size, text):
+        prefix = (b'{"version":1,"kind":"message","text":' +
+                  json.dumps(text).encode('ascii') + b'}')
+        self.assertGreaterEqual(size, len(prefix) + 1)
+        return prefix + b' ' * (size - len(prefix) - 1) + b'\n'
+
+    def test_tail_counts_have_exact_byte_offsets_and_record_suffixes(self):
+        records = [self.record(f'record-{i}') for i in range(6)]
+        data = b''.join(records)
+        for count in (0, 1, 2, 5, 6, 7):
+            reader = self.reader_for(data)
+            reader.seek_tail(count)
+            self.assertEqual(reader.offset, self.offset_after_tail_newline(data, count),
+                             f'tail {count}')
+            expected = [f'record-{i}'
+                        for i in range(max(0, len(records) - count), len(records))]
+            self.assertEqual([e['text'] for e in reader.read()], expected, f'tail {count}')
+
+    def test_incomplete_final_record_is_excluded_and_retried(self):
+        complete = [self.record(f'complete-{i}') for i in range(3)]
+        partial = b'{"version":1,"kind":"message","text":"finished"'
+        data = b''.join(complete) + partial
+        for count in (0, 1, 2, 3, 4):
+            reader = self.reader_for(data)
+            reader.seek_tail(count)
+            self.assertEqual(reader.offset, self.offset_after_tail_newline(data, count),
+                             f'tail {count}')
+            expected = [f'complete-{i}' for i in range(max(0, 3 - count), 3)]
+            self.assertEqual([e['text'] for e in reader.read()], expected, f'tail {count}')
+        reader = self.reader_for(data)
+        reader.seek_tail(1)
+        self.assertEqual([e['text'] for e in reader.read()], ['complete-2'])
+        with self.log.open('ab') as stream:
+            stream.write(b'}\n')
+        self.assertEqual([e['text'] for e in reader.read()], ['finished'])
+
+    def test_chunk_boundaries_and_lines_longer_than_a_chunk(self):
+        records = [
+            self.sized_record(65536, 'chunk-end'),    # newline is byte 65535
+            self.sized_record(65537, 'chunk-start'),  # newline is byte 131072
+            self.sized_record(70000, 'long-line'),    # record crosses chunks
+            self.sized_record(20000, 'short-line'),
+        ]
+        data = b''.join(records)
+        self.assertEqual(data.index(b'\n'), 65535)
+        self.assertEqual(data.index(b'\n', 65536), 131072)
+        for count in (0, 1, 2, 3, 4, 5):
+            reader = self.reader_for(data)
+            reader.seek_tail(count)
+            self.assertEqual(reader.offset, self.offset_after_tail_newline(data, count),
+                             f'tail {count}')
+            expected = ['chunk-end', 'chunk-start', 'long-line',
+                        'short-line'][max(0, 4 - count):]
+            self.assertEqual([e['text'] for e in reader.read()], expected, f'tail {count}')
+
+    def test_utf8_offsets_are_byte_offsets(self):
+        text = 'héllo-λ-😀'
+        records = [self.record(text) for _ in range(3)]
+        data = b''.join(records)
+        reader = self.reader_for(data)
+        reader.seek_tail(2)
+        self.assertGreater(len(text.encode('utf-8')), len(text))
+        self.assertEqual(reader.offset, len(records[0]))
+        self.assertEqual([e['text'] for e in reader.read()], [text, text])
+
+    def test_missing_and_empty_files_leave_cursor_at_zero(self):
+        missing = activity.Reader(self.log)
+        missing.seek_tail(3)
+        self.assertEqual(missing.offset, 0)
+        self.assertEqual(list(missing.read()), [])
+        empty = self.reader_for(b'')
+        empty.seek_tail(0)
+        self.assertEqual(empty.offset, 0)
+        self.assertEqual(list(empty.read()), [])
+
+    def test_independent_cursors_seek_tail_separately(self):
+        data = b''.join(self.record(f'event-{i}') for i in range(4))
+        self.log.write_bytes(data)
+        first, second = activity.Reader(self.log), activity.Reader(self.log)
+        first.seek_tail(1)
+        second.seek_tail(2)
+        self.assertEqual([e['text'] for e in first.read()], ['event-3'])
+        self.assertEqual([e['text'] for e in second.read()], ['event-2', 'event-3'])
+
+    def test_truncation_and_replacement_reset_the_read_cursor(self):
+        data = b''.join(self.record(f'old-{i}') for i in range(3))
+        reader = self.reader_for(data)
+        reader.seek_tail(1)
+        self.assertEqual([e['text'] for e in reader.read()], ['old-2'])
+        self.log.write_bytes(self.record('shorter'))
+        self.assertEqual([e['text'] for e in reader.read()], ['shorter'])
+        replacement = self.root / 'replacement'
+        replacement.write_bytes(b''.join(self.record(f'new-{i}') for i in range(4)))
+        os.replace(replacement, self.log)
+        self.assertEqual([e['text'] for e in reader.read()],
+                         ['new-0', 'new-1', 'new-2', 'new-3'])
+
+
 class ViewerTests(unittest.TestCase):
     setUp = BridgeTests.setUp
     tearDown = BridgeTests.tearDown
