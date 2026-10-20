@@ -7,6 +7,7 @@ reusable only after the resulting task (and its project, if any) is accepted.
 from __future__ import annotations
 import contextlib
 import fcntl
+import math
 from pathlib import Path
 import re
 import time
@@ -119,6 +120,39 @@ class Experience:
     def valid(self, e):
         return e.get('content_hash') == self.b.digest({k: v for k, v in e.items() if k != 'content_hash'})
 
+    @staticmethod
+    def usable_record(e):
+        """Return whether a decoded record has all fields lookup/context rely on."""
+        if not isinstance(e, dict):
+            return False
+        for key in ('id', 'repo', 'session_id', 'source_commit', 'source_packet_id', 'task'):
+            if not isinstance(e.get(key), str):
+                return False
+        if 'project_id' in e and e['project_id'] is not None and not isinstance(e['project_id'], str):
+            return False
+        for key in ('paths', 'public_lessons'):
+            value = e.get(key)
+            if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+                return False
+        if type(e.get('reusable')) is not bool:
+            return False
+        if 'disabled' in e and type(e['disabled']) is not bool:
+            return False
+        created_at = e.get('created_at')
+        if type(created_at) is bool:
+            return False
+        if isinstance(created_at, int):
+            return True  # Preserve integer timestamps of any magnitude.
+        return isinstance(created_at, float) and math.isfinite(created_at)
+
+    def load_record(self, path):
+        try:
+            e = self.b.read_json(path)
+        except (OSError, UnicodeDecodeError, ValueError):
+            # A single unreadable/undecodable file must not hide its neighbors.
+            return None
+        return e if self.usable_record(e) else None
+
     def source_valid(self, e):
         try:
             state = self.b.status(e['session_id'])
@@ -146,7 +180,9 @@ class Experience:
         with self.locked() as folder:
             candidates = []
             for path in folder.glob('*.json'):
-                e = self.b.read_json(path)
+                e = self.load_record(path)
+                if e is None:
+                    continue
                 if not self.valid(e) or e['repo'] != repo or e.get('disabled'):
                     continue
                 if not include_candidates and not e['reusable']:
