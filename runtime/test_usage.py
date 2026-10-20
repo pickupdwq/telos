@@ -168,6 +168,153 @@ class NormalizationTests(unittest.TestCase):
         self.assertIsNone(closed_book.response_usage([{'responses': []}]))
 
 
+class SSEChunkScanTests(unittest.TestCase):
+    @staticmethod
+    def terminal_event(usage=None, kind='response.completed'):
+        response = {'usage': usage} if usage is not None else {}
+        return json.dumps({'type': kind, 'response': response}, separators=(',', ':')).encode()
+
+    def test_crlf_and_lf_splits_expose_terminal_at_the_same_feed_boundary(self):
+        payload = self.terminal_event(responses_usage())
+        for ending in (b'\r\n', b'\n'):
+            stream = b'event: response.completed' + ending + b'data: ' + payload + ending + ending
+            for split in range(len(stream) + 1):
+                tracker = isolation.SSEUsageTracker()
+                tracker.feed(stream[:split])
+                tracker.feed(stream[split:])
+                self.assertEqual(tracker.finish(), (responses_usage(), 'completed'))
+        stream = b'data: ' + payload + b'\r\n\r\n'
+        tracker = isolation.SSEUsageTracker()
+        tracker.feed(stream[:-2])
+        self.assertEqual((tracker.usage, tracker.outcome), (None, None))
+        tracker.feed(stream[-2:-1])
+        self.assertEqual((tracker.usage, tracker.outcome), (responses_usage(), 'completed'))
+        tracker.feed(stream[-1:])
+        self.assertEqual(tracker.finish(), (responses_usage(), 'completed'))
+        self.assertFalse(tracker.skip_lf)
+
+    def test_supported_bytes_like_inputs_and_empty_chunks(self):
+        payload = self.terminal_event(responses_usage())
+        stream = b'event: response.completed\r\ndata: ' + payload + b'\r\n\r\n'
+        for factory in (bytes, bytearray, memoryview):
+            tracker = isolation.SSEUsageTracker()
+            for start in range(0, len(stream), 7):
+                tracker.feed(factory(b''))
+                tracker.feed(factory(stream[start:start + 7]))
+            self.assertEqual(tracker.finish(), (responses_usage(), 'completed'))
+
+    def test_duplicate_terminal_replacement_and_missing_usage(self):
+        first, second = responses_usage(), responses_usage(200, 10, 50, 5, 250)
+        tracker = isolation.SSEUsageTracker()
+        for event in (self.terminal_event(first),
+                      self.terminal_event(second, 'response.incomplete')):
+            tracker.feed(b'data: ' + event + b'\n\n')
+        self.assertEqual((tracker.usage, tracker.outcome), (second, 'incomplete'))
+        tracker.feed(b'data: ' + self.terminal_event() + b'\n\n')
+        self.assertEqual((tracker.usage, tracker.outcome), (second, 'completed'))
+        bare = isolation.SSEUsageTracker()
+        bare.feed(b'data: ' + self.terminal_event() + b'\n\n')
+        self.assertEqual(bare.finish(), (None, 'completed'))
+
+    def test_event_cap_boundaries_accept_exactly_at_cap_and_discard_one_over(self):
+        cap = 512
+        event = self.terminal_event(responses_usage())
+        # The retained line, including the "data: " prefix, may fill the
+        # per-line cap exactly; one more byte discards the event mid-line.
+        pad = cap - 6 - len(event)
+        tracker = isolation.SSEUsageTracker(max_event_bytes=cap)
+        tracker.feed(b'data: ' + event + b' ' * pad + b'\r\n\r\n')
+        self.assertEqual(tracker.finish(), (responses_usage(), 'completed'))
+        tracker = isolation.SSEUsageTracker(max_event_bytes=cap)
+        tracker.feed(b'data: ' + event + b' ' * (pad + 1) + b'\r\n\r\n')
+        self.assertEqual(tracker.finish(), (None, None))
+        # Later lines are bounded by the remaining event budget, including
+        # their own prefix. A line that exactly fills the remainder is kept;
+        # one more byte discards the whole event and recovery stays possible.
+        first_pad = 400 - 6 - len(event)
+        tracker = isolation.SSEUsageTracker(max_event_bytes=cap)
+        tracker.feed(b'data: ' + event + b' ' * first_pad + b'\n')
+        remaining_line = cap - tracker.event_bytes - 6
+        tracker.feed(b'data: ' + b' ' * remaining_line + b'\n')
+        self.assertEqual(tracker.event_bytes, cap - 5)
+        tracker.feed(b'\n')
+        self.assertEqual(tracker.finish(), (responses_usage(), 'completed'))
+        tracker = isolation.SSEUsageTracker(max_event_bytes=cap)
+        tracker.feed(b'data: ' + event + b' ' * first_pad + b'\n')
+        tracker.feed(b'data: ' + b' ' * (remaining_line + 1) + b'\n')
+        self.assertTrue(tracker.overflow)
+        tracker.feed(b'\n')
+        self.assertEqual(tracker.finish(), (None, None))
+
+    def test_oversized_event_recovery_across_crlf_chunk_splits(self):
+        cap = 512
+        oversized = b'data: ' + b'x' * 1024 + b'\r\n\r\n'
+        terminal = b'data: ' + self.terminal_event(responses_usage()) + b'\r\n\r\n'
+        boundary = oversized.index(b'\r\n')
+        for split in (boundary, boundary + 1, boundary + 2, boundary + 3):
+            tracker = isolation.SSEUsageTracker(max_event_bytes=cap)
+            stream = oversized + terminal
+            tracker.feed(stream[:split])
+            tracker.feed(stream[split:])
+            self.assertEqual(tracker.finish(), (responses_usage(), 'completed'))
+
+    def test_overflow_retains_bounded_bytes_and_recovers_on_blank_line(self):
+        cap = 512
+        tracker = isolation.SSEUsageTracker(max_event_bytes=cap)
+        tracker.feed(b'data: ' + b'x' * 10000)
+        self.assertTrue(tracker.overflow)
+        self.assertLessEqual(len(tracker.line), cap)
+        self.assertEqual(tracker.data_lines, [])
+        tracker.feed(b'\r\n\r\n')
+        self.assertFalse(tracker.overflow)
+        terminal = b'data: ' + self.terminal_event(responses_usage()) + b'\n\n'
+        tracker.feed(terminal)
+        self.assertLessEqual(sum(len(value) + 1 for value in tracker.data_lines), cap)
+        self.assertEqual(tracker.finish(), (responses_usage(), 'completed'))
+
+    def test_bulk_scan_keeps_multiline_ignored_and_done_semantics(self):
+        usage = responses_usage()
+        event = json.dumps({'type': 'response.completed', 'response': {'usage': usage}},
+                           indent=2).splitlines()
+        stream = (b': keep-alive\r\n'
+                  b'event: response.completed\r\n'
+                  b'id: 7\r\n'
+                  + b'\r\n'.join(b'data: ' + line.encode() for line in event)
+                  + b'\r\n\r\n'
+                  b'data: [DONE]\r\n\r\n'
+                  b'data without colon\r\n\r\n')
+        tracker = isolation.SSEUsageTracker()
+        for start in range(0, len(stream), 3):
+            tracker.feed(stream[start:start + 3])
+        self.assertEqual(tracker.finish(), (usage, 'completed'))
+
+    def test_dense_delimiter_and_comment_runs_keep_terminal_visible(self):
+        terminal = b'data: ' + self.terminal_event(responses_usage()) + b'\r\n\r\n'
+        fillers = (b'\n' * 65536, b'\r' * 65536, b'\r\n' * 32768,
+                   b': comment\n' * 6553, b': comment\r\n' * 5957)
+        for filler in fillers:
+            stream = filler + terminal
+            tracker = isolation.SSEUsageTracker()
+            for start in range(0, len(stream), 65536):
+                tracker.feed(stream[start:start + 65536])
+            self.assertEqual(tracker.finish(), (responses_usage(), 'completed'))
+            self.assertEqual(tracker.data_lines, [])
+
+    def test_dense_mixed_delimiters_and_split_crlf_recover_after_overflow(self):
+        cap = 4096
+        oversized = b'data: ' + b'x' * (cap + 1) + b'\r\n\r\n'
+        dense = (b': c\n' * 3000) + (b'\r\n' * 2000) + b'\r\n'
+        terminal = b'data: ' + self.terminal_event(responses_usage()) + b'\r\n\r\n'
+        stream = oversized + dense + terminal
+        split = stream.index(b'\r\n') + 1
+        for factory in (bytes, bytearray, memoryview):
+            tracker = isolation.SSEUsageTracker(max_event_bytes=cap)
+            tracker.feed(factory(stream[:split]))
+            tracker.feed(factory(b''))
+            tracker.feed(factory(stream[split:]))
+            self.assertEqual(tracker.finish(), (responses_usage(), 'completed'))
+
+
 class LedgerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
