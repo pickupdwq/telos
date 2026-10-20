@@ -36,7 +36,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_install_manifest_launchers_and_mcp_with_shell_metacharacters(self):
         result = install.install(self.prefix, self.bin_dir)
-        self.assertEqual(result["version"], "3.6.0")
+        self.assertEqual(result["version"], "3.7.0")
         self.assertTrue((self.prefix / 'audit_browser.cjs').is_file())
         self.assertTrue((self.prefix / 'local_executor.py').is_file())
         self.assertTrue((self.prefix / 'chat_adapter.py').is_file())
@@ -206,7 +206,7 @@ class InstallerTests(unittest.TestCase):
         launcher = self.bin_dir / "telos"
         before = launcher.read_bytes()
         result = install.install(self.prefix, self.bin_dir, upgrade=True)
-        self.assertEqual(result["version"], "3.6.0")
+        self.assertEqual(result["version"], "3.7.0")
         self.assertEqual(launcher.read_bytes(), before)
         self.assertTrue((self.skill / "SKILL.md").is_file())
         self.assertEqual(set(result["backups"]), {"runtime"})

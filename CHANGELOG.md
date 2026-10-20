@@ -1,5 +1,15 @@
 # Changelog / 更新记录
 
+## 3.7.0 — 2026-10-20
+
+- Add persistent, read-only executor activity logs and `telos watch` for live following, task selection and history. Show messages, tool calls, command results, file changes, errors and task state while excluding private exam content and reasoning.
+- Automatically open or reuse one right-hand observer pane per originating tmux window, preserving focus in the supervisor conversation. Multiple executors share the pane; closing or reopening it does not interrupt work. Outside tmux, tasks continue normally and the viewer can be opened manually.
+- Forward dynamic `TMUX` and `TMUX_PANE` values through MCP registration while preserving existing configuration. Keep activity recording and observer startup failures separate from task execution.
+- Include the interrupted-request usage settlement and executor closeout budget reservation fixes previously landed on main.
+- Verify observer behavior with real subprocesses, Codex CLI and isolated tmux sessions using deterministic local model fixtures. Native Ghostty/iTerm2 GUI acceptance and a complete interactive Codex-to-MCP task dispatch remain unverified.
+
+新增执行者只读观察功能：持续记录执行过程，支持实时跟随、历史回看和任务切换。在 tmux 中自动打开或复用右侧面板，保留主对话焦点；关闭面板不影响任务，非 tmux 环境可手动查看。同步运行时与 Skill 版本，并包含中断用量结算及收尾预算预留修复。
+
 ## 3.6.0 — 2026-10-20
 
 - Add the Beijing Bailian executor profile `bailian_deepseek`, pinned to `deepseek-v4.1-flash-1017`, with independent credentials, native Responses work/exams and configurable reasoning effort (default `max`).
