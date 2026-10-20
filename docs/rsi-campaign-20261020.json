@@ -1,0 +1,1790 @@
+{
+  "baseline_commit": "5e6a917135f9a71ad4cb7d84a65bde8aa3beceb1",
+  "measured_candidate_commit": "281757c98911553c0fd53d68969848bd79b00dce",
+  "rounds": [
+    {
+      "round": 1,
+      "decision": "accepted",
+      "hypothesis": "Filter/rank eligible experience before source validation to reduce provenance work while preserving selected records.",
+      "observation": "120-record workload: baseline120/120/120 provenance calls, candidate3/3/5 with identical IDs; candidate inspection0. Host10/10 tests pass, zero skips in3.837s. Source_valid unchanged.",
+      "next_reason": "Actual callback recovery needed private courier-state reads because project status omitted its event ID.",
+      "evidence": {
+        "commit": "ffcc724907c49507d5dcc888aca7fd5cd09ab53c",
+        "session_id": "d2521e9a4b0b4a60a8eee313dc01f821",
+        "score": 100,
+        "requests_including_setup_correction": 48,
+        "tokens_including_setup_correction": 1216986
+      },
+      "recursive_reuse": "Accepted code is the inherited baseline for round02. Installed supervisory runtime stays fixed; no live-controller speedup claimed.",
+      "limitations": [
+        "Operation-count probe stubs provenance; not real end-to-end latency or model capability.",
+        "One invalid nested-sandbox setup was cancelled without acceptance and corrected; all27 prior requests and774544 tokens remain counted."
+      ]
+    },
+    {
+      "round": 2,
+      "decision": "accepted",
+      "hypothesis": "Expose exact project courier identity in status so callback recovery does not require inspecting private state files.",
+      "observation": "Both full/summary expose return_event id/status; independent probe20 phase/status combinations in2 views and3 missing identity cases passed. All44 host native project+compact tests passed, zero skips in12.019s. No authority/receive change.",
+      "next_reason": "Measured90ms log tail positioning is a bounded optimization target; an avoidable100s sandbox full-suite attempt also motivates stricter test-scope instructions now and improved verification tooling later.",
+      "evidence": {
+        "commit": "1ebefa4a5e872e766a5bf1129bb4ac5a92d0384f",
+        "session_id": "8c836156e4614cf8aee97ffd2a0ad9a3",
+        "score": 100,
+        "requests": 33,
+        "work_requests": 31,
+        "exam_requests": 2,
+        "total_tokens": 1444648
+      },
+      "recursive_reuse": "Accepted code inherited by round03. Prior failure evidence changes public test instructions. Installed original controller remains unchanged.",
+      "limitations": [
+        "Recovery field tested deterministically and host native regressions; no measured transport reliability or general latency gain.",
+        "Worker additionally attempted native suite inside sandbox:2 failures/4 errors in100.368s; separate pinned host44/44 pass establishes compatibility.",
+        "Two internal closed-book response attempts remain counted as one experiment."
+      ]
+    },
+    {
+      "round": 3,
+      "decision": "accepted",
+      "hypothesis": "Use bounded C-level newline search instead of Python per-byte scanning to reduce observer tail-positioning latency without changing byte cursor semantics.",
+      "observation": "All39 native host observer tests pass with0skips/errors/failures in14.484s. Independent54 semantic assertions pass. Opposite-order pairs reduce median89.863ms to2.216ms and89.869ms to2.215ms:40.548x and40.564x.",
+      "next_reason": "Make focused/full test selection and timing reports reusable by later development rounds, based on prior100s native-sandbox failure and repeated manual regression construction.",
+      "evidence": {
+        "commit": "6cb4845e43a432b00768f4eb57afb8ad097258ad",
+        "session_id": "66eb6e8a865a46bf9e15f407373b5a96",
+        "score": 100,
+        "requests": 16,
+        "work_requests": 14,
+        "exam_requests": 2,
+        "total_tokens": 336014
+      },
+      "recursive_reuse": "Round02 failure changed work instructions; executor used pure tests and left native suite to supervisor. Accepted code inherited by round04. Next round builds an actual reusable verification tool.",
+      "limitations": [
+        "Synthetic warm-cache observer cursor workload; no claimed end-to-end or model speedup.",
+        "Split allocations remain bounded by64KiB input chunk, but this is not a zero-allocation implementation.",
+        "Work requests14 vs previous31 are different tasks; not a controlled process-speed comparison.",
+        "Installed original supervisory runtime remains fixed."
+      ]
+    },
+    {
+      "round": 4,
+      "decision": "accepted",
+      "hypothesis": "An import-safe allowlisted regression CLI with exact IDs, explicit scope and per-test outcomes/timing makes later improvement experiments reproducible without dropping default native coverage.",
+      "observation": "Full pinned native host suite418/418 passed, zero failures/errors/skips in156.161s. Independent ID comparison preserved all original395 tests and exactly matched418 declared test IDs. Private6-outcome/selection probe and15 pure tests passed. A timeout required a3-request same-session closeout continuation.",
+      "next_reason": "Prior rounds02/03 both needed format retries; direct Responses JSON-object compatibility is now confirmed in one synthetic live request. Round05 will address this friction and actually use the accepted verification CLI.",
+      "evidence": {
+        "commit": "06bea232c9dcff9846ddc54a22da464a4d6fbf05",
+        "session_id": "bfeda83272b041519f54cae024cc7225",
+        "score": 100,
+        "requests": 32,
+        "work_requests": 31,
+        "exam_requests": 1,
+        "total_tokens": 1291002
+      },
+      "recursive_reuse": "All prior accepted code inherited. New runner executed default418-test host suite. Round05 contract explicitly requires worker CLI/listing use and supervisor selected native runs, providing a concrete reuse path.",
+      "limitations": [
+        "Default full-suite elapsed is similar to baseline; no full-suite speedup claim.",
+        "Focused-suite timings have narrower scope and are not evidence of overall acceleration or model quality.",
+        "Execution admission timeout after28 requests preserved all spend and required same-session continuation; budgets/gates unchanged.",
+        "Installed original supervisory runtime remains fixed; final live comparison outstanding."
+      ]
+    },
+    {
+      "round": 5,
+      "decision": "accepted",
+      "hypothesis": "Native JSON Object on the verified chosen Responses route plus explicit schema repair instructions can reduce avoidable format retries; safe per-attempt diagnostics make remaining failures measurable.",
+      "observation": "Scoped native format configuration, four deterministic retry scenarios, five strict-parser negative cases and privacy guards passed. Selected host46/46 native tests passed in22.680s, with exact independently derived IDs and all original selected tests retained. Worker used the accepted round04 CLI/listing; host used it too. No measured real retry-rate benefit yet.",
+      "next_reason": "The round04 deadline incident plus inspected once-only start guidance motivate live public time/request hints for work, while preserving real deadline and exam-reserve enforcement.",
+      "evidence": {
+        "commit": "8d4b0819d9165cf42d9032029b3951ec210eeb60",
+        "session_id": "5feb393b89464f2cadaf6b20c59f0838",
+        "score": 98,
+        "requests": 43,
+        "work_requests": 42,
+        "exam_requests": 1,
+        "total_tokens": 2216569
+      },
+      "recursive_reuse": "Concrete accepted-tool reuse: worker ran verify_all selected verify_all+compact15 tests and listed closed_book15 IDs. Supervisor invoked the candidate CLI for46 native tests, independently checked coverage and clean identity. Round04 measurement tool now participates in later acceptance.",
+      "limitations": [
+        "Protocol probe used one synthetic external request; cannot estimate retry-rate reduction.",
+        "Installed controller remains baseline, so this round's single exam attempt cannot be attributed to the new candidate format mode.",
+        "Host run is a selected46-test scope, not default full regression or a full-suite speedup.",
+        "Work42 requests vs earlier rounds is a different task, not controlled efficiency evidence.",
+        "6 new pure tests supplement all original native workflow tests; some exact prompt-prose assertions add maintenance coupling."
+      ]
+    },
+    {
+      "round": 6,
+      "decision": "accepted",
+      "hypothesis": "Fresh public time and further-work-request hints may improve closeout within unchanged deadlines and exam reserves.",
+      "observation": "After one timeout and one rejected native regression, repaired pinned candidate passes168/168 host tests with0failure/error/skip in73.006s. Independent relay fixture proves allowances2/1/0,3work+2exam requests and exclusion of exams/compact/unspecified/localChat. Actual live completion/latency effect remains unmeasured.",
+      "next_reason": "Six cumulative changes now need actual candidate-runtime use. Run the independently frozen development pilot before selecting round07; keep final holdout unused.",
+      "evidence": {
+        "commit": "f398ebaef9b8fbda2fd00b8b087417dee3e66a2a",
+        "session_id": "4bbd464ac2d34950b4ff43937193fc14",
+        "score": 98,
+        "requests": 58,
+        "work_requests": 56,
+        "exam_requests": 2,
+        "total_tokens": 4327574
+      },
+      "recursive_reuse": "Worker reused the accepted round04 scoped runner/listing; supervisor used it for both failed167-test and repaired168-test host runs. The observed accounting regression was repaired under unchanged gates and budget. Accepted runtime will be used in the development pilot.",
+      "limitations": [
+        "Installed controller remained baseline throughout this round; timeout and exam counts are not measurements of candidate hint efficacy.",
+        "An admission timeout after41work requests needed10more same-session closeout requests; all spend remains counted.",
+        "First native167-test run had1error in an unchanged original accounting test; first submission rejected89/100. Narrow repair then passed168tests.",
+        "Additional parsing and a public advisory add per-request overhead; net live speed/quality impact is not yet known.",
+        "Selected native suite is not the final full-suite or general-capability evaluation."
+      ]
+    },
+    {
+      "round": 7,
+      "decision": "accepted",
+      "hypothesis": "Avoid fresh running-only wake-ups with no supervisor action while preserving all outstanding and actionable courier behavior.",
+      "observation": "Pinned native83/83 passed with zero failure/error/skip in15.139s; independent97 assertions cover24 suppressed fresh states,27 preserved actionable states and6 existing courier states. Work completed on its40th request; no timeout or repair turn.",
+      "next_reason": "Rounds06/07 use direct unittest class selection outside the reusable timing runner because module selection includes native tests. Add exact class/test selection to keep focused worker verification measured while retaining default full native coverage.",
+      "evidence": {
+        "commit": "b45c9cea31ad44cd0e64c9fdca2be7d28821cfa2",
+        "session_id": "83696f89f50f439da863a195ac5c28fc",
+        "score": 100,
+        "requests": 41,
+        "work_requests": 40,
+        "exam_requests": 1,
+        "total_tokens": 2395933
+      },
+      "recursive_reuse": "Worker and supervisor reused the accepted round04 runner. Actual cumulative candidate runtime was exercised in the complete four-trial development pilot before this round. Public lessons from this round are promoted for later scoped tasks.",
+      "limitations": [
+        "Installed controller remained baseline, so its extra empty startup notice is expected and not a candidate regression.",
+        "Historical7/23 empty notices motivate the change but do not estimate end-to-end savings; no live callback latency or reliability improvement demonstrated.",
+        "Initial fixture path bug and several failed relative-path edits were corrected within the same work turn; all40 work requests remain counted.",
+        "100/100 is frozen contract satisfaction, not general intelligence or development-efficiency score."
+      ]
+    },
+    {
+      "round": 8,
+      "decision": "accepted",
+      "hypothesis": "Exact class/method selection lets later workers reuse the measured verification runner without accidentally executing native-only neighbors, while preserving default full coverage.",
+      "observation": "Independent44 assertions passed; worker ran21 focused tests and listed6 prior-round cases. Host447/447 native tests (164.010s) and21/21 installer tests passed, with all original395 native tests preserved and zero failures/errors/skips.",
+      "next_reason": "Three completed actual candidate pilot exams retained round05 format metadata in full receipts but compact summaries omitted it, forcing raw evidence reads. Restore safe typed markers using the accepted exact runner for focused development.",
+      "evidence": {
+        "commit": "c32c2ac43a3c8a583073768190ec8d6bdf1f350c",
+        "session_id": "c2d7070eb2e2455f82c6e24ff6ff09b9",
+        "score": 100,
+        "requests": 37,
+        "work_requests": 35,
+        "exam_requests": 2,
+        "total_tokens": 1514288
+      },
+      "recursive_reuse": "Worker and supervisor executed the new exact runner on real classes, including round07 six-case notice class. Round09 will reuse this CLI on compact summary tests.",
+      "limitations": [
+        "Selected coverage is narrower; no default full-suite speedup or model quality improvement is claimed.",
+        "First32 work requests reached admission timeout; same-session closeout used3 more requests. All cost remains counted.",
+        "Closed-book required2 requests under the unchanged baseline controller; candidate round05 JSON-object changes were not installed into that controller.",
+        "100/100 is frozen-contract satisfaction, not a score of general intelligence or overall efficiency."
+      ]
+    },
+    {
+      "round": 9,
+      "decision": "accepted",
+      "hypothesis": "Preserving safe optional format markers in compact summaries lets the supervisor verify actual exam protocol and parse status without an extra raw-receipt read.",
+      "observation": "88 independent assertions passed. Host41/41 compact/closed_book/verify_all tests passed with zero failure/error/skip. Both summary routes retained format_valid=true, format_error=null and aligned json_object mode for all3 real earlier candidate pilot exam calls, with source unchanged.",
+      "next_reason": "Actual37-request round08 ledger stores591107.863ms of measured request durations but neither UsageLedger snapshots nor project usage summaries aggregate them. Add honest latency coverage so later rounds can assess speed without separate raw-ledger parsing.",
+      "evidence": {
+        "commit": "049b93a409af7e7dfff3583de5220151da09db22",
+        "session_id": "2ef8f8c9cddf4783aff72c29056cd98c",
+        "score": 100,
+        "requests": 18,
+        "work_requests": 17,
+        "exam_requests": 1,
+        "total_tokens": 391526
+      },
+      "recursive_reuse": "Worker actually ran12 tests through accepted round08 exact CLI. Supervisor projected3 completed actual round06 candidate-pilot exam receipts through new compact summary functions, verifying round05 evidence propagation.",
+      "limitations": [
+        "This removes an observed summary information gap, not a measured reduction in retries or end-to-end latency.",
+        "Replay used already completed model calls; no new live model trials were performed in this round.",
+        "Installed supervisory controller stays at baseline; candidate compact code was executed explicitly for review evidence.",
+        "100/100 measures frozen contract satisfaction only."
+      ]
+    },
+    {
+      "round": 10,
+      "decision": "rejected",
+      "hypothesis": "Expose finite observed request-duration sums and explicit missing/in-flight coverage in task and project usage without changing budget accounting.",
+      "observation": "Initial candidate passed161 host regressions and replayed299 real requests, but review found explicit child incomplete markers could become complete. The initial private legacy fixture also had a confirmed random-ID ordering defect; its evidence and cost were retained. Under a corrected deterministic fixture and only the remaining budget, the continuation exhausted19 work requests after repeated malformed patch invocations and left only usage.py changed; required project changes/tests were absent. Public CLI failed with exit2. No final accepted pin or exam; all round10 code excluded.",
+      "next_reason": "Proceed with a distinct, previously reproduced relay admission-diagnostic experiment on accepted round09. Carry public tool-call formatting advice from the failed continuation; do not restart the exhausted timing experiment or retain its unaccepted code.",
+      "evidence": {
+        "commit": null,
+        "session_id": "bc2d8d9c36e744d0afb1bf1c31a2db0f",
+        "accepted": false,
+        "requests": 60,
+        "work_requests": 60,
+        "exam_requests": 0,
+        "total_tokens": 2040773
+      },
+      "recursive_reuse": "Initial worker actually passed the accepted round08 exact CLI class selection. Supervisor used that runner for161 host tests and replayed299 actual requests. Failed continuation demonstrates no successful adoption of the proposed timing summary.",
+      "limitations": [
+        "Rejected experiment, not an accepted capability or speed/quality gain.",
+        "Supervisor fixture defect and all60 work requests/2040773tokens remain counted; correction is not an extra experiment.",
+        "Only9 accepted cumulative rounds remain in source; installed controller remains baseline.",
+        "No closed-book exam or accepted commit for the final continuation; the historical candidate is not retained."
+      ]
+    },
+    {
+      "round": 11,
+      "decision": "accepted",
+      "hypothesis": "Origin-scoped admission diagnostics distinguish a confirmed no-send deadline/closing rejection from protocol failures without changing enforcement.",
+      "observation": "Both frozen checks passed, including85 independent assertions. Worker used the accepted exact CLI for30 pure tests. Exact-pin host95/95 passed with zero failure/error/skip in32.489s. Five real loopback scenarios/seven requests preserved public statuses, repeated rejection with zero reservations/upstream calls, budget counts and cleanup.",
+      "next_reason": "The accepted SSE parser still spends230.911ms on a2MiB terminal and95.215ms discarding oversized data in deterministic baseline measurements. Test a bulk scanning optimization with strict per-feed equivalence and opposite-order performance gates.",
+      "evidence": {
+        "commit": "75c172f4bd574fa035667a21b1e61fe2d556c4c7",
+        "session_id": "b3d9f5ee84ff48faa790c231717fe338",
+        "score": 100,
+        "requests": 25,
+        "work_requests": 24,
+        "exam_requests": 1,
+        "total_tokens": 1109445
+      },
+      "recursive_reuse": "Worker and host actually reused the accepted exact CLI. Frozen actual-handler probe and native HTTP exercised the candidate admission repair. Round12 inherits only accepted source, excluding rejected timing changes.",
+      "limitations": [
+        "Correct diagnostic classification, not measured reduction in latency, retries or task failure.",
+        "Initial20work requests hit the execution admission deadline;4same-session closeout requests completed the submission. All25requests/1109445tokens including one exam remain counted.",
+        "Installed supervisory controller remains baseline; actual candidate behavior was exercised independently.",
+        "Selected95-test host gate is narrower than the final full native/installer and matched holdout requirements; score100 is contract satisfaction only."
+      ]
+    },
+    {
+      "round": 12,
+      "decision": "accepted",
+      "hypothesis": "Bulk scanning can remove per-byte interpreter overhead in SSE usage parsing while preserving exact streaming and bounded-retention semantics.",
+      "observation": "Initial attempt passed frozen gates but was rejected after source-driven density probes found LF/CR blank-line regressions of4.2–4.5x and a public provenance-context gap. Same-session repair removed the regressions. Final frozen equivalence passed1003 scenarios/349538 assertions; actual worker exact CLI29 pure tests; full host471native+21installer, all original395+21 retained, zero failure/error/skip. Paired9samples per order: large61.887x/61.177x, oversized257.968x/253.762x, small3.319x/3.313x. All five extra density cases improved in both orders.",
+      "next_reason": "Round10 continuation exhausted19 remaining work requests while repeating malformed custom patches. Inspect and improve patch-format guidance on both initial and resumed implementation prompts, preserving audit/exam and permission boundaries; causal speed benefit remains to be measured.",
+      "evidence": {
+        "commit": "e53e517f0ab31cdc93331cf5e2a3481ae069cec4",
+        "session_id": "fe16a9204f7948d0b66c6532bb9f507e",
+        "score": 98,
+        "requests": 66,
+        "work_requests": 64,
+        "exam_requests": 2,
+        "total_tokens": 4625292
+      },
+      "recursive_reuse": "Accepted exact test-selection CLI exercised29 pure worker cases; full import-safe runner supplied exact-ID host verification. Inherited round11 admission repair remains. Candidate parser itself was measured; rejected round10 code remains excluded.",
+      "limitations": [
+        "Synthetic parser measurements exclude network, model and supervisor time and do not establish overall task-speed improvement.",
+        "First rejected attempt and repair retain all66requests/4625292executor tokens; repairs are not separate experiment rounds.",
+        "Initial public context omitted round10 provenance. Supervisor corrected that input gap with public requirements without modifying frozen criteria or sharing private references.",
+        "Installed controller remains baseline; final held-out comparison and integrated acceptance remain outstanding."
+      ]
+    },
+    {
+      "round": 13,
+      "decision": "accepted",
+      "hypothesis": "Delivering compact raw patch-format and bounded fallback advice on initial and resumed implementation prompts closes an observed guidance gap without changing tool enforcement.",
+      "observation": "Frozen actual prompt-route capture passed11routes/230assertions; actual worker exact CLI20 pure tests passed. Independent exact-pin host80/80 preflight/audit/closed-book/runner tests passed with zero failure/error/skip in22.535s. Source review confirms one block after successful preflight, audit/exam exclusion, same thread, original scope/budget and advisory-only semantics. Five real patch-format diagnostic rejections occurred during development despite public advice; eventual edits used scoped file editing. No observed reduction in failed edits is claimed.",
+      "next_reason": "Temporary real-reader/real-lookup fixtures reproduced failures from one truncated JSON, non-object JSON or well-hashed missing-repo experience record. This optional path is called before session worktree creation. Isolate individual damaged records while preserving trusted source selection and visible system errors.",
+      "evidence": {
+        "commit": "e5c0d8b1169693578d461cc1abec0b7078f90968",
+        "session_id": "4b20e7779bc4408db02942212a50be31",
+        "score": 96,
+        "requests": 21,
+        "work_requests": 20,
+        "exam_requests": 1,
+        "total_tokens": 719815
+      },
+      "recursive_reuse": "Reused accepted exact test CLI for worker and host; actual candidate executor prompt construction tested across11routes. Earlier accepted source and rejected-round10 exclusion retained. Production controller stays baseline, so this turn does not provide a matched candidate-runtime efficiency result.",
+      "limitations": [
+        "Advisory prompt delivery and boundary correctness are proven; a hard retry limit is not implemented or claimed.",
+        "Five recorded patch-format rejections are negative development evidence against assuming advice alone prevents repeat errors.",
+        "No matched live speed or quality gain is established for this prompt change; final frozen comparison remains required.",
+        "First reuse extraction missed diagnostic events; original artifact preserved and corrected in round13-worker-reuse-v2.json.",
+        "All21requests/719815tokens including the same-thread exam are retained."
+      ]
+    },
+    {
+      "round": 14,
+      "decision": "accepted",
+      "hypothesis": "Isolating individual unreadable or malformed experience records prevents one damaged optional-memory file from blocking valid retrieval and new work setup.",
+      "observation": "The three reproduced lookup failures are resolved. Frozen independent39scenarios/225assertions passed, covering types, hash integrity, valid neighbors, rank/provenance calls, opt-out, fresh re-read and no mutation. Actual worker exact CLI11pure tests passed after one earlier failed command. Native experience/rsi/projects86/86 passed, zero failure/error/skip, all selected original IDs preserved,25.425s at a clean pin.",
+      "next_reason": "Repeated full native verification costs roughly160seconds, with independent module durations spread across many modules. Test opt-in module-isolated parallel execution that preserves default serial behavior, exact coverage, failure reporting and bounded process concurrency; require actual paired full-suite speed evidence.",
+      "evidence": {
+        "commit": "06b359557a342b32516921c5d79dddc06b20665d",
+        "session_id": "109b636b961c4c5e8eb34f7c726f1a4b",
+        "score": 97,
+        "requests": 29,
+        "work_requests": 28,
+        "exam_requests": 1,
+        "total_tokens": 1103930
+      },
+      "recursive_reuse": "Preserves and exercises round01 lazy provenance selection; uses accepted exact CLI for pure worker and host coverage. Candidate experience lookup/context itself is exercised by temporary corruption fixtures. Round13 guidance is retained in cumulative source; installed controller remains baseline.",
+      "limitations": [
+        "Deterministic damaged-record resilience is proven; live model success-rate and end-to-end speed improvement are not measured.",
+        "This experiment scopes read-only lookup/context and does not modify experience promotion or write workflows.",
+        "All29requests/1103930tokens and the earlier failed pure command remain counted.",
+        "Final integrated full coverage and frozen matched holdout remain outstanding."
+      ]
+    },
+    {
+      "round": 15,
+      "decision": "accepted",
+      "hypothesis": "Bounded fresh-process module parallelism reduces full native verification time while preserving serial compatibility, complete coverage and trustworthy failure reports.",
+      "observation": "Four full native samples on the same clean pin each executed499current tests including all395original IDs, with identical ID/outcome order and zero failure/error/skip. Opposite-order pairs:164.5857s serial vs49.9265s jobs4 (3.2966x), and166.9085s serial vs50.1606s jobs4 (3.3275x); both exceed frozen1.3x. All21original installer tests passed. Frozen26pure tests and17independent scenarios/116assertions passed, plus9supplemental malformed-type/UTF8 cases. Actual worker exact CLI26tests passed twice; original test classes AST-unchanged.",
+      "next_reason": "A reproduced Reader.read defect forgets oversized physical-line discard state across EOF polls and can emit an appended JSON suffix as a false event. Repair this separate cursor boundary while actually reusing the accepted module-parallel verifier.",
+      "evidence": {
+        "commit": "7b4742711b3db35fb7b14b35d321d05cda1d1684",
+        "session_id": "f54857a0037a4b66b0c16e63b1c06e2a",
+        "score": 98,
+        "requests": 35,
+        "work_requests": 34,
+        "exam_requests": 1,
+        "total_tokens": 1668323
+      },
+      "recursive_reuse": "Builds on rounds04/08 import-safe exact selection and stable reporting; worker reuses exact CLI and supervisor runs the candidate serial/parallel paths against the full real native suite. Later rounds will use jobs2/4 rather than merely retain unused code.",
+      "limitations": [
+        "Two opposite-order pairs on one host establish verification-stage speed only, not a population estimate, live-model success gain or overall delivery speedup.",
+        "Default execution remains serial; parallel execution is opt-in and process-isolated per module.",
+        "All35requests/1668323tokens remain counted, including the first21request633604token work timeout and same-session repair; those are not extra experiments.",
+        "The fixed installed controller remains baseline. Final integrated coverage and frozen matched holdout remain outstanding."
+      ]
+    },
+    {
+      "round": 16,
+      "decision": "rejected",
+      "hypothesis": "Persist per-reader oversized physical-line discard across EOF polls to prevent an appended JSON suffix from becoming a false event, while preserving bounded byte cursor behavior.",
+      "observation": "The executor changed only activity.py/test_watch.py and its27-test exact parallel run passed after command/patch errors. Stopped candidate independently passes50temporary-log scenarios/1373assertions. However all45work requests were exhausted before a completed executor turn; no submitted pin or closed-book exam exists, and the runtime disallows evaluate from work error. No original-budget repair remains; all changes excluded from accepted source.",
+      "next_reason": "Continue the already reproduced, distinct experience source-commit/project binding defect on acceptedR15. RejectingR16 means later rounds must not assume its ReaderOverflowTests or fix exist.",
+      "evidence": {
+        "commit": null,
+        "session_id": "fed5cfa762374a52a8acaa7125df9154",
+        "accepted": false,
+        "requests": 45,
+        "work_requests": 45,
+        "exam_requests": 0,
+        "total_tokens": 1856805
+      },
+      "recursive_reuse": "Worker actually exercised accepted exact selectors and process-parallel verifier; test evidence did not turn interrupted work into acceptance.",
+      "limitations": [
+        "Physical-line discard defect remains in carried source.",
+        "Diagnostic pass is neither a clean-pin native host gate nor exam acceptance.",
+        "No budget reset, no post-hoc gate relaxation, no extra round for a retry."
+      ]
+    },
+    {
+      "round": 17,
+      "decision": "accepted",
+      "hypothesis": "Bind stored reusable experience to the current verified acceptance commit/packet and trusted source-project membership, so stale or relabelled records cannot bypass the existing project gate.",
+      "observation": "Frozen source-identity22scenarios/37assertions and damage-isolation39scenarios/225assertions passed. Actualworker reused the exact jobs2 verifier over33tests, with earlier failed attempts retained. Independently verified jobs4 native122tests including65original selected IDs all passed in13.264s at the clean pin, zero failure/error/skip and stable ID/order. Original test classes remained AST-identical. Same-thread closed-book accepted98; two exam-format attempts counted.",
+      "next_reason": "Actual watch.render/stream/tasks reproductions show malformed timestamps crashing observation and null times being presented as the current time. Fix this distinct human-display/list boundary while keeping rejectedR16 code excluded.",
+      "evidence": {
+        "commit": "8ac66734b7b630f28865fa051230afabb86cf5a6",
+        "session_id": "166f55d1fc6745ac966ba05b3a88106e",
+        "score": 98,
+        "requests": 36,
+        "work_requests": 34,
+        "exam_requests": 2,
+        "total_tokens": 1528141
+      },
+      "recursive_reuse": "Actually reuses accepted exact selection and module-process parallelism in worker and independent supervisor native verification; preserves R1 lazy lookup and R14 damaged-record isolation.",
+      "limitations": [
+        "Checks use deterministic source/project status boundaries; no defense claim against rewriting trusted acceptance state.",
+        "Observed13.264s is a verification reuse measurement without a new serial counterfactual.",
+        "No model-weight or live-model quality/overall speed gain inferred; original final transfer comparison remains pending.",
+        "All36requests/1528141tokens, earlier failed worker commands and both exam attempts remain counted."
+      ]
+    },
+    {
+      "round": 18,
+      "decision": "accepted",
+      "hypothesis": "Malformed event/lifecycle timestamps can be isolated at the human observer boundary so history, tail/follow and task ordering remain usable without inventing time or altering raw state.",
+      "observation": "First frozen check rejected huge-integer lifecycle ordering; independent reproduction also exposed finite out-of-range floats. Same-session repair passed41observer scenarios/145assertions and2accepted-reader controls/36assertions. Worker actually reused jobs2 selection, with3completed command records including1failure retained. Independent jobs4 native143tests including90original selected IDs passed in15.058s, zero failure/error/skip and exact ID/order. Original7test classes are AST-identical. Closed-book accepted98 after2format attempts.",
+      "next_reason": "Promotion still parses unrelated optional memory and rewrites stale/foreign same-session records. Address that distinct write path using exact canonical current accepted-child records, retaining identity and disabled choices.",
+      "evidence": {
+        "commit": "795ebb734eccc10c4eb47f5fa3b10b94a0a6d304",
+        "session_id": "115faf27bcaa48058e99ba7eca5af015",
+        "score": 98,
+        "requests": 31,
+        "work_requests": 29,
+        "exam_requests": 2,
+        "total_tokens": 1189311
+      },
+      "recursive_reuse": "Actually reuses accepted exact selection/module-process parallelism in worker and native supervisor verification, and preserves accepted R3 tail behavior. Rejected R16 overflow code remains excluded.",
+      "limitations": [
+        "Controlled curses frame and native existing tests are not a screenshot-based visual audit.",
+        "Timestamp conversion remains platform-specific; malformed values use an explicit unknown fallback.",
+        "Observed15.058s is verification reuse without a new serial counterfactual; no total delivery or live-model quality improvement inferred.",
+        "All31requests/1189311tokens, original failed submission, same-session repair, worker command failures and both exam attempts remain counted."
+      ]
+    },
+    {
+      "round": 19,
+      "decision": "accepted",
+      "hypothesis": "Promote only canonical current records reconstructed for accepted children, eliminating unrelated-corpus reads/failures and stale or foreign same-session rewrites while preserving reconstruction and user-disabled preferences.",
+      "observation": "Frozen canonical-promotion15scenarios/221assertions passed:300unrelated reads became0, only2current targets read; malformed/unreadable neighbors and stale/foreign records remained untouched. Prior identity22scenarios/37assertions and damage39scenarios/225assertions passed. Worker actually reused jobs2 over38tests. Independent exact-pin jobs4 native130tests including65original IDs passed13.376s with zero failure/error/skip and exact order. Only promote_project production method changed; original4test classes AST-identical. Closed-book accepted97.",
+      "next_reason": "Freeze the cumulative accepted runtime and run the original16matched held-out trials to measure actual task success, costs and latency versus main, keeping component mechanisms separate from transfer claims.",
+      "evidence": {
+        "commit": "50e1be14a394b50c16d3374f11e2cd983b730373",
+        "session_id": "0e2db97534c544bfa5d79e70379a4649",
+        "score": 97,
+        "requests": 44,
+        "work_requests": 43,
+        "exam_requests": 1,
+        "total_tokens": 2362356
+      },
+      "recursive_reuse": "Actual worker jobs2 and supervisor jobs4 reuse accepted exact-selection/module-process runner. Promotion now isolates canonical accepted experience while preserving R1 lazy lookup, R14 damage isolation and R17 source identity.",
+      "limitations": [
+        "The first work turn timed out after32requests and required same-session continuation; a contradictory newly added fixture was corrected without altering baseline tests.",
+        "All44requests/2362356tokens, malformed patch attempts, earlier failed command and shell-masked/tmp permission error remain counted.",
+        "Reduced unrelated reads is a mechanism-level result, not measured overall delivery latency or live-model quality gain.",
+        "Malformed canonical targets and source/write failures remain visible; this does not claim atomic promotion across children.",
+        "Observed13.376s native verification has no new serial counterfactual."
+      ]
+    },
+    {
+      "round": 20,
+      "decision": "inconclusive",
+      "hypothesis": "Cumulative accepted Telos changes improve real delegated-task efficiency and quality on the original withheld matched cases versus main, beyond the already measured component and verification mechanisms.",
+      "observation": "Completed all16 frozen trials (4private cases x2repeats x2sides), with the same Bailian deepseek-v4.1-flash-1017/max executor and budgets. Final success8/8 on each side; first-submission acceptance baseline7/8 versus candidate6/8. Requests85->73 (-14.12%); tokens1263538->827156 (-34.54%); provider seconds1272.794->1317.912 (+3.54%); trial wall seconds1763.288->2333.199 (+32.32%, includes supervisor). Token savings are concentrated in one baseline audit: candidate uses more tokens in4/8pairs and median paired token ratio1.0495. Both sides found all3seeded defects on each audit with zero false positives/negatives. Candidate needed one functional repair and one scope cleanup; baseline one scope cleanup. No general quality or end-to-end speed improvement established. Post-hoc parser diagnostics found both candidates reject nonstandard numeric constants while both baselines accept them, but candidate parser repeat1 loses a valid complete record following a bad line in the same chunk; these were not frozen grading metrics.",
+      "next_reason": "The authorized minimum20 distinct experiments is complete. Retain17 accepted source improvements and both rejected experiments without tuning against the now-exposed comparison. Complete documentation and exact integrated native/installer/project acceptance as delivery validation, not new rounds. No extension is required to honestly establish the measured component gains and the limits of transfer.",
+      "evidence": {
+        "commit": "281757c98911553c0fd53d68969848bd79b00dce",
+        "accepted": false,
+        "requests": 158,
+        "work_requests": 141,
+        "exam_requests": 17,
+        "total_tokens": 2090694,
+        "comparison_report": "final-comparison/report.json",
+        "measured_candidate_commit": "281757c98911553c0fd53d68969848bd79b00dce",
+        "trial_count": 16
+      },
+      "recursive_reuse": "All8candidate trials actually run the cumulative accepted candidate runtime; accepted exact-selection and process-parallel verification had already been reused by later development rounds. The comparison deliberately disables experience reuse, so it cannot measure that feature. Original supervisor, installed controller and provider model weights remain unchanged.",
+      "limitations": [
+        "Small4-case,2-repeat engineering comparison with unblinded original-supervisor review and an unpinned remote model revision; descriptive evidence only.",
+        "Wall time includes human/supervisor inspection, waits and context continuation, not pure model latency. Aggregates and paired ratios disagree; lower total tokens is not a uniform efficiency gain.",
+        "The fractional-balance diagnostic was added after first candidate source inspection, applied unchanged to all4transfer trials and retained alongside the unchanged frozen oracle; it was not pre-registered.",
+        "Parser extension/recovery diagnostics were post-hoc and did not change outcomes, source, budgets or grades. Frozen checks were not exhaustive.",
+        "All initial failures, repairs, scope-cleanup errors, work and exam costs remain counted. Generic public-fixture warnings do not describe the actual overridden private cases.",
+        "Documentation authoring, final integrated native/installer checks and project acceptance are separate delivery work, pending at this measurement checkpoint."
+      ]
+    }
+  ],
+  "executor": {
+    "provider": "bailian",
+    "model": "deepseek-v4.1-flash-1017",
+    "reasoning_effort": "max"
+  },
+  "final_comparison": {
+    "manifest_hash": "7ac8652be8e61f07a136dc59ffcdccf8597ef8907331ed61ce9855c892a9538f",
+    "versions": {
+      "baseline": "4dfce59abf98c371d01de60d2d24d9e17c386934d101e8835021b9656297d620",
+      "candidate": "2a618cd530394630c7c1d2a95b5e30af13d0efc9a0134cb1db8888071f09834b"
+    },
+    "summary": {
+      "complete": true,
+      "comparable": true,
+      "sides": {
+        "baseline": {
+          "planned": 8,
+          "completed": 8,
+          "passed": 8,
+          "failed": 0,
+          "cancelled": 0,
+          "pending": 0,
+          "success_rate": 1.0,
+          "requests": 85,
+          "observed_total_tokens": 1263538,
+          "total_tokens": 1263538,
+          "unknown_token_requests": 0,
+          "tokens_per_success": 157942.25,
+          "trial_wall_seconds": 1763.288,
+          "provider_seconds": 1272.794,
+          "true_positive": 6,
+          "false_positive": 0,
+          "false_negative": 0,
+          "audit_oracles_scored": 2
+        },
+        "candidate": {
+          "planned": 8,
+          "completed": 8,
+          "passed": 8,
+          "failed": 0,
+          "cancelled": 0,
+          "pending": 0,
+          "success_rate": 1.0,
+          "requests": 73,
+          "observed_total_tokens": 827156,
+          "total_tokens": 827156,
+          "unknown_token_requests": 0,
+          "tokens_per_success": 103394.5,
+          "trial_wall_seconds": 2333.199,
+          "provider_seconds": 1317.912,
+          "true_positive": 6,
+          "false_positive": 0,
+          "false_negative": 0,
+          "audit_oracles_scored": 2
+        }
+      },
+      "regressions": [],
+      "improvements": [],
+      "candidate_minus_baseline_tokens": -436382,
+      "automatic_promotion": false,
+      "limitations": [
+        "Small fixed suites are engineering evidence, not proof of general capability or RSI.",
+        "Token totals cover executor work, repairs and exams; original supervisor usage and money cost are not available.",
+        "Wall time includes manual review/wait; provider time is reported separately when known.",
+        "Model aliases/gateway routing and remote load can drift; paired order does not prove identical upstream weights.",
+        "Public built-in fixtures are development examples, not a private uncontaminated holdout.",
+        "Original-supervisor review is manual and not blinded; initial instructions and rubric are frozen, repair feedback is recorded.",
+        "Summary usage covers finished trials; active trial usage is available through call telos_status.",
+        "Audit detection counts cover only independently scored, accepted audit reports; audit_oracles_scored states that coverage.",
+        "Normal jobs are checked before paid actions; already-running upstream requests are not preempted."
+      ]
+    },
+    "trials": [
+      {
+        "id": "private-stable-dependency-layers-r1-baseline",
+        "case_id": "private-stable-dependency-layers",
+        "repeat": 1,
+        "side": "baseline",
+        "category": "feature",
+        "outcome": "passed",
+        "reason": null,
+        "requests": 5,
+        "observed_total_tokens": 26634,
+        "total_tokens": 26634,
+        "provider_seconds": 37.614,
+        "wall_seconds": 105.262,
+        "rounds": 1,
+        "turns": 1
+      },
+      {
+        "id": "private-stable-dependency-layers-r1-candidate",
+        "case_id": "private-stable-dependency-layers",
+        "repeat": 1,
+        "side": "candidate",
+        "category": "feature",
+        "outcome": "passed",
+        "reason": null,
+        "requests": 9,
+        "observed_total_tokens": 67591,
+        "total_tokens": 67591,
+        "provider_seconds": 81.248,
+        "wall_seconds": 137.625,
+        "rounds": 1,
+        "turns": 1
+      },
+      {
+        "id": "private-atomic-idempotent-transfers-r1-candidate",
+        "case_id": "private-atomic-idempotent-transfers",
+        "repeat": 1,
+        "side": "candidate",
+        "category": "bug_repair",
+        "outcome": "passed",
+        "reason": null,
+        "requests": 11,
+        "observed_total_tokens": 151201,
+        "total_tokens": 151201,
+        "provider_seconds": 279.776,
+        "wall_seconds": 605.49,
+        "rounds": 2,
+        "turns": 2
+      },
+      {
+        "id": "private-atomic-idempotent-transfers-r1-baseline",
+        "case_id": "private-atomic-idempotent-transfers",
+        "repeat": 1,
+        "side": "baseline",
+        "category": "bug_repair",
+        "outcome": "passed",
+        "reason": null,
+        "requests": 8,
+        "observed_total_tokens": 84432,
+        "total_tokens": 84432,
+        "provider_seconds": 140.145,
+        "wall_seconds": 168.649,
+        "rounds": 1,
+        "turns": 1
+      },
+      {
+        "id": "private-incremental-record-parser-r1-baseline",
+        "case_id": "private-incremental-record-parser",
+        "repeat": 1,
+        "side": "baseline",
+        "category": "feature",
+        "outcome": "passed",
+        "reason": null,
+        "requests": 10,
+        "observed_total_tokens": 107644,
+        "total_tokens": 107644,
+        "provider_seconds": 142.623,
+        "wall_seconds": 195.491,
+        "rounds": 1,
+        "turns": 1
+      },
+      {
+        "id": "private-incremental-record-parser-r1-candidate",
+        "case_id": "private-incremental-record-parser",
+        "repeat": 1,
+        "side": "candidate",
+        "category": "feature",
+        "outcome": "passed",
+        "reason": null,
+        "requests": 9,
+        "observed_total_tokens": 125748,
+        "total_tokens": 125748,
+        "provider_seconds": 283.716,
+        "wall_seconds": 349.435,
+        "rounds": 1,
+        "turns": 1
+      },
+      {
+        "id": "private-path-boundary-audit-r1-candidate",
+        "case_id": "private-path-boundary-audit",
+        "repeat": 1,
+        "side": "candidate",
+        "category": "code_audit",
+        "outcome": "passed",
+        "reason": null,
+        "requests": 9,
+        "observed_total_tokens": 109525,
+        "total_tokens": 109525,
+        "provider_seconds": 140.825,
+        "wall_seconds": 217.081,
+        "rounds": 1,
+        "turns": 1
+      },
+      {
+        "id": "private-path-boundary-audit-r1-baseline",
+        "case_id": "private-path-boundary-audit",
+        "repeat": 1,
+        "side": "baseline",
+        "category": "code_audit",
+        "outcome": "passed",
+        "reason": null,
+        "requests": 22,
+        "observed_total_tokens": 608158,
+        "total_tokens": 608158,
+        "provider_seconds": 328.762,
+        "wall_seconds": 384.498,
+        "rounds": 1,
+        "turns": 1
+      },
+      {
+        "id": "private-stable-dependency-layers-r2-candidate",
+        "case_id": "private-stable-dependency-layers",
+        "repeat": 2,
+        "side": "candidate",
+        "category": "feature",
+        "outcome": "passed",
+        "reason": null,
+        "requests": 7,
+        "observed_total_tokens": 46365,
+        "total_tokens": 46365,
+        "provider_seconds": 56.742,
+        "wall_seconds": 194.763,
+        "rounds": 1,
+        "turns": 2
+      },
+      {
+        "id": "private-stable-dependency-layers-r2-baseline",
+        "case_id": "private-stable-dependency-layers",
+        "repeat": 2,
+        "side": "baseline",
+        "category": "feature",
+        "outcome": "passed",
+        "reason": null,
+        "requests": 10,
+        "observed_total_tokens": 111190,
+        "total_tokens": 111190,
+        "provider_seconds": 148.43,
+        "wall_seconds": 206.333,
+        "rounds": 1,
+        "turns": 1
+      },
+      {
+        "id": "private-atomic-idempotent-transfers-r2-baseline",
+        "case_id": "private-atomic-idempotent-transfers",
+        "repeat": 2,
+        "side": "baseline",
+        "category": "bug_repair",
+        "outcome": "passed",
+        "reason": null,
+        "requests": 9,
+        "observed_total_tokens": 78831,
+        "total_tokens": 78831,
+        "provider_seconds": 123.797,
+        "wall_seconds": 227.979,
+        "rounds": 1,
+        "turns": 2
+      },
+      {
+        "id": "private-atomic-idempotent-transfers-r2-candidate",
+        "case_id": "private-atomic-idempotent-transfers",
+        "repeat": 2,
+        "side": "candidate",
+        "category": "bug_repair",
+        "outcome": "passed",
+        "reason": null,
+        "requests": 8,
+        "observed_total_tokens": 64106,
+        "total_tokens": 64106,
+        "provider_seconds": 80.445,
+        "wall_seconds": 160.104,
+        "rounds": 1,
+        "turns": 1
+      },
+      {
+        "id": "private-incremental-record-parser-r2-candidate",
+        "case_id": "private-incremental-record-parser",
+        "repeat": 2,
+        "side": "candidate",
+        "category": "feature",
+        "outcome": "passed",
+        "reason": null,
+        "requests": 10,
+        "observed_total_tokens": 150577,
+        "total_tokens": 150577,
+        "provider_seconds": 264.811,
+        "wall_seconds": 327.316,
+        "rounds": 1,
+        "turns": 1
+      },
+      {
+        "id": "private-incremental-record-parser-r2-baseline",
+        "case_id": "private-incremental-record-parser",
+        "repeat": 2,
+        "side": "baseline",
+        "category": "feature",
+        "outcome": "passed",
+        "reason": null,
+        "requests": 11,
+        "observed_total_tokens": 126290,
+        "total_tokens": 126290,
+        "provider_seconds": 173.752,
+        "wall_seconds": 227.953,
+        "rounds": 1,
+        "turns": 1
+      },
+      {
+        "id": "private-path-boundary-audit-r2-baseline",
+        "case_id": "private-path-boundary-audit",
+        "repeat": 2,
+        "side": "baseline",
+        "category": "code_audit",
+        "outcome": "passed",
+        "reason": null,
+        "requests": 10,
+        "observed_total_tokens": 120359,
+        "total_tokens": 120359,
+        "provider_seconds": 177.671,
+        "wall_seconds": 247.124,
+        "rounds": 1,
+        "turns": 1
+      },
+      {
+        "id": "private-path-boundary-audit-r2-candidate",
+        "case_id": "private-path-boundary-audit",
+        "repeat": 2,
+        "side": "candidate",
+        "category": "code_audit",
+        "outcome": "passed",
+        "reason": null,
+        "requests": 10,
+        "observed_total_tokens": 112043,
+        "total_tokens": 112043,
+        "provider_seconds": 130.349,
+        "wall_seconds": 341.386,
+        "rounds": 1,
+        "turns": 1
+      }
+    ],
+    "supervisor_descriptive_analysis": {
+      "manifest_hash": "7ac8652be8e61f07a136dc59ffcdccf8597ef8907331ed61ce9855c892a9538f",
+      "trial_count": 16,
+      "pair_count": 8,
+      "quality": {
+        "baseline": {
+          "trials": 8,
+          "final_passed": 8,
+          "first_submission_accepted": 7,
+          "trials_requiring_supervisor_repair": 1,
+          "repair_actions": 1,
+          "work_requests": 77,
+          "exam_requests": 8
+        },
+        "candidate": {
+          "trials": 8,
+          "final_passed": 8,
+          "first_submission_accepted": 6,
+          "trials_requiring_supervisor_repair": 2,
+          "repair_actions": 2,
+          "work_requests": 64,
+          "exam_requests": 9
+        }
+      },
+      "aggregate": {
+        "requests": {
+          "known_pairs": 8,
+          "baseline_total": 85,
+          "candidate_total": 73,
+          "candidate_minus_baseline": -12,
+          "candidate_percent_change": -14.117647058823534,
+          "candidate_lower_pairs": 5,
+          "equal_pairs": 1,
+          "candidate_higher_pairs": 2,
+          "median_candidate_over_baseline": 0.9045454545454545
+        },
+        "total_tokens": {
+          "known_pairs": 8,
+          "baseline_total": 1263538,
+          "candidate_total": 827156,
+          "candidate_minus_baseline": -436382,
+          "candidate_percent_change": -34.53651572014454,
+          "candidate_lower_pairs": 4,
+          "equal_pairs": 0,
+          "candidate_higher_pairs": 4,
+          "median_candidate_over_baseline": 1.0495453590410926
+        },
+        "provider_seconds": {
+          "known_pairs": 8,
+          "baseline_total": 1272.794,
+          "candidate_total": 1317.912,
+          "candidate_minus_baseline": 45.11799999999994,
+          "candidate_percent_change": 3.544799865492765,
+          "candidate_lower_pairs": 4,
+          "equal_pairs": 0,
+          "candidate_higher_pairs": 4,
+          "median_candidate_over_baseline": 1.128864159412966
+        },
+        "wall_seconds": {
+          "known_pairs": 8,
+          "baseline_total": 1763.289,
+          "candidate_total": 2333.2,
+          "candidate_minus_baseline": 569.9109999999998,
+          "candidate_percent_change": 32.32090712299571,
+          "candidate_lower_pairs": 3,
+          "equal_pairs": 0,
+          "candidate_higher_pairs": 5,
+          "median_candidate_over_baseline": 1.344443961088619
+        }
+      },
+      "pairs": [
+        {
+          "case_id": "private-atomic-idempotent-transfers",
+          "repeat": 1,
+          "metrics": {
+            "requests": {
+              "baseline": 8,
+              "candidate": 11,
+              "candidate_minus_baseline": 3,
+              "candidate_over_baseline": 1.375
+            },
+            "total_tokens": {
+              "baseline": 84432,
+              "candidate": 151201,
+              "candidate_minus_baseline": 66769,
+              "candidate_over_baseline": 1.7908020655675574
+            },
+            "provider_seconds": {
+              "baseline": 140.145,
+              "candidate": 279.776,
+              "candidate_minus_baseline": 139.631,
+              "candidate_over_baseline": 1.9963323700453102
+            },
+            "wall_seconds": {
+              "baseline": 168.649,
+              "candidate": 605.49,
+              "candidate_minus_baseline": 436.841,
+              "candidate_over_baseline": 3.590237712645791
+            }
+          },
+          "baseline_first_submission_accepted": true,
+          "candidate_first_submission_accepted": false
+        },
+        {
+          "case_id": "private-atomic-idempotent-transfers",
+          "repeat": 2,
+          "metrics": {
+            "requests": {
+              "baseline": 9,
+              "candidate": 8,
+              "candidate_minus_baseline": -1,
+              "candidate_over_baseline": 0.8888888888888888
+            },
+            "total_tokens": {
+              "baseline": 78831,
+              "candidate": 64106,
+              "candidate_minus_baseline": -14725,
+              "candidate_over_baseline": 0.8132080019281754
+            },
+            "provider_seconds": {
+              "baseline": 123.797,
+              "candidate": 80.445,
+              "candidate_minus_baseline": -43.352000000000004,
+              "candidate_over_baseline": 0.649813808089049
+            },
+            "wall_seconds": {
+              "baseline": 227.979,
+              "candidate": 160.104,
+              "candidate_minus_baseline": -67.875,
+              "candidate_over_baseline": 0.7022752095587752
+            }
+          },
+          "baseline_first_submission_accepted": false,
+          "candidate_first_submission_accepted": true
+        },
+        {
+          "case_id": "private-incremental-record-parser",
+          "repeat": 1,
+          "metrics": {
+            "requests": {
+              "baseline": 10,
+              "candidate": 9,
+              "candidate_minus_baseline": -1,
+              "candidate_over_baseline": 0.9
+            },
+            "total_tokens": {
+              "baseline": 107644,
+              "candidate": 125748,
+              "candidate_minus_baseline": 18104,
+              "candidate_over_baseline": 1.1681840139719817
+            },
+            "provider_seconds": {
+              "baseline": 142.623,
+              "candidate": 283.716,
+              "candidate_minus_baseline": 141.09300000000002,
+              "candidate_over_baseline": 1.98927241749227
+            },
+            "wall_seconds": {
+              "baseline": 195.491,
+              "candidate": 349.435,
+              "candidate_minus_baseline": 153.944,
+              "candidate_over_baseline": 1.7874735921346763
+            }
+          },
+          "baseline_first_submission_accepted": true,
+          "candidate_first_submission_accepted": true
+        },
+        {
+          "case_id": "private-incremental-record-parser",
+          "repeat": 2,
+          "metrics": {
+            "requests": {
+              "baseline": 11,
+              "candidate": 10,
+              "candidate_minus_baseline": -1,
+              "candidate_over_baseline": 0.9090909090909091
+            },
+            "total_tokens": {
+              "baseline": 126290,
+              "candidate": 150577,
+              "candidate_minus_baseline": 24287,
+              "candidate_over_baseline": 1.1923113468999922
+            },
+            "provider_seconds": {
+              "baseline": 173.752,
+              "candidate": 264.811,
+              "candidate_minus_baseline": 91.05899999999997,
+              "candidate_over_baseline": 1.5240745430268428
+            },
+            "wall_seconds": {
+              "baseline": 227.953,
+              "candidate": 327.316,
+              "candidate_minus_baseline": 99.36299999999997,
+              "candidate_over_baseline": 1.4358924866090816
+            }
+          },
+          "baseline_first_submission_accepted": true,
+          "candidate_first_submission_accepted": true
+        },
+        {
+          "case_id": "private-path-boundary-audit",
+          "repeat": 1,
+          "metrics": {
+            "requests": {
+              "baseline": 22,
+              "candidate": 9,
+              "candidate_minus_baseline": -13,
+              "candidate_over_baseline": 0.4090909090909091
+            },
+            "total_tokens": {
+              "baseline": 608158,
+              "candidate": 109525,
+              "candidate_minus_baseline": -498633,
+              "candidate_over_baseline": 0.18009300214746826
+            },
+            "provider_seconds": {
+              "baseline": 328.762,
+              "candidate": 140.825,
+              "candidate_minus_baseline": -187.937,
+              "candidate_over_baseline": 0.42834938344455864
+            },
+            "wall_seconds": {
+              "baseline": 384.498,
+              "candidate": 217.081,
+              "candidate_minus_baseline": -167.417,
+              "candidate_over_baseline": 0.564582910704347
+            }
+          },
+          "baseline_first_submission_accepted": true,
+          "candidate_first_submission_accepted": true
+        },
+        {
+          "case_id": "private-path-boundary-audit",
+          "repeat": 2,
+          "metrics": {
+            "requests": {
+              "baseline": 10,
+              "candidate": 10,
+              "candidate_minus_baseline": 0,
+              "candidate_over_baseline": 1.0
+            },
+            "total_tokens": {
+              "baseline": 120359,
+              "candidate": 112043,
+              "candidate_minus_baseline": -8316,
+              "candidate_over_baseline": 0.9309067041102036
+            },
+            "provider_seconds": {
+              "baseline": 177.671,
+              "candidate": 130.349,
+              "candidate_minus_baseline": -47.322,
+              "candidate_over_baseline": 0.7336537757990893
+            },
+            "wall_seconds": {
+              "baseline": 247.124,
+              "candidate": 341.386,
+              "candidate_minus_baseline": 94.26200000000003,
+              "candidate_over_baseline": 1.3814360402065362
+            }
+          },
+          "baseline_first_submission_accepted": true,
+          "candidate_first_submission_accepted": true
+        },
+        {
+          "case_id": "private-stable-dependency-layers",
+          "repeat": 1,
+          "metrics": {
+            "requests": {
+              "baseline": 5,
+              "candidate": 9,
+              "candidate_minus_baseline": 4,
+              "candidate_over_baseline": 1.8
+            },
+            "total_tokens": {
+              "baseline": 26634,
+              "candidate": 67591,
+              "candidate_minus_baseline": 40957,
+              "candidate_over_baseline": 2.537771269805512
+            },
+            "provider_seconds": {
+              "baseline": 37.614,
+              "candidate": 81.248,
+              "candidate_minus_baseline": 43.63400000000001,
+              "candidate_over_baseline": 2.160046791088425
+            },
+            "wall_seconds": {
+              "baseline": 105.262,
+              "candidate": 137.625,
+              "candidate_minus_baseline": 32.363,
+              "candidate_over_baseline": 1.3074518819707017
+            }
+          },
+          "baseline_first_submission_accepted": true,
+          "candidate_first_submission_accepted": true
+        },
+        {
+          "case_id": "private-stable-dependency-layers",
+          "repeat": 2,
+          "metrics": {
+            "requests": {
+              "baseline": 10,
+              "candidate": 7,
+              "candidate_minus_baseline": -3,
+              "candidate_over_baseline": 0.7
+            },
+            "total_tokens": {
+              "baseline": 111190,
+              "candidate": 46365,
+              "candidate_minus_baseline": -64825,
+              "candidate_over_baseline": 0.41698893785412355
+            },
+            "provider_seconds": {
+              "baseline": 148.43,
+              "candidate": 56.742,
+              "candidate_minus_baseline": -91.68800000000002,
+              "candidate_over_baseline": 0.3822812099979788
+            },
+            "wall_seconds": {
+              "baseline": 206.333,
+              "candidate": 194.763,
+              "candidate_minus_baseline": -11.569999999999993,
+              "candidate_over_baseline": 0.9439255960025784
+            }
+          },
+          "baseline_first_submission_accepted": true,
+          "candidate_first_submission_accepted": false
+        }
+      ],
+      "trials": [
+        {
+          "id": "private-stable-dependency-layers-r1-baseline",
+          "case_id": "private-stable-dependency-layers",
+          "repeat": 1,
+          "side": "baseline",
+          "outcome": "passed",
+          "requests": 5,
+          "total_tokens": 26634,
+          "provider_seconds": 37.614,
+          "wall_seconds": 105.262,
+          "rounds": 1,
+          "turns": 1,
+          "repair_actions": 0,
+          "first_submission_accepted": true,
+          "work_requests": 4,
+          "exam_requests": 1
+        },
+        {
+          "id": "private-stable-dependency-layers-r1-candidate",
+          "case_id": "private-stable-dependency-layers",
+          "repeat": 1,
+          "side": "candidate",
+          "outcome": "passed",
+          "requests": 9,
+          "total_tokens": 67591,
+          "provider_seconds": 81.248,
+          "wall_seconds": 137.625,
+          "rounds": 1,
+          "turns": 1,
+          "repair_actions": 0,
+          "first_submission_accepted": true,
+          "work_requests": 8,
+          "exam_requests": 1
+        },
+        {
+          "id": "private-atomic-idempotent-transfers-r1-candidate",
+          "case_id": "private-atomic-idempotent-transfers",
+          "repeat": 1,
+          "side": "candidate",
+          "outcome": "passed",
+          "requests": 11,
+          "total_tokens": 151201,
+          "provider_seconds": 279.776,
+          "wall_seconds": 605.49,
+          "rounds": 2,
+          "turns": 2,
+          "repair_actions": 1,
+          "first_submission_accepted": false,
+          "work_requests": 9,
+          "exam_requests": 2
+        },
+        {
+          "id": "private-atomic-idempotent-transfers-r1-baseline",
+          "case_id": "private-atomic-idempotent-transfers",
+          "repeat": 1,
+          "side": "baseline",
+          "outcome": "passed",
+          "requests": 8,
+          "total_tokens": 84432,
+          "provider_seconds": 140.145,
+          "wall_seconds": 168.649,
+          "rounds": 1,
+          "turns": 1,
+          "repair_actions": 0,
+          "first_submission_accepted": true,
+          "work_requests": 7,
+          "exam_requests": 1
+        },
+        {
+          "id": "private-incremental-record-parser-r1-baseline",
+          "case_id": "private-incremental-record-parser",
+          "repeat": 1,
+          "side": "baseline",
+          "outcome": "passed",
+          "requests": 10,
+          "total_tokens": 107644,
+          "provider_seconds": 142.623,
+          "wall_seconds": 195.491,
+          "rounds": 1,
+          "turns": 1,
+          "repair_actions": 0,
+          "first_submission_accepted": true,
+          "work_requests": 9,
+          "exam_requests": 1
+        },
+        {
+          "id": "private-incremental-record-parser-r1-candidate",
+          "case_id": "private-incremental-record-parser",
+          "repeat": 1,
+          "side": "candidate",
+          "outcome": "passed",
+          "requests": 9,
+          "total_tokens": 125748,
+          "provider_seconds": 283.716,
+          "wall_seconds": 349.435,
+          "rounds": 1,
+          "turns": 1,
+          "repair_actions": 0,
+          "first_submission_accepted": true,
+          "work_requests": 8,
+          "exam_requests": 1
+        },
+        {
+          "id": "private-path-boundary-audit-r1-candidate",
+          "case_id": "private-path-boundary-audit",
+          "repeat": 1,
+          "side": "candidate",
+          "outcome": "passed",
+          "requests": 9,
+          "total_tokens": 109525,
+          "provider_seconds": 140.825,
+          "wall_seconds": 217.081,
+          "rounds": 1,
+          "turns": 1,
+          "repair_actions": 0,
+          "first_submission_accepted": true,
+          "work_requests": 8,
+          "exam_requests": 1
+        },
+        {
+          "id": "private-path-boundary-audit-r1-baseline",
+          "case_id": "private-path-boundary-audit",
+          "repeat": 1,
+          "side": "baseline",
+          "outcome": "passed",
+          "requests": 22,
+          "total_tokens": 608158,
+          "provider_seconds": 328.762,
+          "wall_seconds": 384.498,
+          "rounds": 1,
+          "turns": 1,
+          "repair_actions": 0,
+          "first_submission_accepted": true,
+          "work_requests": 21,
+          "exam_requests": 1
+        },
+        {
+          "id": "private-stable-dependency-layers-r2-candidate",
+          "case_id": "private-stable-dependency-layers",
+          "repeat": 2,
+          "side": "candidate",
+          "outcome": "passed",
+          "requests": 7,
+          "total_tokens": 46365,
+          "provider_seconds": 56.742,
+          "wall_seconds": 194.763,
+          "rounds": 1,
+          "turns": 2,
+          "repair_actions": 1,
+          "first_submission_accepted": false,
+          "work_requests": 6,
+          "exam_requests": 1
+        },
+        {
+          "id": "private-stable-dependency-layers-r2-baseline",
+          "case_id": "private-stable-dependency-layers",
+          "repeat": 2,
+          "side": "baseline",
+          "outcome": "passed",
+          "requests": 10,
+          "total_tokens": 111190,
+          "provider_seconds": 148.43,
+          "wall_seconds": 206.333,
+          "rounds": 1,
+          "turns": 1,
+          "repair_actions": 0,
+          "first_submission_accepted": true,
+          "work_requests": 9,
+          "exam_requests": 1
+        },
+        {
+          "id": "private-atomic-idempotent-transfers-r2-baseline",
+          "case_id": "private-atomic-idempotent-transfers",
+          "repeat": 2,
+          "side": "baseline",
+          "outcome": "passed",
+          "requests": 9,
+          "total_tokens": 78831,
+          "provider_seconds": 123.797,
+          "wall_seconds": 227.979,
+          "rounds": 1,
+          "turns": 2,
+          "repair_actions": 1,
+          "first_submission_accepted": false,
+          "work_requests": 8,
+          "exam_requests": 1
+        },
+        {
+          "id": "private-atomic-idempotent-transfers-r2-candidate",
+          "case_id": "private-atomic-idempotent-transfers",
+          "repeat": 2,
+          "side": "candidate",
+          "outcome": "passed",
+          "requests": 8,
+          "total_tokens": 64106,
+          "provider_seconds": 80.445,
+          "wall_seconds": 160.104,
+          "rounds": 1,
+          "turns": 1,
+          "repair_actions": 0,
+          "first_submission_accepted": true,
+          "work_requests": 7,
+          "exam_requests": 1
+        },
+        {
+          "id": "private-incremental-record-parser-r2-candidate",
+          "case_id": "private-incremental-record-parser",
+          "repeat": 2,
+          "side": "candidate",
+          "outcome": "passed",
+          "requests": 10,
+          "total_tokens": 150577,
+          "provider_seconds": 264.811,
+          "wall_seconds": 327.316,
+          "rounds": 1,
+          "turns": 1,
+          "repair_actions": 0,
+          "first_submission_accepted": true,
+          "work_requests": 9,
+          "exam_requests": 1
+        },
+        {
+          "id": "private-incremental-record-parser-r2-baseline",
+          "case_id": "private-incremental-record-parser",
+          "repeat": 2,
+          "side": "baseline",
+          "outcome": "passed",
+          "requests": 11,
+          "total_tokens": 126290,
+          "provider_seconds": 173.752,
+          "wall_seconds": 227.953,
+          "rounds": 1,
+          "turns": 1,
+          "repair_actions": 0,
+          "first_submission_accepted": true,
+          "work_requests": 10,
+          "exam_requests": 1
+        },
+        {
+          "id": "private-path-boundary-audit-r2-baseline",
+          "case_id": "private-path-boundary-audit",
+          "repeat": 2,
+          "side": "baseline",
+          "outcome": "passed",
+          "requests": 10,
+          "total_tokens": 120359,
+          "provider_seconds": 177.671,
+          "wall_seconds": 247.124,
+          "rounds": 1,
+          "turns": 1,
+          "repair_actions": 0,
+          "first_submission_accepted": true,
+          "work_requests": 9,
+          "exam_requests": 1
+        },
+        {
+          "id": "private-path-boundary-audit-r2-candidate",
+          "case_id": "private-path-boundary-audit",
+          "repeat": 2,
+          "side": "candidate",
+          "outcome": "passed",
+          "requests": 10,
+          "total_tokens": 112043,
+          "provider_seconds": 130.349,
+          "wall_seconds": 341.386,
+          "rounds": 1,
+          "turns": 1,
+          "repair_actions": 0,
+          "first_submission_accepted": true,
+          "work_requests": 9,
+          "exam_requests": 1
+        }
+      ],
+      "actual_order": [
+        "private-stable-dependency-layers-r1-baseline",
+        "private-stable-dependency-layers-r1-candidate",
+        "private-atomic-idempotent-transfers-r1-candidate",
+        "private-atomic-idempotent-transfers-r1-baseline",
+        "private-incremental-record-parser-r1-baseline",
+        "private-incremental-record-parser-r1-candidate",
+        "private-path-boundary-audit-r1-candidate",
+        "private-path-boundary-audit-r1-baseline",
+        "private-stable-dependency-layers-r2-candidate",
+        "private-stable-dependency-layers-r2-baseline",
+        "private-atomic-idempotent-transfers-r2-baseline",
+        "private-atomic-idempotent-transfers-r2-candidate",
+        "private-incremental-record-parser-r2-candidate",
+        "private-incremental-record-parser-r2-baseline",
+        "private-path-boundary-audit-r2-baseline",
+        "private-path-boundary-audit-r2-candidate"
+      ],
+      "symmetric_manual_transfer_diagnostics": [
+        {
+          "trial_id": "private-atomic-idempotent-transfers-r1-candidate",
+          "commit": "ee570368f8313c6524a28988ca58097e47866526",
+          "passed": true,
+          "cases": 2
+        },
+        {
+          "trial_id": "private-atomic-idempotent-transfers-r1-baseline",
+          "commit": "601d8c846c924cade754fc2211f9f9c70fa34c62",
+          "passed": true,
+          "cases": 2
+        },
+        {
+          "trial_id": "private-atomic-idempotent-transfers-r2-baseline",
+          "commit": "41fd286795e4a4cb7ba03a9abda8905601cb6b9c",
+          "passed": true,
+          "cases": 2
+        },
+        {
+          "trial_id": "private-atomic-idempotent-transfers-r2-candidate",
+          "commit": "5744978deafe2d18cc03f71edec7a16408fbd18b",
+          "passed": true,
+          "cases": 2
+        }
+      ],
+      "definitions": {
+        "first_submission_accepted": "Final pass with exactly one submitted work turn, one evaluation, and no supervisor repair action. Internal self-debugging before submission is still counted in requests/tokens/time.",
+        "ratios": "Candidate divided by baseline; below1 means lower measured cost or time.",
+        "provider_seconds": "Summed measured model-request latency; includes repair/exam requests.",
+        "wall_seconds": "Trial elapsed time including supervisor review, waits and orchestration; not pure model speed."
+      },
+      "limitations": [
+        "Descriptive results from4cases and2repeats; no claim of statistical significance or general causal improvement.",
+        "Original-supervisor review was not blinded; provider model alias has no immutable weight revision.",
+        "Transfer fractional-balance diagnostic was added after the first candidate source review and applied symmetrically to all4transfer trials. Frozen checks, budgets and rubric were unchanged.",
+        "Experience reuse was disabled in the comparison harness, so its effects are not measured here."
+      ]
+    },
+    "supplementary_parser_boundaries": {
+      "kind": "supplementary_post_hoc_boundary_diagnostic",
+      "trials": [
+        {
+          "trial_id": "private-incremental-record-parser-r1-baseline",
+          "commit": "cd8ae9daa0433e8a4f989ce969345daa80083729",
+          "rejected_all_extensions": false,
+          "same_chunk_error_recovery": {
+            "initial_error": "JSONDecodeError",
+            "next_feed_return": [
+              1,
+              2
+            ],
+            "finish_return": []
+          },
+          "observations": [
+            {
+              "token": "NaN",
+              "mode": "feed",
+              "rejected": false,
+              "returned_repr": "[nan]"
+            },
+            {
+              "token": "NaN",
+              "mode": "finish",
+              "rejected": false,
+              "returned_repr": "[nan]"
+            },
+            {
+              "token": "Infinity",
+              "mode": "feed",
+              "rejected": false,
+              "returned_repr": "[inf]"
+            },
+            {
+              "token": "Infinity",
+              "mode": "finish",
+              "rejected": false,
+              "returned_repr": "[inf]"
+            },
+            {
+              "token": "-Infinity",
+              "mode": "feed",
+              "rejected": false,
+              "returned_repr": "[-inf]"
+            },
+            {
+              "token": "-Infinity",
+              "mode": "finish",
+              "rejected": false,
+              "returned_repr": "[-inf]"
+            }
+          ]
+        },
+        {
+          "trial_id": "private-incremental-record-parser-r1-candidate",
+          "commit": "707dab7f2e910b0fd982d7c21b141b6ae8afbf43",
+          "rejected_all_extensions": true,
+          "same_chunk_error_recovery": {
+            "initial_error": "ValueError",
+            "next_feed_return": [
+              2
+            ],
+            "finish_return": []
+          },
+          "observations": [
+            {
+              "token": "NaN",
+              "mode": "feed",
+              "rejected": true,
+              "exception": "ValueError"
+            },
+            {
+              "token": "NaN",
+              "mode": "finish",
+              "rejected": true,
+              "exception": "ValueError"
+            },
+            {
+              "token": "Infinity",
+              "mode": "feed",
+              "rejected": true,
+              "exception": "ValueError"
+            },
+            {
+              "token": "Infinity",
+              "mode": "finish",
+              "rejected": true,
+              "exception": "ValueError"
+            },
+            {
+              "token": "-Infinity",
+              "mode": "feed",
+              "rejected": true,
+              "exception": "ValueError"
+            },
+            {
+              "token": "-Infinity",
+              "mode": "finish",
+              "rejected": true,
+              "exception": "ValueError"
+            }
+          ]
+        },
+        {
+          "trial_id": "private-incremental-record-parser-r2-candidate",
+          "commit": "d7443de560fb683b3e7e32049c443fa7c2e0fef8",
+          "rejected_all_extensions": true,
+          "same_chunk_error_recovery": {
+            "initial_error": "ValueError",
+            "next_feed_return": [
+              1,
+              2
+            ],
+            "finish_return": []
+          },
+          "observations": [
+            {
+              "token": "NaN",
+              "mode": "feed",
+              "rejected": true,
+              "exception": "ValueError"
+            },
+            {
+              "token": "NaN",
+              "mode": "finish",
+              "rejected": true,
+              "exception": "ValueError"
+            },
+            {
+              "token": "Infinity",
+              "mode": "feed",
+              "rejected": true,
+              "exception": "ValueError"
+            },
+            {
+              "token": "Infinity",
+              "mode": "finish",
+              "rejected": true,
+              "exception": "ValueError"
+            },
+            {
+              "token": "-Infinity",
+              "mode": "feed",
+              "rejected": true,
+              "exception": "ValueError"
+            },
+            {
+              "token": "-Infinity",
+              "mode": "finish",
+              "rejected": true,
+              "exception": "ValueError"
+            }
+          ]
+        },
+        {
+          "trial_id": "private-incremental-record-parser-r2-baseline",
+          "commit": "583eae818e82b439e78468ac4fba8e71f49b5ced",
+          "rejected_all_extensions": false,
+          "same_chunk_error_recovery": {
+            "initial_error": "ValueError",
+            "next_feed_return": [
+              1,
+              2
+            ],
+            "finish_return": []
+          },
+          "observations": [
+            {
+              "token": "NaN",
+              "mode": "feed",
+              "rejected": false,
+              "returned_repr": "[nan]"
+            },
+            {
+              "token": "NaN",
+              "mode": "finish",
+              "rejected": false,
+              "returned_repr": "[nan]"
+            },
+            {
+              "token": "Infinity",
+              "mode": "feed",
+              "rejected": false,
+              "returned_repr": "[inf]"
+            },
+            {
+              "token": "Infinity",
+              "mode": "finish",
+              "rejected": false,
+              "returned_repr": "[inf]"
+            },
+            {
+              "token": "-Infinity",
+              "mode": "feed",
+              "rejected": false,
+              "returned_repr": "[-inf]"
+            },
+            {
+              "token": "-Infinity",
+              "mode": "finish",
+              "rejected": false,
+              "returned_repr": "[-inf]"
+            }
+          ]
+        }
+      ],
+      "limitations": [
+        "Observed after the first baseline parser was already accepted and its trial closed; not a pre-registered metric or a replacement for frozen outcomes.",
+        "Applied unchanged to all four submitted parser implementations after the16matched trials. No new worker repair, runtime change, budget change or retrospective score change.",
+        "The task said invalid JSON raises ValueError but did not explicitly specify Python decoder extensions. These observations bound any claim of strict JSON conformance; frozen checks were not exhaustive.",
+        "Recovery of valid complete records following a malformed line in the same failed feed call was not specified by the frozen task. Raw observations are reported without adding a pass/fail requirement."
+      ]
+    },
+    "supervisor_review_observations": {
+      "scope": "Public outcome/accounting notes from original-supervisor review; no private questions, answers or oracle code.",
+      "notes": [
+        {
+          "trial_id": "private-atomic-idempotent-transfers-r1-candidate",
+          "kind": "functional_repair",
+          "observation": "Initial frozen check passed but manual source review found an extra integer-only account-balance restriction. First submission rejected85; same-budget repair removed restriction and passed. All11requests/151201tokens retained."
+        },
+        {
+          "trial_id": "private-atomic-idempotent-transfers-r1-baseline",
+          "kind": "internal_test_correction",
+          "observation": "Two self-authored test expectation errors were corrected before first submission. Final tests passed; all8requests/84432tokens retained. No supervisor repair."
+        },
+        {
+          "trial_id": "private-path-boundary-audit-r1-candidate",
+          "kind": "supervisor_schema_correction",
+          "observation": "First grade call used prose in the limitations field; gate requires exact IDs of blocked/not_tested checklist items. Corrected to empty set with prose retained in coverage rationale. No extra worker request or repair; rejection receipt retained and elapsed time included."
+        },
+        {
+          "trial_id": "private-stable-dependency-layers-r2-candidate",
+          "kind": "submission_scope_repair",
+          "observation": "Initial evaluation was blocked before an exam by generated bytecode outside main.py-only scope. Same-budget repair removed only generated cache, retained unchanged functional source and did not repeat passing tests. Final7requests/46365tokens; no first-submission acceptance."
+        },
+        {
+          "trial_id": "private-stable-dependency-layers-r2-baseline",
+          "kind": "internal_test_correction",
+          "observation": "Random cycle generator initially failed on an empty choice when generating a one-node case; outer shell returned0 but traceback is retained. Generator corrected before first submission; final1000DAG and100cycle checks passed. All10requests/111190tokens retained."
+        },
+        {
+          "trial_id": "private-atomic-idempotent-transfers-r2-baseline",
+          "kind": "submission_scope_repair",
+          "observation": "Initial evaluation blocked generated bytecode outside main.py scope before an exam. Identical public scope-cleanup feedback as candidate trial09; removed only generated cache, source unchanged, no repeated functional test. Frozen check and symmetric fractional-balance probe pass. All9requests/78831tokens retained."
+        },
+        {
+          "trial_id": "private-incremental-record-parser-r2-candidate",
+          "kind": "internal_test_correction",
+          "observation": "Initial self-authored check incorrectly expected incomplete final JSON to be ignored. Corrected assertion confirms ValueError before first submission; source retained strict invalid-record behavior. All10requests/150577tokens retained. No supervisor repair."
+        },
+        {
+          "trial_id": "private-incremental-record-parser-r2-baseline",
+          "kind": "internal_test_correction",
+          "observation": "Initial custom assertion used the wrong expected character for its UTF-8 bytes. Expectation corrected without changing implementation; final suite passed before first submission. All11requests/126290tokens retained. No supervisor repair."
+        }
+      ]
+    }
+  },
+  "accounting": {
+    "rounds01_to19": {
+      "requests": 718,
+      "total_tokens": 33338731,
+      "scope": "Includes retained setup failures, rejected experiments, all repairs and exams."
+    },
+    "round20_transfer": {
+      "requests": 158,
+      "observed_total_tokens": 2090694,
+      "total_tokens": 2090694,
+      "scope": "All16matched trials, including failed attempts, repairs and exams."
+    },
+    "development_pilots": [
+      {
+        "after_round": 6,
+        "summary": "pilot-after-round06-supervisor-summary.json",
+        "complete": true,
+        "planned": 4,
+        "passed": 4,
+        "baseline_requests": 24,
+        "candidate_requests": 18,
+        "baseline_provider_seconds": 535.847,
+        "candidate_provider_seconds": 280.193,
+        "quality_result": "2/2 each side; one functional repair each; no measured quality uplift",
+        "interpretation": "Actual candidate-runtime reuse; small development evidence, not causal general speed/quality claim."
+      }
+    ],
+    "development_pilot_measured_accounting": {
+      "after_round": 6,
+      "sides": {
+        "baseline": {
+          "completed": 2,
+          "passed": 2,
+          "requests": 24,
+          "total_tokens": 445351,
+          "provider_seconds": 535.847,
+          "trial_wall_seconds": 881.591
+        },
+        "candidate": {
+          "completed": 2,
+          "passed": 2,
+          "requests": 18,
+          "total_tokens": 187959,
+          "provider_seconds": 280.193,
+          "trial_wall_seconds": 636.139
+        }
+      },
+      "scope": "Separate four-trial development pilot; includes its repairs and exams, not any numbered experiment."
+    },
+    "preparation_probes": [
+      {
+        "artifact": "bailian-json-mode-probe.json",
+        "for_round": 5,
+        "requests": 1,
+        "tokens": 138,
+        "result": "Responses HTTP200/completed and text.format json_object echoed; protocol compatibility only."
+      }
+    ],
+    "report_authoring": "Separate delivery overhead, finalized after this artifact is accepted; not hidden in the experiment totals.",
+    "supervisor": "Original supervisor usage is reported separately from executor tokens; no currency estimate."
+  },
+  "limitations": [
+    "Exactly20distinct experiments; retries, preparation probes and report authoring are not additional rounds.",
+    "Only accepted source changes are carried; rejected rounds10/16 remain recorded and their code is excluded.",
+    "The installed controller and model weights were not updated. This is supervised system and workflow improvement.",
+    "Component timings, native verification timings, provider latency and delivery wall time are different measurements.",
+    "The final suite has4private cases,2repeats,2variants; original-supervisor review is not blinded and provider revision is unavailable.",
+    "The comparison harness disables experience reuse to avoid cross-trial contamination; final model results do not measure that feature.",
+    "Manual source review of the first transfer candidate revealed an unstated integer-only balance restriction missed by the frozen oracle. The same additional finite fractional-balance diagnostic was then applied to all four transfer trials; the original oracle, budget and rubric were unchanged. This review diagnostic was not pre-registered.",
+    "The original frozen cases were withheld from optimization executors. Generic harness warnings about public built-in fixtures do not describe these overridden cases.",
+    "Final native integration checks and project acceptance are separate delivery evidence; this report cannot itself certify them.",
+    "Feature-branch development only: no main merge, push, install or deployment."
+  ]
+}
