@@ -134,6 +134,26 @@ class CompactViewTests(unittest.TestCase):
         self.assertEqual(summary['final_review']['blockers'], ['b'])
         self.assertNotIn('task', summary['tasks'][0])
 
+    def test_project_summary_propagates_return_event_identity_without_payload(self):
+        full = {'project_id': 'p' * 32, 'phase': 'running', 'accepted': False,
+                'continuation': 'paused', 'return_health': {'status': 'paused', 'next_action': None},
+                'return_event': {'id': 'e' * 32, 'status': 'processed',
+                                 'actions': {'private': 'payload'},
+                                 'last_error': 'private transport detail'},
+                'tasks': []}
+        before = copy.deepcopy(full)
+        summary = compact.project(full)
+        self.assertEqual(summary['return_event'], {'id': 'e' * 32, 'status': 'processed'})
+        self.assertEqual(set(summary['return_event']), {'id', 'status'})
+        self.assertEqual(summary['return_health'], {'status': 'paused', 'next_action': None})
+        self.assertEqual(full, before)
+
+        full['return_event'] = None
+        self.assertIsNone(compact.project(full)['return_event'])
+        self.assertIsNone(compact.project({'project_id': 'p' * 32, 'tasks': []})['return_event'])
+        receive = compact.project_receive({'project_id': 'p' * 32, 'project': full})
+        self.assertIsNone(receive['project']['return_event'])
+
     def test_project_receive_keeps_child_event_and_session_identifiers(self):
         full = {'proceed': True, 'project_id': 'p' * 32, 'instruction': 'review',
                 'events': [{'task_id': 'a', 'session_id': 's' * 32, 'proceed': True,
