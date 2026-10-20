@@ -156,13 +156,23 @@ class Experience:
     def source_valid(self, e):
         try:
             state = self.b.status(e['session_id'])
-            if not state['accepted'] or state['acceptance']['packet_id'] != e['source_packet_id']:
+            acceptance = state.get('acceptance')
+            commit, packet_id = e.get('source_commit'), e.get('source_packet_id')
+            if (not isinstance(acceptance, dict) or not isinstance(commit, str) or not commit
+                    or not isinstance(packet_id, str) or not packet_id or not state['accepted']
+                    or acceptance.get('packet_id') != packet_id or acceptance.get('commit') != commit):
                 return False
-            if e.get('project_id'):
-                p = self.b.project_manager().load(e['project_id'])
+            # Membership is defined by the verified source status, not by the
+            # record: a project child cannot be re-read as standalone and a
+            # record cannot claim a different (even accepted) project.
+            source_project = state.get('project_id') or None
+            if (e.get('project_id') or None) != source_project:
+                return False
+            if source_project:
+                p = self.b.project_manager().load(source_project)
                 if p['phase'] != 'accepted' or p['integration']['commit'] != e.get('project_commit'):
                     return False
-                packet = self.b.read_json(self.b.project_manager().path(e['project_id']).parent / 'integration-review.json')
+                packet = self.b.read_json(self.b.project_manager().path(source_project).parent / 'integration-review.json')
                 if self.b.digest(packet) != p['integration']['packet_id']:
                     return False
                 tree = p['integration']['worktree']
