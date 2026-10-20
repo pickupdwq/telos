@@ -1,6 +1,11 @@
 import json
 from pathlib import Path
+import tempfile
+from types import SimpleNamespace
 import unittest
+from unittest.mock import patch
+from experience import Experience
+from projects import Projects
 from test_projects import ProjectTests, b
 
 
@@ -87,8 +92,85 @@ class ExperienceTests(ProjectTests):
         self.assertEqual(b.experience_manager().lookup(self.repo)[0]['public_lessons'], [lesson])
 
 
+class LookupTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        root = Path(self.tmp.name).resolve()
+        self.repo = root / 'repo'
+        self.repo.mkdir()
+        self.state = root / 'state'
+        self.bridge = SimpleNamespace(
+            STATE=self.state, GateError=b.GateError, digest=b.digest,
+            read_json=b.read_json, write_json=b.write_json,
+            project_manager=lambda: SimpleNamespace(overlap=Projects.overlap))
+        self.experience = Experience(self.bridge)
+
+    def seed(self, session_id, created_at, paths=('a.py',), lessons=(), *, repo=None,
+             reusable=True, disabled=False, packet_id=None):
+        packet_id = packet_id or b.digest({'packet': session_id, 'created_at': created_at})
+        ident = b.digest({'record': session_id, 'packet': packet_id})
+        entry = {'id': ident, 'repo': str(Path(self.repo if repo is None else repo).resolve()),
+                 'session_id': session_id, 'project_id': None,
+                 'source_commit': '0' * 40, 'source_packet_id': packet_id,
+                 'created_at': created_at, 'task': 'Task ' + session_id,
+                 'paths': list(paths), 'changed_files': list(paths),
+                 'public_lessons': list(lessons), 'outcome': 'accepted',
+                 'reusable': reusable, 'disabled': disabled}
+        entry['content_hash'] = b.digest({k: v for k, v in entry.items() if k != 'content_hash'})
+        b.write_json(self.state / 'experience' / (entry['id'] + '.json'), entry)
+        return entry
+
+    def test_lookup_checks_only_ranked_matching_sources_until_limit(self):
+        lesson = self.seed('lesson', 30, lessons=['Keep the API stable.'])
+        newest = self.seed('newest', 40)
+        older = self.seed('older', 20)
+        unchecked = self.seed('unchecked', 10)
+        for i in range(40):
+            self.seed('other-%02d' % i, 100 + i, paths=['other.py'], lessons=['Not relevant.'])
+        self.seed('disabled', 200, lessons=['Not relevant.'], disabled=True)
+        tampered = self.seed('tampered', 201, lessons=['Not relevant.'])
+        tampered['public_lessons'] = ['Changed after hashing.']
+        b.write_json(self.state / 'experience' / (tampered['id'] + '.json'), tampered)
+        self.seed('foreign', 202, lessons=['Not relevant.'], repo=self.repo / 'other')
+        calls = []
+        with patch.object(self.experience, 'source_valid',
+                          side_effect=lambda e: calls.append(e['session_id']) or True):
+            records = self.experience.lookup(self.repo, ['a.py'], limit=3)
+        self.assertEqual([e['session_id'] for e in records], ['lesson', 'newest', 'older'])
+        self.assertEqual(calls, ['lesson', 'newest', 'older'])
+        self.assertNotIn(unchecked['session_id'], calls)
+
+    def test_lookup_rejects_source_then_reuses_session_before_stopping(self):
+        self.seed('session-a', 40, lessons=['Stale lesson.'], packet_id='bad')
+        self.seed('session-a', 30, packet_id='good')
+        self.seed('session-b', 20, packet_id='b-good')
+        self.seed('session-c', 10, packet_id='c-good')
+        calls = []
+
+        def source_valid(entry):
+            calls.append((entry['session_id'], entry['source_packet_id']))
+            return entry['source_packet_id'] != 'bad'
+
+        with patch.object(self.experience, 'source_valid', side_effect=source_valid):
+            records = self.experience.lookup(self.repo, ['a.py'], limit=2)
+        self.assertEqual([(e['session_id'], e['source_packet_id']) for e in records],
+                         [('session-a', 'good'), ('session-b', 'b-good')])
+        self.assertEqual(calls, [('session-a', 'bad'), ('session-a', 'good'), ('session-b', 'b-good')])
+
+    def test_lookup_candidates_skip_provenance_checks(self):
+        candidate = self.seed('candidate', 10, lessons=['Unverified candidate.'], reusable=False)
+        with patch.object(self.experience, 'source_valid',
+                          side_effect=AssertionError('candidate was checked')):
+            records = self.experience.lookup(self.repo, ['a.py'], include_candidates=True)
+        self.assertEqual([e['session_id'] for e in records], ['candidate'])
+        self.assertEqual(records[0], candidate)
+        self.assertFalse(records[0]['reusable'])
+
+
 def load_tests(loader, tests, pattern):
-    return unittest.TestSuite(ExperienceTests(name) for name in ExperienceTests.__dict__ if name.startswith('test_'))
+    return unittest.TestSuite(case(name) for case in (ExperienceTests, LookupTests)
+                              for name in case.__dict__ if name.startswith('test_'))
 
 
 if __name__ == '__main__':
