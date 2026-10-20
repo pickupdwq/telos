@@ -73,6 +73,21 @@ particular socket or pane ID in the static `env` table: those values must be
 inherited from each new Codex session. Forwarding uses Codex's documented
 [`env_vars` setting](https://learn.chatgpt.com/docs/extend/mcp).
 
+When Codex uses a shared background server, its local environment may not
+include the terminal client's tmux variables even with forwarding configured.
+If both variables are absent, Telos can recover the pane on the default tmux
+server using the trusted CLI caller's working directory. It requires exactly
+one live pane in an attached session with that exact directory and a Codex
+process in its process tree. Observer panes, unrelated processes, detached
+sessions and ambiguous matches are ignored. Explicit but stale/partial tmux
+variables are never replaced by a guessed pane. Desktop callers do not use
+this fallback, and custom tmux sockets still require environment forwarding.
+
+For an unambiguous inherited environment, Codex also supports
+[`codex --no-daemon`](https://learn.chatgpt.com/docs/cli/reference), which runs
+the interactive CLI without the shared background server. Existing tasks can
+always be viewed with `telos watch <session_id> --ui`; this does not restart them.
+
 To disable automatic panels while retaining recording and manual watching,
 merge this into the installed Telos `config.json`, then restart its MCP process:
 
@@ -124,6 +139,12 @@ Task execution and its original acceptance gates continue independently.
 在 Ghostty 或 iTerm2 中先进入 tmux，再启动 Codex CLI。安装/升级时使用
 `--register`，安装器会为 Telos 的 MCP 配置补充 `TMUX`、`TMUX_PANE`
 环境变量转发，并备份原配置；之后重启 Codex。
+
+若共享后台服务没有继承终端的两个 tmux 变量，Telos 会使用可信 CLI 会话的
+工作目录，在默认 tmux 服务中寻找唯一匹配且正在运行 Codex 的已连接窗格。
+多个匹配、桌面会话、失效的显式变量和无法识别的窗格均不会自动连接。
+自定义 tmux socket 仍需转发环境变量；也可在 tmux 中使用
+`codex --no-daemon`，让新会话直接继承该终端环境。
 
 发起任务后会自动在右侧打开一个只读观察面板，焦点仍留在主对话。
 多个执行者共用这个面板，按 `Tab`、`n`、`p` 切换任务；方向键或翻页键

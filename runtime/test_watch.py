@@ -223,6 +223,92 @@ class ViewerTests(unittest.TestCase):
         self.assertTrue(any(e['kind'] == 'status' and e.get('status') == 'error' for e in events))
 
 
+class DiscoveryTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='telos-origin-')
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.state = self.root / 'state'
+        self.cwd = str(self.root / 'repo')
+
+    def row(self, pane='%4', pid='100', cwd=None, attached='1', dead='0', group=''):
+        return '\t'.join(('/tmp/test-tmux/default', pane, pid, attached, dead, group,
+                          self.cwd if cwd is None else cwd))
+
+    def discover(self, rows, ancestors=(100, 200)):
+        def query(context, *args):
+            return '\n'.join(rows) if args[0] == 'list-panes' else '@2'
+        with patch.object(watch, 'tmux', side_effect=query), \
+                patch.object(watch, 'codex_ancestors', return_value=set(ancestors)):
+            return watch.origin(self.state, {}, cwd=self.cwd)
+
+    def test_missing_environment_finds_unique_attached_codex_directory(self):
+        result = self.discover([self.row(), self.row('%5', '200', cwd=str(self.root / 'elsewhere'))])
+        self.assertEqual(result['pane'], '%4')
+        self.assertEqual(result['window'], '@2')
+        self.assertEqual(result['socket'], '/tmp/test-tmux/default')
+        self.assertRegex(result['group'], r'^[0-9a-f]{24}$')
+        # Linked windows can report the same pane more than once.
+        self.assertEqual(self.discover([self.row(), self.row()]), result)
+
+    def test_ambiguous_or_ineligible_panes_do_not_open(self):
+        cases = [
+            [self.row(), self.row('%5', '200')],
+            [self.row(pid='999')],
+            [self.row(attached='0')],
+            [self.row(dead='1')],
+            [self.row(group='a' * 24)],
+            [self.row(cwd=self.cwd + '/subdir')],
+            [self.row(cwd='relative')],
+            [self.row(pane='invalid')],
+            ['malformed'],
+        ]
+        for rows in cases:
+            with self.subTest(rows=rows):
+                self.assertIsNone(self.discover(rows))
+
+    def test_explicit_environment_precedes_discovery_even_if_invalid(self):
+        with patch.object(watch, 'discover_origin', side_effect=AssertionError('No fallback')), \
+                patch.object(watch, 'tmux', return_value='@3'):
+            result = watch.origin(self.state, {'TMUX': '/tmp/original,9,0', 'TMUX_PANE': '%8'},
+                                  cwd=self.cwd)
+            self.assertEqual(result['pane'], '%8')
+            self.assertIsNone(watch.origin(self.state, {'TMUX': '/tmp/original,9,0'}, cwd=self.cwd))
+        with patch.object(watch, 'discover_origin', side_effect=AssertionError('No fallback')), \
+                patch.object(watch, 'tmux', side_effect=OSError('stale socket')):
+            self.assertIsNone(watch.origin(self.state, {'TMUX': '/stale,9,0', 'TMUX_PANE': '%8'},
+                                           cwd=self.cwd))
+
+    def test_discovery_failure_is_optional_and_does_not_mutate_environment(self):
+        environ = {}
+        with patch.object(watch, 'tmux', side_effect=OSError('not installed')):
+            self.assertIsNone(watch.origin(self.state, environ, cwd=self.cwd))
+        self.assertEqual(environ, {})
+        with patch.object(watch, 'tmux', return_value=self.row()), \
+                patch.object(watch, 'codex_ancestors', side_effect=subprocess.TimeoutExpired('ps', 3)):
+            self.assertIsNone(watch.origin(self.state, environ, cwd=self.cwd))
+
+    def test_prepare_only_uses_trusted_cli_owner_directory(self):
+        bridge = SimpleNamespace(STATE=self.state)
+        state = {'repo': '/unrelated-executor', 'owner': {'transport': 'cli_queue', 'cwd': self.cwd}}
+        with patch.object(watch, 'origin', return_value={'pane': '%4'}) as probe:
+            watch.prepare(bridge, state)
+        probe.assert_called_once_with(self.state, cwd=self.cwd)
+        self.assertEqual(state['watch_origin'], {'pane': '%4'})
+        for owner in (None, {'transport': 'desktop_ipc', 'cwd': self.cwd}):
+            with patch.object(watch, 'origin', return_value=None) as probe:
+                watch.prepare(bridge, {'repo': self.cwd, 'owner': owner})
+            probe.assert_called_once_with(self.state, cwd=None)
+
+    def test_codex_ancestry_uses_executable_names_without_process_arguments(self):
+        output = ('100 1 /bin/zsh\n101 100 node\n102 101 /opt/codex/bin/codex\n'
+                  '200 1 /bin/zsh\n201 200 /usr/bin/node\n300 300 /opt/bin/codex\n'
+                  'bad process row\n')
+        with patch.object(watch.subprocess, 'run', return_value=SimpleNamespace(stdout=output)) as probe:
+            self.assertEqual(watch.codex_ancestors(), {100, 101, 102, 300})
+        self.assertEqual(probe.call_args.args[0], ['/bin/ps', '-axo', 'pid=,ppid=,comm='])
+
+
 @unittest.skipUnless(shutil.which('tmux'), 'tmux optional; not installed')
 class TmuxTests(unittest.TestCase):
     def setUp(self):

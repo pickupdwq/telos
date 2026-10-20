@@ -25,14 +25,12 @@ def tmux(origin, *args):
     executable = shutil.which('tmux')
     if not executable:
         raise OSError('tmux is not installed')
-    return subprocess.run([executable, '-S', origin['socket'], *args], check=True,
+    target = ['-S', origin['socket']] if origin else []
+    return subprocess.run([executable, *target, *args], check=True,
                           capture_output=True, text=True, timeout=3).stdout.strip()
 
 
-def origin(state_dir, environ=None):
-    environ = os.environ if environ is None else environ
-    socket = environ.get('TMUX', '').rsplit(',', 2)[0]
-    pane = environ.get('TMUX_PANE', '')
+def pane_context(state_dir, socket, pane):
     if not socket.startswith('/') or not PANE.fullmatch(pane):
         return None
     context = {'socket': socket, 'pane': pane}
@@ -48,9 +46,75 @@ def origin(state_dir, environ=None):
         return None
 
 
+def codex_ancestors():
+    """Read executable names only; never inspect process arguments or secrets."""
+    result = subprocess.run(['/bin/ps', '-axo', 'pid=,ppid=,comm='], check=True,
+                            capture_output=True, text=True, timeout=3)
+    parents, codex = {}, []
+    for line in result.stdout.splitlines():
+        fields = line.split(None, 2)
+        if len(fields) != 3 or not all(v.isdigit() for v in fields[:2]):
+            continue
+        pid, parent = map(int, fields[:2])
+        parents[pid] = parent
+        if Path(fields[2]).name == 'codex':
+            codex.append(pid)
+    ancestors = set()
+    for pid in codex:
+        seen = set()
+        while pid > 1 and pid not in seen:
+            ancestors.add(pid)
+            seen.add(pid)
+            pid = parents.get(pid, 0)
+    return ancestors
+
+
+def discover_origin(state_dir, cwd):
+    """Recover a unique local CLI pane when a shared daemon lost tmux env."""
+    if not isinstance(cwd, str) or not Path(cwd).is_absolute():
+        return None
+    try:
+        directory = Path(cwd).resolve()
+        rows = tmux(None, 'list-panes', '-a', '-F',
+                    '#{socket_path}\t#{pane_id}\t#{pane_pid}\t#{session_attached}\t'
+                    '#{pane_dead}\t#{@telos_watch_group}\t#{pane_current_path}')
+        candidates = set()
+        ancestors = codex_ancestors()
+        for row in rows.splitlines():
+            fields = row.split('\t')
+            if len(fields) != 7:
+                continue
+            socket, pane, pid, attached, dead, group, path = fields
+            if (not socket.startswith('/') or not PANE.fullmatch(pane) or
+                    not pid.isdigit() or int(pid) not in ancestors or
+                    not attached.isdigit() or int(attached) < 1 or dead != '0' or
+                    group or not Path(path).is_absolute() or Path(path).resolve() != directory):
+                continue
+            candidates.add((socket, pane))
+        if len(candidates) == 1:
+            socket, pane = candidates.pop()
+            return pane_context(state_dir, socket, pane)
+    except (OSError, ValueError, RuntimeError, subprocess.SubprocessError):
+        pass
+    return None
+
+
+def origin(state_dir, environ=None, *, cwd=None):
+    environ = os.environ if environ is None else environ
+    value = environ.get('TMUX', '')
+    pane = environ.get('TMUX_PANE', '')
+    # Explicit, even stale or partial, pane bindings must never target another pane.
+    if value or pane:
+        return pane_context(state_dir, value.rsplit(',', 2)[0], pane)
+    return discover_origin(state_dir, cwd) if cwd else None
+
+
 def prepare(b, state):
     """Called in the supervisor's MCP process, never in the sandboxed executor."""
-    context = origin(b.STATE)
+    owner = state.get('owner') or {}
+    # Use the trusted caller directory, not the executor's repository/worktree.
+    cwd = owner.get('cwd') if owner.get('transport') == 'cli_queue' else None
+    context = origin(b.STATE, cwd=cwd)
     if context:
         state['watch_origin'] = context
 

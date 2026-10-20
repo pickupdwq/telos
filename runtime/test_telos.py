@@ -34,9 +34,13 @@ class BridgeTests(unittest.TestCase):
     def setUp(self):
         self.tmp = tempfile.TemporaryDirectory()
         self.base = Path(self.tmp.name).resolve()
+        # Scheduling fixtures mock subprocess.Popen; keep observer discovery
+        # away from both that mock and the developer's real terminal panes.
         self.patches = [patch.object(b, "STATE", self.base / "private"),
                         patch.object(b, "CACHE", self.base / "cache"),
-                        patch.object(b, "CONFIG", self.base / "config.json")]
+                        patch.object(b, "CONFIG", self.base / "config.json"),
+                        patch.object(b.watch_runtime, "tmux",
+                                     side_effect=OSError("tmux is isolated in bridge fixtures"))]
         for p in self.patches:
             p.start()
         self.repo = self.base / "repo"
