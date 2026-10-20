@@ -7,6 +7,19 @@ projection.
 from __future__ import annotations
 
 
+# Fixed closed-book diagnostic vocabulary. Compact views never copy arbitrary
+# error text out of attempt receipts.
+_SAFE_FORMAT_ERRORS = frozenset((
+    'invalid JSON',
+    'root must contain only an answers array',
+    'each answer needs exactly id and answer',
+    'id and answer must be nonempty strings',
+    'missing, duplicate, or unknown question ids',
+    'answer schema violation',
+))
+_FORMAT_MODES = frozenset(('json_object', 'json_schema', 'text'))
+
+
 def _text(value, limit=1200):
     if not isinstance(value, str):
         return value
@@ -31,7 +44,7 @@ def _attempts(attempts):
     for attempt in attempts or []:
         requests = attempt.get('requests') or []
         responses = attempt.get('responses') or []
-        result.append({
+        item = {
             'attempt': attempt.get('attempt'),
             'request_count': len(requests),
             'response_count': len(responses),
@@ -41,7 +54,25 @@ def _attempts(attempts):
             'tool_call_count': sum(r.get('tool_call_count') for r in responses
                                     if type(r.get('tool_call_count')) is int),
             'cli_session_usage': attempt.get('cli_session_usage'),
-        })
+        }
+        if 'format_valid' in attempt:
+            value = attempt.get('format_valid')
+            item['format_valid'] = value if type(value) is bool else None
+        if 'format_error' in attempt:
+            value = attempt.get('format_error')
+            if value is not None and (not isinstance(value, str) or value not in _SAFE_FORMAT_ERRORS):
+                value = 'answer schema violation'
+            item['format_error'] = value
+        if any(isinstance(request, dict) and 'text_format' in request for request in requests):
+            item['text_formats'] = [
+                request.get('text_format')
+                if (isinstance(request, dict)
+                    and isinstance(request.get('text_format'), str)
+                    and request.get('text_format') in _FORMAT_MODES)
+                else None
+                for request in requests
+            ]
+        result.append(item)
     return result
 
 
