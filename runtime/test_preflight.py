@@ -395,6 +395,113 @@ class ExecutorPreflightOrderTests(unittest.TestCase):
             git.assert_not_called()
 
 
+class PatchFormatGuidanceTests(ExecutorPreflightOrderTests):
+    """Pure prompt-routing checks for implementation patch-format guidance."""
+
+    def _passed_evidence(self):
+        return {'status': 'passed', 'cwd': str(self.work), 'interpreter': '/verified/python'}
+
+    def _assert_single_patch_block(self, prompt):
+        self.assertEqual(prompt.count('*** Begin Patch'), 1)
+        self.assertEqual(prompt.count('*** End Patch'), 1)
+        self.assertEqual(prompt.count('*** Add File: path'), 1)
+        self.assertEqual(prompt.count('*** Update File: path'), 1)
+        self.assertEqual(prompt.count('Patch format: apply_patch takes raw patch text'), 1)
+        self.assertLess(prompt.index('*** Begin Patch'), prompt.index('*** End Patch'))
+        self.assertIn('without a JSON wrapper or Markdown fence', prompt)
+        self.assertIn('only for new paths', prompt)
+        self.assertIn('matching context for existing files', prompt)
+        self.assertIn('one corrected attempt', prompt)
+        self.assertIn('already-available scoped file-edit capability', prompt)
+        self.assertIn('concrete blocker', prompt)
+        self.assertIn('existing allowed paths and sandbox permissions', prompt)
+        self.assertIn('does not authorize a new tool', prompt)
+        self.assertIn('silent removal of assertions', prompt)
+
+    def test_initial_legacy_implementation_prompt_has_one_patch_format_block(self):
+        prompt = self._capture_prompt(evidence=self._passed_evidence())
+        self.assertIn('Task:\ntask', prompt)
+        self._assert_single_patch_block(prompt)
+
+    def test_resumed_legacy_implementation_prompt_has_one_patch_format_block(self):
+        prompt = self._capture_prompt(thread_id='thread', evidence=self._passed_evidence())
+        self.assertNotIn('Task:\ntask', prompt)
+        self.assertTrue(prompt.endswith('Codex message:\nmessage'))
+        self._assert_single_patch_block(prompt)
+
+    def test_initial_explicit_implementation_prompt_has_one_patch_format_block(self):
+        contract = {**self.contract, 'task_type': 'implementation'}
+        prompt = self._capture_prompt(contract=contract, evidence=self._passed_evidence())
+        self.assertIn('Task:\ntask', prompt)
+        self._assert_single_patch_block(prompt)
+
+    def test_resumed_explicit_implementation_prompt_has_one_patch_format_block(self):
+        contract = {**self.contract, 'task_type': 'implementation'}
+        prompt = self._capture_prompt(thread_id='thread', contract=contract,
+                                      evidence=self._passed_evidence())
+        self.assertNotIn('Task:\ntask', prompt)
+        self._assert_single_patch_block(prompt)
+
+    def test_offline_audit_work_prompt_excludes_patch_format_block(self):
+        contract = {**self.contract, 'task_type': 'audit', 'audit': {'targets': [], 'scope_paths': []}}
+        prompt = self._capture_prompt(contract=contract, evidence=self._passed_evidence())
+        self.assertNotIn('*** Begin Patch', prompt)
+        self.assertNotIn('*** End Patch', prompt)
+        self.assertNotIn('Patch format: apply_patch', prompt)
+        evidence = {'status': 'passed', 'cwd': str(self.root / 'audit_room'),
+                    'interpreter': '/verified/python', 'checks': []}
+        text = executor._work_guidance(evidence, contract, self.state,
+                                       artifact_root=self.root / 'artifacts')
+        self.assertIn('offline source', text)
+        self.assertIn('Source access is file-scoped', text)
+        self.assertIn('read-only', text)
+        self.assertNotIn('*** Begin Patch', text)
+        self.assertNotIn('Patch format: apply_patch', text)
+
+    def test_online_audit_work_prompt_excludes_patch_format_block(self):
+        contract = {**self.contract, 'task_type': 'audit',
+                    'audit': {'targets': [{'origin': 'http://127.0.0.1:8000'}]}}
+        prompt = self._capture_prompt(contract=contract, evidence=self._passed_evidence())
+        self.assertNotIn('*** Begin Patch', prompt)
+        self.assertNotIn('Patch format: apply_patch', prompt)
+        evidence = {'status': 'passed', 'cwd': str(self.root / 'audit_room'),
+                    'interpreter': '/verified/python', 'checks': []}
+        text = executor._work_guidance(evidence, contract, self.state,
+                                       artifact_root=self.root / 'artifacts')
+        self.assertIn('authenticated local broker', text)
+        self.assertIn('declared targets', text)
+        self.assertIn('never direct network', text)
+        self.assertNotIn('*** Begin Patch', text)
+        self.assertNotIn('Patch format: apply_patch', text)
+
+    def test_exam_prompt_with_implementation_contract_remains_exactly_message_only(self):
+        contract = {**self.contract, 'task_type': 'implementation'}
+        prompt = self._capture_prompt(thread_id='thread', phase='exam', contract=contract)
+        self.assertEqual(prompt, 'Codex message:\nmessage')
+        self.assertNotIn('*** Begin Patch', prompt)
+        self.assertNotIn('Patch format: apply_patch', prompt)
+
+    def test_patch_block_is_bounded_and_private_material_is_excluded(self):
+        self.bridge.usage_snapshot = lambda *args: {
+            'budget_state': {'remaining': {'max_requests': 8, 'max_total_tokens': 3000}},
+            'work_budget_state': {'remaining': {'max_requests': 5, 'max_total_tokens': 2000}},
+            'private': 'DO_NOT_FORWARD'}
+        contract = {**self.contract, 'task_type': 'implementation',
+                    'budget': {'max_requests': 10, 'exam_reserve_requests': 3}}
+        evidence = {'status': 'passed', 'cwd': str(self.work), 'interpreter': '/verified/python',
+                    'checks': [{'name': 'Python', 'output': 'RAW PROBE OUTPUT'}]}
+        prompt = self._capture_prompt(thread_id='thread', contract=contract, evidence=evidence)
+        self._assert_single_patch_block(prompt)
+        self.assertNotIn('DO_NOT_FORWARD', prompt)
+        self.assertNotIn('RAW PROBE OUTPUT', prompt)
+        self.assertNotIn('KEY', prompt)
+        self.assertIn('"max_requests":5', prompt)
+        guidance = prompt.split('Verified work guidance', 1)[1].split('Codex message:', 1)[0]
+        self.assertLessEqual(len(guidance), 2500)
+        block = prompt[prompt.index('Patch format: apply_patch'):prompt.index('Codex message:')]
+        self.assertLessEqual(len(block), 1200)
+
+
 @unittest.skipUnless(sys.platform == 'darwin' and Path('/usr/bin/sandbox-exec').exists(),
                      'requires macOS sandbox-exec')
 class RealSandboxPreflightTests(unittest.TestCase):
