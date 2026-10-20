@@ -323,23 +323,51 @@ class SSEUsageTracker:
         self.data_lines.append(value)
 
     def feed(self, chunk):
-        for byte in chunk:
+        # Scan newline-free spans in bulk instead of looping over every byte.
+        # The cap accounting still charges one separator byte per data line and
+        # treats a byte that would exceed the retained line budget exactly like
+        # the old per-byte loop: the current event is discarded, then the rest
+        # of the oversized line is skipped until a blank line recovers.
+        if not chunk:
+            return
+        if isinstance(chunk, memoryview):
+            chunk = chunk.tobytes()
+        elif not isinstance(chunk, (bytes, bytearray)):
+            chunk = bytes(chunk)
+        end = len(chunk)
+        pos = 0
+        while pos < end:
             if self.skip_lf:
                 self.skip_lf = False
-                if byte == 0x0A:
+                if chunk[pos] == 0x0A:
+                    pos += 1
                     continue
-            if byte in (0x0A, 0x0D):
-                self._line_done()
-                if byte == 0x0D:
-                    self.skip_lf = True
-                continue
-            if self.overflow:
-                self.line_discarded = True
-                continue
-            if len(self.line) + 1 > self.max_event_bytes - self.event_bytes:
-                self._discard_event()
-                continue
-            self.line.append(byte)
+            cr = chunk.find(0x0D, pos)
+            lf = chunk.find(0x0A, pos)
+            stop = lf if cr < 0 else (cr if lf < 0 or cr < lf else lf)
+            if stop < 0:
+                self._append_line_span(chunk, pos, end)
+                return
+            self._append_line_span(chunk, pos, stop)
+            self._line_done()
+            if chunk[stop] == 0x0D:
+                self.skip_lf = True
+            pos = stop + 1
+
+    def _append_line_span(self, chunk, start, stop):
+        """Append a newline-free span while enforcing the retained byte cap."""
+        if start >= stop:
+            return
+        if self.overflow:
+            self.line_discarded = True
+            return
+        room = self.max_event_bytes - self.event_bytes - len(self.line)
+        if stop - start <= room:
+            self.line.extend(chunk[start:stop])
+            return
+        if room > 0:
+            self.line.extend(chunk[start:start + room])
+        self._discard_event()
 
     def finish(self):
         if self.line:
