@@ -288,6 +288,32 @@ class SSEChunkScanTests(unittest.TestCase):
             tracker.feed(stream[start:start + 3])
         self.assertEqual(tracker.finish(), (usage, 'completed'))
 
+    def test_dense_delimiter_and_comment_runs_keep_terminal_visible(self):
+        terminal = b'data: ' + self.terminal_event(responses_usage()) + b'\r\n\r\n'
+        fillers = (b'\n' * 65536, b'\r' * 65536, b'\r\n' * 32768,
+                   b': comment\n' * 6553, b': comment\r\n' * 5957)
+        for filler in fillers:
+            stream = filler + terminal
+            tracker = isolation.SSEUsageTracker()
+            for start in range(0, len(stream), 65536):
+                tracker.feed(stream[start:start + 65536])
+            self.assertEqual(tracker.finish(), (responses_usage(), 'completed'))
+            self.assertEqual(tracker.data_lines, [])
+
+    def test_dense_mixed_delimiters_and_split_crlf_recover_after_overflow(self):
+        cap = 4096
+        oversized = b'data: ' + b'x' * (cap + 1) + b'\r\n\r\n'
+        dense = (b': c\n' * 3000) + (b'\r\n' * 2000) + b'\r\n'
+        terminal = b'data: ' + self.terminal_event(responses_usage()) + b'\r\n\r\n'
+        stream = oversized + dense + terminal
+        split = stream.index(b'\r\n') + 1
+        for factory in (bytes, bytearray, memoryview):
+            tracker = isolation.SSEUsageTracker(max_event_bytes=cap)
+            tracker.feed(factory(stream[:split]))
+            tracker.feed(factory(b''))
+            tracker.feed(factory(stream[split:]))
+            self.assertEqual(tracker.finish(), (responses_usage(), 'completed'))
+
 
 class LedgerTests(unittest.TestCase):
     def setUp(self):

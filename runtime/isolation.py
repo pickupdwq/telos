@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
 import json
 import math
+import re
 import secrets
 import shutil
 import socket
@@ -236,6 +237,7 @@ SSE_MAX_EVENT_BYTES = 16 * 1024 * 1024
 _TERMINAL_EVENTS = {'response.completed': 'completed', 'response.incomplete': 'incomplete',
                     'response.failed': 'failed', 'response.cancelled': 'cancelled',
                     'response.canceled': 'canceled'}
+_SSE_LINE_BREAK = re.compile(rb'[\r\n]')
 
 
 class SSEUsageTracker:
@@ -324,6 +326,8 @@ class SSEUsageTracker:
 
     def feed(self, chunk):
         # Scan newline-free spans in bulk instead of looping over every byte.
+        # A delimiter-presence pre-scan selects one forward search strategy, so
+        # an absent CR or LF is never rescanned for every line in the chunk.
         # The cap accounting still charges one separator byte per data line and
         # treats a byte that would exceed the retained line budget exactly like
         # the old per-byte loop: the current event is discarded, then the rest
@@ -335,6 +339,25 @@ class SSEUsageTracker:
         elif not isinstance(chunk, (bytes, bytearray)):
             chunk = bytes(chunk)
         end = len(chunk)
+        cr = chunk.find(0x0D)
+        lf = chunk.find(0x0A)
+        if cr < 0 and lf < 0:
+            # A pending CR skip is consumed by the first content byte, exactly
+            # as the per-byte loop did, without searching for an absent LF.
+            self.skip_lf = False
+            self._append_line_span(chunk, 0, end)
+            return
+        if cr >= 0 and lf >= 0:
+            search = _SSE_LINE_BREAK.search
+
+            def next_stop(start):
+                match = search(chunk, start)
+                return -1 if match is None else match.start()
+        else:
+            delimiter = 0x0A if lf >= 0 else 0x0D
+
+            def next_stop(start):
+                return chunk.find(delimiter, start)
         pos = 0
         while pos < end:
             if self.skip_lf:
@@ -342,9 +365,17 @@ class SSEUsageTracker:
                 if chunk[pos] == 0x0A:
                     pos += 1
                     continue
-            cr = chunk.find(0x0D, pos)
-            lf = chunk.find(0x0A, pos)
-            stop = lf if cr < 0 else (cr if lf < 0 or cr < lf else lf)
+            if chunk[pos] in (0x0A, 0x0D) and not self.line and not self.overflow:
+                # A run of terminators is a run of blank lines. Only the first
+                # can dispatch pending data; the rest are no-ops, so consume
+                # the run without a per-line search or dispatch.
+                self._line_done()
+                pos += 1
+                while pos < end and chunk[pos] in (0x0A, 0x0D):
+                    pos += 1
+                self.skip_lf = chunk[pos - 1] == 0x0D
+                continue
+            stop = next_stop(pos)
             if stop < 0:
                 self._append_line_span(chunk, pos, end)
                 return
