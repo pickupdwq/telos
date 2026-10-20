@@ -293,6 +293,11 @@ class Projects:
             result['final_review'] = p['final_review']
         result['accepted'] = p['phase'] == 'accepted'
         courier = self.b.read_json(self.b.run_dir(p['project_id']) / 'state.json')
+        events = courier.get('events')
+        last_event_id = courier.get('last_event_id')
+        event = events.get(last_event_id) if isinstance(events, dict) and last_event_id is not None else None
+        result['return_event'] = ({'id': last_event_id, 'status': event.get('status')}
+                                  if isinstance(event, dict) else None)
         result['return_health'] = ({'status': 'complete', 'next_action': None} if result['accepted']
                                    else self.b.return_health(courier))
         if detail == 'summary':
