@@ -362,8 +362,256 @@ class LookupRobustnessTests(unittest.TestCase):
                 self.experience.lookup(self.repo, ['a.py'])
 
 
+class SourceIdentityTests(unittest.TestCase):
+    """Pure record/source consistency checks against explicit status fixtures."""
+
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name).resolve()
+        self.repo = self.root / 'repo'
+        self.repo.mkdir()
+        self.state = self.root / 'state'
+        self.folder = self.state / 'experience'
+        self.statuses = {}
+        self.projects = {}
+        self.heads = {}
+        self.dirty = {}
+        self.archived = set()
+        manager = SimpleNamespace(overlap=Projects.overlap, load=self.load_project, path=self.project_path)
+        storage = SimpleNamespace(archived_commit=self.archived_commit)
+        self.bridge = SimpleNamespace(
+            STATE=self.state, GateError=b.GateError, digest=b.digest,
+            read_json=b.read_json, write_json=b.write_json,
+            status=self.status, git=self.git,
+            project_manager=lambda: manager, storage_manager=lambda: storage)
+        self.experience = Experience(self.bridge)
+
+    def status(self, session_id):
+        return self.statuses[session_id]
+
+    def load_project(self, project_id):
+        return self.projects[project_id]
+
+    def project_path(self, project_id):
+        return self.state / 'projects' / project_id / 'project.json'
+
+    def git(self, tree, *args):
+        if args == ('rev-parse', 'HEAD'):
+            return self.heads.get(str(tree), 'f' * 40)
+        if args == ('status', '--porcelain'):
+            return self.dirty.get(str(tree), '')
+        raise AssertionError('unexpected git arguments: %r' % (args,))
+
+    def archived_commit(self, project, worktree, expected):
+        return (str(worktree), expected) in self.archived
+
+    def accepted(self, session_id, commit, packet_id, project_id=None):
+        self.statuses[session_id] = {
+            'accepted': True, 'project_id': project_id,
+            'acceptance': {'commit': commit, 'packet_id': packet_id}}
+
+    def add_project(self, project_id, *, phase='accepted', integration_commit='i' * 40,
+                    packet=None, worktree=None):
+        worktree = worktree or str(self.root / 'trees' / project_id)
+        packet = {'project': project_id, 'accepted': True} if packet is None else packet
+        path = self.project_path(project_id)
+        b.write_json(path, {'project_id': project_id})
+        b.write_json(path.parent / 'integration-review.json', packet)
+        self.projects[project_id] = {
+            'project_id': project_id, 'phase': phase,
+            'integration': {'commit': integration_commit,
+                            'packet_id': b.digest(packet), 'worktree': worktree}}
+        self.heads[str(worktree)] = integration_commit
+        return self.projects[project_id]['integration']
+
+    def seed(self, session_id, created_at, *, project_id=None, project_commit=None,
+             source_commit='a' * 40, packet_id='packet-a', paths=('a.py',), lessons=()):
+        ident = b.digest({'identity': session_id, 'packet': packet_id, 'created': created_at})
+        entry = {'id': ident, 'repo': str(self.repo), 'session_id': session_id,
+                 'project_id': project_id, 'source_commit': source_commit,
+                 'source_packet_id': packet_id, 'created_at': created_at,
+                 'task': 'Task ' + session_id, 'paths': list(paths),
+                 'changed_files': list(paths), 'public_lessons': list(lessons),
+                 'outcome': 'accepted', 'reusable': True, 'disabled': False}
+        if project_commit is not None:
+            entry['project_commit'] = project_commit
+        entry['content_hash'] = b.digest({k: v for k, v in entry.items() if k != 'content_hash'})
+        b.write_json(self.folder / (ident + '.json'), entry)
+        return entry
+
+    def rewrite(self, entry):
+        entry['content_hash'] = b.digest({k: v for k, v in entry.items() if k != 'content_hash'})
+        b.write_json(self.folder / (entry['id'] + '.json'), entry)
+
+    def test_standalone_matching_commit_and_packet_is_usable(self):
+        self.accepted('standalone', 'a' * 40, 'packet-a')
+        record = self.seed('standalone', 10)
+        self.assertTrue(self.experience.source_valid(record))
+        self.assertEqual(self.experience.lookup(self.repo, ['a.py']), [record])
+
+    def test_mismatched_commit_or_packet_is_not_usable(self):
+        self.accepted('commit-mismatch', 'a' * 40, 'packet-a')
+        self.seed('commit-mismatch', 30, source_commit='d' * 40, packet_id='packet-a')
+        self.accepted('packet-mismatch', 'b' * 40, 'packet-b')
+        self.seed('packet-mismatch', 20, source_commit='b' * 40, packet_id='packet-old')
+        self.accepted('good', 'c' * 40, 'packet-c')
+        good = self.seed('good', 10, source_commit='c' * 40, packet_id='packet-c')
+        records = self.experience.lookup(self.repo, ['a.py'], limit=3)
+        self.assertEqual([e['session_id'] for e in records], ['good'])
+        self.assertEqual(records[0], good)
+
+    def test_missing_commit_evidence_is_never_accepted(self):
+        self.accepted('record-missing', 'a' * 40, 'packet-a')
+        record = self.seed('record-missing', 30)
+        record.pop('source_commit')
+        self.rewrite(record)
+        self.assertFalse(self.experience.source_valid(record))
+        self.assertEqual(self.experience.lookup(self.repo, ['a.py']), [])
+        self.statuses['status-missing'] = {
+            'accepted': True, 'project_id': None,
+            'acceptance': {'packet_id': 'packet-b'}}
+        status_record = self.seed('status-missing', 20, source_commit='b' * 40, packet_id='packet-b')
+        self.assertFalse(self.experience.source_valid(status_record))
+
+    def test_project_source_requires_matching_project_membership(self):
+        project = self.add_project('project-a')
+        self.add_project('project-b', integration_commit='j' * 40)
+        self.accepted('project-good', 'c' * 40, 'packet-good', project_id='project-a')
+        good = self.seed('project-good', 50, project_id='project-a', source_commit='c' * 40,
+                         packet_id='packet-good', project_commit=project['commit'])
+        self.assertTrue(self.experience.source_valid(good))
+        self.assertEqual(self.experience.lookup(self.repo, ['a.py']), [good])
+
+        for name in ('omitted', 'null', 'empty', 'foreign'):
+            self.accepted('child-' + name, 'c' * 40, 'packet-' + name, project_id='project-a')
+        omitted = self.seed('child-omitted', 40, project_id='project-a', source_commit='c' * 40,
+                            packet_id='packet-omitted', project_commit=project['commit'])
+        omitted.pop('project_id')
+        self.rewrite(omitted)
+        variants = {'omitted': omitted,
+                    'null': self.seed('child-null', 30, project_id=None, source_commit='c' * 40,
+                                      packet_id='packet-null', project_commit=project['commit']),
+                    'empty': self.seed('child-empty', 20, project_id='', source_commit='c' * 40,
+                                       packet_id='packet-empty', project_commit=project['commit']),
+                    'foreign': self.seed('child-foreign', 10, project_id='project-b', source_commit='c' * 40,
+                                         packet_id='packet-foreign', project_commit='j' * 40)}
+        for name, entry in variants.items():
+            with self.subTest(membership=name):
+                self.assertFalse(self.experience.source_valid(entry))
+        self.assertEqual(self.experience.lookup(self.repo, ['a.py']), [good])
+
+    def test_standalone_source_does_not_accept_project_markers(self):
+        self.add_project('project-a')
+        for session_id, commit, packet_id in (
+                ('plain-absent', 'a' * 40, 'packet-absent'),
+                ('plain-none', 'b' * 40, 'packet-none'),
+                ('plain-empty', 'c' * 40, 'packet-empty')):
+            self.accepted(session_id, commit, packet_id)
+        absent = self.seed('plain-absent', 30, source_commit='a' * 40, packet_id='packet-absent')
+        absent.pop('project_id')
+        self.rewrite(absent)
+        self.seed('plain-none', 20, source_commit='b' * 40, packet_id='packet-none')
+        self.seed('plain-empty', 10, source_commit='c' * 40, packet_id='packet-empty',
+                  project_id='')
+        self.accepted('plain-child', 'd' * 40, 'packet-child')
+        foreign = self.seed('plain-child', 40, project_id='project-a', source_commit='d' * 40,
+                            packet_id='packet-child', project_commit='i' * 40)
+        records = self.experience.lookup(self.repo, ['a.py'])
+        self.assertEqual([e['session_id'] for e in records],
+                         ['plain-absent', 'plain-none', 'plain-empty'])
+        self.assertFalse(self.experience.source_valid(foreign))
+
+    def test_live_and_archived_project_records_remain_usable(self):
+        live = self.add_project('live-project')
+        self.accepted('live', 'a' * 40, 'packet-live', project_id='live-project')
+        live_record = self.seed('live', 30, project_id='live-project', source_commit='a' * 40,
+                                packet_id='packet-live', project_commit=live['commit'])
+        self.assertTrue(self.experience.source_valid(live_record))
+        self.dirty[str(live['worktree'])] = ' M changed.py'
+        self.assertFalse(self.experience.source_valid(live_record))
+        self.dirty[str(live['worktree'])] = ''
+
+        archived = self.add_project('archived-project', integration_commit='j' * 40)
+        self.archived.add((str(archived['worktree']), 'j' * 40))
+        self.heads[str(archived['worktree'])] = 'e' * 40
+        self.accepted('archived', 'b' * 40, 'packet-archived', project_id='archived-project')
+        archived_record = self.seed('archived', 20, project_id='archived-project',
+                                    source_commit='b' * 40, packet_id='packet-archived',
+                                    project_commit=archived['commit'])
+        self.assertTrue(self.experience.source_valid(archived_record))
+        self.assertEqual({e['session_id'] for e in self.experience.lookup(self.repo)},
+                         {'live', 'archived'})
+
+    def test_project_acceptance_evidence_is_still_required(self):
+        pending = self.add_project('pending-project', phase='running')
+        self.accepted('pending', 'a' * 40, 'packet-pending', project_id='pending-project')
+        pending_record = self.seed('pending', 50, project_id='pending-project',
+                                   source_commit='a' * 40, packet_id='packet-pending',
+                                   project_commit=pending['commit'])
+        self.assertFalse(self.experience.source_valid(pending_record))
+
+        changed = self.add_project('changed-project', integration_commit='j' * 40)
+        self.accepted('changed', 'b' * 40, 'packet-changed', project_id='changed-project')
+        changed_record = self.seed('changed', 40, project_id='changed-project',
+                                   source_commit='b' * 40, packet_id='packet-changed',
+                                   project_commit='k' * 40)
+        self.assertFalse(self.experience.source_valid(changed_record))
+
+        altered = self.add_project('altered-project', integration_commit='l' * 40)
+        b.write_json(self.project_path('altered-project').parent / 'integration-review.json',
+                     {'project': 'altered-project', 'accepted': False})
+        self.accepted('altered', 'c' * 40, 'packet-altered', project_id='altered-project')
+        altered_record = self.seed('altered', 30, project_id='altered-project',
+                                   source_commit='c' * 40, packet_id='packet-altered',
+                                   project_commit=altered['commit'])
+        self.assertFalse(self.experience.source_valid(altered_record))
+
+    def test_mismatched_high_rank_is_skipped_for_valid_fallback(self):
+        self.accepted('stale', 'a' * 40, 'packet-stale')
+        self.seed('stale', 40, source_commit='d' * 40, packet_id='packet-stale')
+        self.accepted('bad-packet', 'b' * 40, 'packet-new')
+        self.seed('bad-packet', 35, source_commit='b' * 40, packet_id='packet-old')
+        self.accepted('valid-newer', 'c' * 40, 'packet-valid-newer')
+        valid_newer = self.seed('valid-newer', 20, source_commit='c' * 40,
+                                packet_id='packet-valid-newer')
+        self.accepted('valid-older', 'e' * 40, 'packet-valid-older')
+        valid_older = self.seed('valid-older', 10, source_commit='e' * 40,
+                                packet_id='packet-valid-older')
+        records = self.experience.lookup(self.repo, ['a.py'], limit=2)
+        self.assertEqual([e['session_id'] for e in records], ['valid-newer', 'valid-older'])
+        self.assertEqual(records, [valid_newer, valid_older])
+
+    def test_context_excludes_mismatched_identity(self):
+        self.accepted('stale', 'a' * 40, 'packet-stale')
+        self.seed('stale', 40, source_commit='d' * 40, packet_id='packet-stale',
+                  lessons=['Stale lesson must not render.'])
+        self.accepted('trusted', 'b' * 40, 'packet-trusted')
+        trusted = self.seed('trusted', 10, source_commit='b' * 40, packet_id='packet-trusted',
+                            lessons=['Trusted lesson remains visible.'])
+        text, ids = self.experience.context(self.repo, ['a.py'])
+        self.assertEqual(ids, [trusted['id']])
+        self.assertIn('Trusted lesson remains visible.', text)
+        self.assertNotIn('Stale lesson must not render.', text)
+        self.assertNotIn('Task stale', text)
+
+    def test_fresh_reads_follow_current_source_status_without_rewriting(self):
+        self.accepted('source', 'a' * 40, 'packet-a')
+        record = self.seed('source', 10)
+        path = self.folder / (record['id'] + '.json')
+        before = path.read_bytes()
+        self.assertEqual(self.experience.lookup(self.repo), [record])
+        self.statuses['source']['acceptance']['commit'] = 'b' * 40
+        self.assertEqual(self.experience.lookup(self.repo), [])
+        self.assertEqual(self.experience.context(self.repo, ['a.py']), ('', []))
+        self.statuses['source']['acceptance']['commit'] = 'a' * 40
+        self.assertEqual(self.experience.lookup(self.repo), [record])
+        self.assertEqual(path.read_bytes(), before)
+
+
 def load_tests(loader, tests, pattern):
-    return unittest.TestSuite(case(name) for case in (ExperienceTests, LookupTests, LookupRobustnessTests)
+    return unittest.TestSuite(case(name) for case in (ExperienceTests, LookupTests, LookupRobustnessTests,
+                                                      SourceIdentityTests)
                               for name in case.__dict__ if name.startswith('test_'))
 
 
