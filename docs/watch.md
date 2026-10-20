@@ -41,6 +41,20 @@ reuse that panel; different windows remain separate. Use your normal tmux
 pane-selection shortcut when you want to interact with the viewer.
 Closing/reopening it does not restart or resend the task.
 
+Automatically opened panels close once every associated task is accepted or
+cancelled and its running process has exited. Project panels also wait for
+final project acceptance or cancellation, including pending/dependent tasks
+and integration checks. A response, an exam result awaiting review, a repair,
+an error or a pause is not completion. Executor count and scheduling remain
+the supervisor's decision; one completed executor does not close a panel
+that another still needs.
+
+Only the managed observer pane is removed; the supervisor pane stays open.
+New work opens the panel again. Logs remain available with `telos watch`.
+Viewers opened manually with `telos watch --ui` or a new `telos watch --pane`
+stay open for history until you close them. Unreadable lifecycle state keeps
+an automatic panel open rather than treating missing evidence as completion.
+
 tmux is optional and is never installed automatically. Without tmux, or if
 opening a pane fails (for example, the terminal is too small), task execution
 continues. Open another terminal/tab and use `telos watch`. This version does
@@ -151,6 +165,13 @@ Task execution and its original acceptance gates continue independently.
 查看已显示的历史，`G` 回到实时跟随。`q` 或关闭窗格只关闭查看器，
 不会停止执行者；用 `telos watch --pane` 重新打开。
 
+自动打开的面板会在同一窗口的关联任务全部验收通过或取消、且运行进程退出后
+自动关闭。项目还需等待整体验收或取消，包含尚未启动的依赖任务和集成检查；
+等待考试、审阅、修复、报错或暂停时保留面板。执行者数量及调度由大总管决定，
+不会因为其中一个执行者结束就提前关闭。关闭范围仅限观察窗格，大总管窗格保留；
+新任务会重新打开面板，日志继续保存。手动打开的历史查看器保持打开，直到按 `q`
+或退出；读取任务状态失败也会保留面板。
+
 非 tmux 环境照常执行，在另一个终端或标签页运行 `telos watch` 即可。
 `telos watch --list` 列出任务，
 `telos watch <任务ID> --history --no-follow` 输出完整保留历史。
@@ -165,3 +186,6 @@ reuse, focus, switching, close/reopen, history, timeout handling, log failures,
 credential filtering, and closed-book content exclusion. Provider calls in
 these tests are local fixtures, not paid model invocations. They do not replace
 separate visual checks in each terminal application's GUI.
+Completion coverage includes multiple executors, final project review,
+cancelled workers still running, manual history, `remain-on-exit`, pane
+ownership and serialization with task dispatch.

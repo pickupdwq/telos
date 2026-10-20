@@ -1,6 +1,7 @@
 """Observer tests: real pipes, real tmux, and real isolated CLI with a model fixture."""
 import concurrent.futures
 import contextlib
+import fcntl
 import io
 import json
 import os
@@ -309,6 +310,96 @@ class DiscoveryTests(unittest.TestCase):
         self.assertEqual(probe.call_args.args[0], ['/bin/ps', '-axo', 'pid=,ppid=,comm='])
 
 
+class CompletionTests(unittest.TestCase):
+    def setUp(self):
+        self.tmp = tempfile.TemporaryDirectory(prefix='telos-watch-finish-')
+        self.addCleanup(self.tmp.cleanup)
+        self.root = Path(self.tmp.name)
+        self.group = 'a' * 24
+        self.bridge = SimpleNamespace(STATE=self.root)
+        (self.root / 'watch').mkdir()
+
+    def record(self, sid='1' * 32, **fields):
+        value = {'session_id': sid, 'phase': 'accepted', 'continuation': 'active',
+                 'watch_origin': {'group': self.group}, **fields}
+        b.write_json(self.root / 'runs' / sid / 'state.json', value)
+
+    def test_work_review_repair_pause_and_other_window_states(self):
+        self.assertFalse(watch.group_finished(self.root, self.group))
+        for phase in ('ready', 'running', 'responded', 'awaiting_review', 'not_accepted', 'error'):
+            with self.subTest(phase=phase):
+                self.record(phase=phase)
+                self.assertFalse(watch.group_finished(self.root, self.group))
+        self.record(phase='responded', continuation='paused')
+        self.assertFalse(watch.group_finished(self.root, self.group))
+        self.record()
+        self.record('2' * 32, phase='running', watch_origin={'group': 'b' * 24})
+        self.assertTrue(watch.group_finished(self.root, self.group))
+        self.record(phase='error', continuation='cancelled')
+        self.assertTrue(watch.group_finished(self.root, self.group))
+
+    def test_project_waits_for_final_acceptance_and_cancelled_workers(self):
+        project = 'c' * 32
+        self.record(project_id=project)
+        self.assertFalse(watch.group_finished(self.root, self.group))
+        self.record(project, notification_only=True, project_id=project,
+                    phase='project_update', return_complete=False)
+        self.assertFalse(watch.group_finished(self.root, self.group))
+        self.record(project, notification_only=True, project_id=project,
+                    phase='project_update', return_complete=True)
+        self.assertTrue(watch.group_finished(self.root, self.group))
+        self.record('2' * 32, project_id=project, phase='running',
+                    watch_origin={'group': 'b' * 24})
+        self.assertFalse(watch.group_finished(self.root, self.group))
+        self.record(project, notification_only=True, project_id=project,
+                    phase='project_update', continuation='cancelled')
+        self.assertFalse(watch.group_finished(self.root, self.group))
+        self.record('2' * 32, project_id=project, phase='error', continuation='cancelled',
+                    watch_origin={'group': 'b' * 24})
+        self.assertTrue(watch.group_finished(self.root, self.group))
+
+    def test_cancellation_waits_for_real_worker_exit(self):
+        process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)'])
+        self.addCleanup(lambda: process.poll() is None and process.terminate())
+        self.record(phase='running', continuation='cancelled', job_pid=process.pid)
+        self.assertFalse(watch.group_finished(self.root, self.group))
+        process.terminate()
+        process.wait(timeout=3)
+        self.assertTrue(watch.group_finished(self.root, self.group))
+
+    def test_unreadable_or_invalid_state_keeps_viewer_open(self):
+        self.record()
+        path = self.root / 'runs' / ('2' * 32) / 'state.json'
+        path.parent.mkdir()
+        for text in ('{', 'null', '{"session_id":"../other"}'):
+            path.write_text(text)
+            self.assertFalse(watch.group_finished(self.root, self.group))
+
+    def test_close_requires_own_pane_process_and_matching_group(self):
+        self.record()
+        context = {'socket': '/tmp/fixture.sock', 'pane': '%7', 'window': '@0', 'group': self.group}
+        for ownership in (f'wrong\t{os.getpid()}', f'{self.group}\t{os.getpid() + 1}'):
+            with patch.object(watch, 'origin', return_value=context), \
+                    patch.object(watch, 'tmux', return_value=ownership) as command:
+                self.assertFalse(watch.close_finished_panel(self.bridge, self.group))
+                self.assertFalse(any(call.args[1] == 'kill-pane' for call in command.call_args_list))
+        with patch.object(watch, 'origin', return_value=context), \
+                patch.object(watch, 'tmux', return_value=f'{self.group}\t{os.getpid()}') as command:
+            self.assertTrue(watch.close_finished_panel(self.bridge, self.group))
+            self.assertEqual(command.call_args.args, (context, 'kill-pane', '-t', '%7'))
+        with patch.object(watch, 'origin', return_value=None):
+            self.assertFalse(watch.close_finished_panel(self.bridge, self.group))
+
+    def test_dispatch_or_panel_lock_prevents_closing_during_new_launch(self):
+        self.record()
+        for path in (self.root / 'coordinator.lock', self.root / 'watch' / (self.group + '.lock')):
+            with self.subTest(lock=path.name), path.open('a+') as stream, \
+                    patch.object(watch, 'tmux') as command:
+                fcntl.flock(stream, fcntl.LOCK_EX)
+                self.assertFalse(watch.close_finished_panel(self.bridge, self.group))
+                command.assert_not_called()
+
+
 @unittest.skipUnless(shutil.which('tmux'), 'tmux optional; not installed')
 class TmuxTests(unittest.TestCase):
     def setUp(self):
@@ -340,6 +431,67 @@ class TmuxTests(unittest.TestCase):
 
     def capture(self, pane):
         return watch.tmux(self.context, 'capture-pane', '-p', '-t', pane)
+
+    def update(self, sid, **fields):
+        path = self.bridge.STATE / 'runs' / sid / 'state.json'
+        value = json.loads(path.read_text())
+        b.write_json(path, {**value, **fields})
+
+    def test_auto_close_waits_for_every_executor_and_new_work_reopens(self):
+        first, second = self.create(1), self.create(2)
+        panel = watch.panel(self.bridge, self.context)['pane_id']
+        wait_for(lambda: 'TASK_2_LIVE' in self.capture(panel))
+        self.update(first, phase='accepted')
+        self.update(second, phase='awaiting_review')
+        time.sleep(1.3)
+        self.assertEqual(len(watch.tmux(self.context, 'list-panes', '-F', '#{pane_id}').splitlines()), 2)
+        # Even a user's inherited remain-on-exit setting must not leave a dead split.
+        watch.tmux(self.context, 'set-option', '-p', '-t', panel, 'remain-on-exit', 'on')
+        self.update(second, phase='accepted')
+        wait_for(lambda: watch.tmux(self.context, 'list-panes', '-F', '#{pane_id}') == self.pane)
+        self.assertEqual(watch.tmux(self.context, 'display-message', '-p', '#{pane_id}'), self.pane)
+        third = self.create(3)
+        reopened = watch.panel(self.bridge, self.context)['pane_id']
+        wait_for(lambda: 'TASK_3_LIVE' in self.capture(reopened))
+        self.update(third, phase='accepted')
+        wait_for(lambda: watch.tmux(self.context, 'list-panes', '-F', '#{pane_id}') == self.pane)
+
+    def test_project_final_review_and_manual_history_keep_pane_open(self):
+        first, second = self.create(1), self.create(2)
+        project = 'c' * 32
+        courier = self.bridge.STATE / 'runs' / project / 'state.json'
+        b.write_json(courier, {'session_id': project, 'project_id': project,
+                              'notification_only': True, 'phase': 'project_update',
+                              'continuation': 'active'})
+        for sid in (first, second):
+            self.update(sid, project_id=project)
+        panel = watch.panel(self.bridge, self.context)['pane_id']
+        wait_for(lambda: 'TASK_2_LIVE' in self.capture(panel))
+        for sid in (first, second):
+            self.update(sid, phase='accepted')
+        time.sleep(1.3)
+        self.assertEqual(len(watch.tmux(self.context, 'list-panes', '-F', '#{pane_id}').splitlines()), 2)
+        self.update(project, return_complete=True)
+        wait_for(lambda: watch.tmux(self.context, 'list-panes', '-F', '#{pane_id}') == self.pane)
+        manual = watch.panel(self.bridge, self.context, keep_open=True)['pane_id']
+        wait_for(lambda: 'TASK_2_LIVE' in self.capture(manual))
+        time.sleep(1.3)
+        self.assertIn(manual, watch.tmux(self.context, 'list-panes', '-F', '#{pane_id}').splitlines())
+        watch.tmux(self.context, 'send-keys', '-t', manual, 'q')
+        wait_for(lambda: watch.tmux(self.context, 'list-panes', '-F', '#{pane_id}') == self.pane)
+
+    def test_cancelled_task_closes_only_after_its_process_exits(self):
+        sid = self.create(1)
+        process = subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(20)'])
+        self.addCleanup(lambda: process.poll() is None and process.terminate())
+        self.update(sid, continuation='cancelled', job_pid=process.pid)
+        panel = watch.panel(self.bridge, self.context)['pane_id']
+        wait_for(lambda: 'TASK_1_LIVE' in self.capture(panel))
+        time.sleep(1.3)
+        self.assertIn(panel, watch.tmux(self.context, 'list-panes', '-F', '#{pane_id}').splitlines())
+        process.terminate()
+        process.wait(timeout=3)
+        wait_for(lambda: watch.tmux(self.context, 'list-panes', '-F', '#{pane_id}') == self.pane)
 
     def test_one_panel_focus_switch_close_and_reopen(self):
         self.create(1); self.create(2)

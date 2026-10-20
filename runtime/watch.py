@@ -16,9 +16,11 @@ import textwrap
 import time
 
 import activity
+from processes import process_running
 
 PANE = re.compile(r'%[0-9]+\Z')
 GROUP = re.compile(r'[0-9a-f]{24}\Z')
+SESSION = re.compile(r'[0-9a-f]{32}\Z')
 
 
 def tmux(origin, *args):
@@ -119,7 +121,7 @@ def prepare(b, state):
         state['watch_origin'] = context
 
 
-def panel(b, context):
+def panel(b, context, *, keep_open=False):
     if not context:
         return {'status': 'manual', 'command': 'telos watch'}
     group = context['group']
@@ -138,12 +140,16 @@ def panel(b, context):
                     return {'status': 'reused', 'pane_id': fields[0]}
                 command = [sys.executable, str(b.INSTALL / 'telos.py'),
                            'watch', '--ui', '--group', group]
+                if keep_open:
+                    command.append('--keep-open')
                 tmux(context, 'respawn-pane', '-t', fields[0],
                      '-e', 'TELOS_STATE_DIR=' + str(b.STATE),
                      '-e', 'TELOS_CACHE_DIR=' + str(b.CACHE), *command)
                 return {'status': 'reopened', 'pane_id': fields[0]}
         # tmux executes multiple argv directly. No shell interpolation of paths.
         command = [sys.executable, str(b.INSTALL / 'telos.py'), 'watch', '--ui', '--group', group]
+        if keep_open:
+            command.append('--keep-open')
         pane = tmux(context, 'split-window', '-d', '-h', '-p', '40', '-t', context['pane'],
                     '-e', 'TELOS_STATE_DIR=' + str(b.STATE),
                     '-e', 'TELOS_CACHE_DIR=' + str(b.CACHE), '-P', '-F', '#{pane_id}', *command)
@@ -192,6 +198,76 @@ def tasks(state_dir, group=None, project=None):
     return sorted(result, key=lambda item: (item.get('created_at') or 0, item['session_id']))
 
 
+def group_finished(state_dir, group):
+    """Read public lifecycle state only; never inspect contracts or review packets."""
+    try:
+        states = {}
+        for path in (Path(state_dir) / 'runs').glob('*/state.json'):
+            value = json.loads(path.read_text())
+            sid = value.get('session_id')
+            if not isinstance(sid, str) or not SESSION.fullmatch(sid) or sid != path.parent.name:
+                return False
+            states[sid] = value
+        selected = [s for s in states.values() if not s.get('notification_only')
+                    and (s.get('watch_origin') or {}).get('group') == group]
+        if not selected:
+            return False
+        projects = {s['project_id'] for s in selected if s.get('project_id')}
+        for pid in projects:
+            courier = states.get(pid, {})
+            # The courier marks final project acceptance without exposing the
+            # private project contract. Pending/dependent children keep it open.
+            if (not courier.get('notification_only') or courier.get('project_id') != pid or
+                    not (courier.get('return_complete') is True or
+                         courier.get('continuation') == 'cancelled')):
+                return False
+        # A cancelled project's workers may still be finishing a provider call,
+        # including workers that were started from another tmux window.
+        related = [s for s in states.values() if not s.get('notification_only')
+                   and (s in selected or s.get('project_id') in projects)]
+        for state in related:
+            if state.get('phase') != 'accepted' and state.get('continuation') != 'cancelled':
+                return False
+            pid = state.get('job_pid')
+            if pid is not None:
+                if type(pid) is not int or pid <= 0 or process_running(pid, state.get('job_process_start')):
+                    return False
+            elif state.get('phase') == 'running':
+                return False
+        return True
+    except (OSError, ValueError, TypeError, AttributeError):
+        # Missing/unreadable lifecycle evidence must never look like completion.
+        return False
+
+
+def close_finished_panel(b, group):
+    """Close only this managed viewer, serialized with new task launches."""
+    if not isinstance(group, str) or not GROUP.fullmatch(group):
+        return False
+    try:
+        # Dispatch takes these locks in the same order. Remove the pane while
+        # holding them so a new launch cannot reuse a viewer that is exiting.
+        with (b.STATE / 'coordinator.lock').open('a+') as coordinator, \
+                (b.STATE / 'watch' / (group + '.lock')).open('a+') as observer:
+            fcntl.flock(coordinator, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            fcntl.flock(observer, fcntl.LOCK_EX | fcntl.LOCK_NB)
+            if not group_finished(b.STATE, group):
+                return False
+            context = origin(b.STATE)
+            if not context or context['group'] != group:
+                return False
+            owner = tmux(context, 'display-message', '-p', '-t', context['pane'],
+                         '#{@telos_watch_group}\t#{pane_pid}')
+            if owner != f'{group}\t{os.getpid()}':
+                return False
+            # Explicit removal also handles tmux's remain-on-exit option.
+            # Never target the originating supervisor pane or stop an executor.
+            tmux(context, 'kill-pane', '-t', context['pane'])
+            return True
+    except (OSError, ValueError, TypeError, subprocess.SubprocessError):
+        return False
+
+
 def resolve_task(rows, requested=None):
     if not requested:
         return rows[-1]['session_id'] if rows else None
@@ -210,7 +286,7 @@ def render(event):
     return f'[{stamp}] {tag} ({phase}) {status}\n' + activity.clean(event.get('text', ''))
 
 
-def stream(b, sid, *, follow=True, history=False, tail=100, json_output=False):
+def stream(b, sid, *, follow=True, history=False, tail=100, json_output=False, auto_close_group=None):
     reader = activity.Reader(b.run_dir(sid) / activity.FILENAME)
     if not history:
         reader.seek_tail(tail)
@@ -227,13 +303,18 @@ def stream(b, sid, *, follow=True, history=False, tail=100, json_output=False):
               f'End of recorded history for {sid}.', flush=True)
         if (b.run_dir(sid) / 'activity-unavailable').exists():
             print('Recording unavailable (I/O error); task execution is unaffected.', flush=True)
+    close_check_at = 0
     while follow:
         time.sleep(0.2)
         for event in reader.read():
             output(event)
+        if auto_close_group and time.monotonic() >= close_check_at:
+            if close_finished_panel(b, auto_close_group):
+                return
+            close_check_at = time.monotonic() + 1
 
 
-def ui(b, initial=None, group=None, project=None, tail=200):
+def ui(b, initial=None, group=None, project=None, tail=200, auto_close=False):
     def display(screen):
         with contextlib.suppress(curses.error):
             curses.curs_set(0)
@@ -256,6 +337,8 @@ def ui(b, initial=None, group=None, project=None, tail=200):
             if time.monotonic() >= refresh_at:
                 rows = tasks(b.STATE, group, project)
                 refresh_at = time.monotonic() + 1
+                if auto_close and close_finished_panel(b, group):
+                    return
             ids = [r['session_id'] for r in rows]
             if sid not in ids:
                 sid = resolve_task(rows)
@@ -325,6 +408,7 @@ def main(b, argv):
     parser.add_argument('--list', action='store_true', help='List tasks and exit')
     parser.add_argument('--project', help='Filter tasks by project ID')
     parser.add_argument('--group', help=argparse.SUPPRESS)
+    parser.add_argument('--keep-open', action='store_true', help=argparse.SUPPRESS)
     parser.add_argument('--ui', action='store_true', help='Interactive task switching and history')
     parser.add_argument('--pane', action='store_true', help='Open/reuse the current tmux window observer')
     parser.add_argument('--follow', '-f', dest='follow', action='store_true', default=True)
@@ -337,13 +421,15 @@ def main(b, argv):
         parser.error('--tail must be between 0 and 10000; use --history for all events')
     if args.group and not GROUP.fullmatch(args.group):
         parser.error('Invalid group')
+    if args.keep_open and not (args.ui and args.group):
+        parser.error('--keep-open is reserved for managed observer panes')
     if args.pane:
         if args.session_id or args.project or args.history or not args.follow or args.json or args.ui:
             parser.error('--pane opens the shared observer; use it without task/output options')
         context = origin(b.STATE)
         if not context:
             raise ValueError('No tmux pane detected; run telos watch --ui in another terminal')
-        print(json.dumps(panel(b, context)))
+        print(json.dumps(panel(b, context, keep_open=True)))
         return
     rows = tasks(b.STATE, args.group, args.project)
     if args.list:
@@ -359,11 +445,13 @@ def main(b, argv):
     try:
         if interactive:
             try:
-                ui(b, sid, args.group, args.project, args.tail)
+                ui(b, sid, args.group, args.project, args.tail,
+                   auto_close=bool(args.group and not args.keep_open))
             except curses.error:
                 print('Terminal UI unavailable; using read-only text output.', file=sys.stderr)
                 if sid:
-                    stream(b, sid, follow=args.follow, tail=args.tail)
+                    stream(b, sid, follow=args.follow, tail=args.tail,
+                           auto_close_group=args.group if not args.keep_open else None)
         elif sid:
             stream(b, sid, follow=args.follow, history=args.history, tail=args.tail, json_output=args.json)
         else:

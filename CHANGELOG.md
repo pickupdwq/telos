@@ -1,5 +1,12 @@
 # Changelog / 更新记录
 
+## Unreleased
+
+- Automatically close managed tmux observer panes after all associated tasks and projects finish acceptance or cancellation and their execution processes exit. Keep panels open during review, repair, errors, pauses and pending project work.
+- Preserve the supervisor pane and manually opened history viewers. Serialize closure with new task dispatch so new work can reopen a panel safely, including when tmux enables `remain-on-exit`.
+
+自动观察面板会在关联任务与项目全部结束、执行进程退出后关闭；保留大总管窗格和手动历史查看器。多执行者数量仍由大总管决定，单个执行者结束不会提前关闭共享面板。
+
 ## 3.7.1 — 2026-10-20
 
 - Recover automatic observer panes when the shared Codex background server loses both `TMUX` and `TMUX_PANE`. Match the trusted CLI caller's exact working directory to a unique attached pane with a Codex process on the default tmux server.
