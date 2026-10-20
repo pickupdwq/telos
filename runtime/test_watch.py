@@ -161,6 +161,194 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(self.events()[-1]['kind'], 'diagnostic')
 
 
+class TimestampRobustnessTests(unittest.TestCase):
+    """Pure timestamp-boundary tests for rendering, ordering, and streaming."""
+    MISSING = object()
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.state = Path(self.temp.name) / 'state'
+        (self.state / 'runs').mkdir(parents=True)
+        self.bridge = SimpleNamespace(
+            STATE=self.state, CACHE=Path(self.temp.name) / 'cache',
+            run_dir=lambda sid: self.state / 'runs' / sid)
+
+    def task(self, sid, created_at=MISSING, **fields):
+        directory = self.state / 'runs' / sid
+        directory.mkdir(parents=True)
+        value = {
+            'session_id': sid, 'model': 'fixture-model', 'repo': 'fixture-repo',
+            'phase': 'running', 'continuation': 'active',
+        }
+        if created_at is not self.MISSING:
+            value['created_at'] = created_at
+        value.update(fields)
+        (directory / 'state.json').write_text(json.dumps(value))
+        return sid
+
+    def event(self, sid, timestamp=MISSING, text='event', **fields):
+        value = {'version': 1, 'kind': 'message', 'phase': 'work', 'text': text}
+        if timestamp is not self.MISSING:
+            value['time'] = timestamp
+        value.update(fields)
+        with (self.state / 'runs' / sid / activity.FILENAME).open('a') as stream:
+            stream.write(json.dumps(value, ensure_ascii=False) + '\n')
+
+    def snapshot(self):
+        return {path.relative_to(self.state): (path.read_bytes(), path.stat().st_mode & 0o777)
+                for path in self.state.rglob('*') if path.is_file()}
+
+    def test_missing_null_boolean_nonnumeric_and_nonfinite_times_are_unknown(self):
+        for value in (self.MISSING, None, False, True, '123', [], float('nan'),
+                      float('inf'), -float('inf'), 10 ** 100):
+            with self.subTest(value=value):
+                event = {'kind': 'message', 'phase': 'work', 'text': 'CONTENT'}
+                if value is not self.MISSING:
+                    event['time'] = value
+                rendered = watch.render(event)
+                self.assertEqual(rendered, '[??:??:??] message (work) \nCONTENT')
+
+    def test_valid_times_keep_local_display_and_sanitized_content(self):
+        for value in (0, 0.75, -1.25):
+            with self.subTest(value=value):
+                expected = time.strftime('%H:%M:%S', time.localtime(value))
+                rendered = watch.render({'time': value, 'kind': 'message',
+                                         'phase': 'work', 'text': 'VISIBLE'})
+                self.assertEqual(rendered, f'[{expected}] message (work) \nVISIBLE')
+        rendered = watch.render({
+            'time': 'malformed', 'kind': 'message', 'phase': 'work',
+            'text': 'VISIBLE Authorization: Bearer TOKEN_123\x1b[31mTAIL'})
+        self.assertIn('VISIBLE', rendered)
+        self.assertNotIn('TOKEN_123', rendered)
+        self.assertNotIn('\x1b', rendered)
+        with patch.object(watch.time, 'localtime', side_effect=RuntimeError('internal bug')):
+            with self.assertRaisesRegex(RuntimeError, 'internal bug'):
+                watch.render({'time': 1, 'text': 'programming errors stay visible'})
+
+    def test_mixed_created_at_values_sort_safely_and_preserve_filters(self):
+        values = {
+            1: 2.5, 2: None, 3: '1', 4: float('nan'), 5: float('inf'),
+            6: False, 7: -1, 8: 0, 9: 10 ** 30, 10: 1e20,
+        }
+        ids = {number: f'{number:032x}' for number in values}
+        for number, created_at in values.items():
+            fields = {}
+            if number == 1:
+                fields = {'watch_origin': {'group': 'a' * 24}, 'project_id': 'p' * 32}
+            elif number == 2:
+                fields = {'watch_origin': {'group': 'a' * 24}}
+            self.task(ids[number], created_at, **fields)
+        self.task('b' * 32, [], notification_only=True)
+        invalid_path = self.task('c' * 32, None)
+        path = self.state / 'runs' / invalid_path / 'state.json'
+        state = json.loads(path.read_text())
+        state['session_id'] = 'd' * 32
+        path.write_text(json.dumps(state))
+
+        expected = [ids[n] for n in (7, 2, 3, 4, 5, 6, 8, 1, 10, 9)]
+        self.assertEqual([row['session_id'] for row in watch.tasks(self.state)], expected)
+        self.assertEqual([row['session_id'] for row in watch.tasks(self.state, 'a' * 24)],
+                         [ids[2], ids[1]])
+        self.assertEqual([row['session_id'] for row in watch.tasks(self.state, project='p' * 32)],
+                         [ids[1]])
+
+    def test_history_streams_damaged_timestamps_with_healthy_neighbors(self):
+        sid = self.task('1' * 32, 1)
+        self.event(sid, self.MISSING, 'BAD_MISSING')
+        self.event(sid, '123', 'BAD_STRING')
+        self.event(sid, 0.5, 'HEALTHY_AFTER')
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            watch.stream(self.bridge, sid, follow=False, history=True)
+        rendered = output.getvalue()
+        self.assertEqual(rendered.count('[??:??:??]'), 2)
+        self.assertLess(rendered.index('BAD_MISSING'), rendered.index('BAD_STRING'))
+        self.assertLess(rendered.index('BAD_STRING'), rendered.index('HEALTHY_AFTER'))
+
+    def test_tail_stream_keeps_damaged_event_and_following_healthy_event(self):
+        sid = self.task('1' * 32, 1)
+        self.event(sid, 0, 'HEALTHY_BEFORE_TAIL')
+        self.event(sid, None, 'TAIL_UNKNOWN')
+        self.event(sid, 1.5, 'TAIL_HEALTHY')
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            watch.stream(self.bridge, sid, follow=False, tail=2)
+        rendered = output.getvalue()
+        self.assertNotIn('HEALTHY_BEFORE_TAIL', rendered)
+        self.assertIn('[??:??:??] message (work)', rendered)
+        self.assertLess(rendered.index('TAIL_UNKNOWN'), rendered.index('TAIL_HEALTHY'))
+
+    def test_follow_stream_continues_after_unknown_time_to_later_event(self):
+        sid = self.task('1' * 32, 1)
+        self.event(sid, self.MISSING, 'FOLLOW_UNKNOWN')
+
+        output = io.StringIO()
+        with patch.object(watch.time, 'sleep',
+                          side_effect=lambda _: self.event(sid, 2, 'FOLLOW_HEALTHY')), \
+                patch.object(watch, 'close_finished_panel', return_value=True), \
+                contextlib.redirect_stdout(output):
+            watch.stream(self.bridge, sid, follow=True, tail=10,
+                         auto_close_group='a' * 24)
+        rendered = output.getvalue()
+        self.assertIn('[??:??:??] message (work)', rendered)
+        self.assertLess(rendered.index('FOLLOW_UNKNOWN'), rendered.index('FOLLOW_HEALTHY'))
+
+    def test_streaming_is_read_only_and_json_events_are_unchanged(self):
+        sid = self.task('1' * 32, 1)
+        self.event(sid, self.MISSING, 'RAW_MISSING')
+        self.event(sid, '123', 'RAW_STRING')
+        self.event(sid, 0, 'RAW_VALID')
+        source = [json.loads(line) for line in
+                  (self.state / 'runs' / sid / activity.FILENAME).read_text().splitlines()]
+        before = self.snapshot()
+        human = io.StringIO()
+        with contextlib.redirect_stdout(human):
+            watch.main(self.bridge, [sid, '--history', '--no-follow'])
+        self.assertEqual(human.getvalue().count('[??:??:??]'), 2)
+        raw = io.StringIO()
+        with contextlib.redirect_stdout(raw):
+            watch.main(self.bridge, [sid, '--history', '--no-follow', '--json'])
+        self.assertEqual([json.loads(line) for line in raw.getvalue().splitlines()], source)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_curses_frame_renders_unknown_time_and_later_healthy_event(self):
+        sid = self.task('1' * 32, 1)
+        self.event(sid, float('nan'), 'CURSES_UNKNOWN')
+        self.event(sid, 1.5, 'CURSES_HEALTHY')
+
+        class Screen:
+            def __init__(self):
+                self.lines = []
+
+            def timeout(self, _):
+                pass
+
+            def getmaxyx(self):
+                return 14, 100
+
+            def erase(self):
+                pass
+
+            def refresh(self):
+                pass
+
+            def getch(self):
+                return ord('q')
+
+            def addnstr(self, y, x, text, n, style=0):
+                self.lines.append(text)
+
+        screen = Screen()
+        with patch.object(watch.curses, 'curs_set', return_value=None), \
+                patch.object(watch.curses, 'wrapper',
+                             side_effect=lambda display: display(screen)):
+            watch.ui(self.bridge, sid, tail=20)
+        rendered = '\n'.join(screen.lines)
+        self.assertIn('[??:??:??] message (work)', rendered)
+        self.assertLess(rendered.index('CURSES_UNKNOWN'), rendered.index('CURSES_HEALTHY'))
+
+
 class TailReaderTests(unittest.TestCase):
     """Pure byte-cursor tests for Reader.seek_tail (no subprocesses)."""
 

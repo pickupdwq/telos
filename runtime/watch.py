@@ -6,6 +6,7 @@ import curses
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import re
@@ -21,6 +22,7 @@ from processes import process_running
 PANE = re.compile(r'%[0-9]+\Z')
 GROUP = re.compile(r'[0-9a-f]{24}\Z')
 SESSION = re.compile(r'[0-9a-f]{32}\Z')
+UNKNOWN_TIME = '[??:??:??]'
 
 
 def tmux(origin, *args):
@@ -195,7 +197,19 @@ def tasks(state_dir, group=None, project=None):
                 'session_id', 'model', 'repo', 'phase', 'continuation', 'created_at', 'project_id')})
         except (OSError, ValueError, AttributeError):
             continue
-    return sorted(result, key=lambda item: (item.get('created_at') or 0, item['session_id']))
+    return sorted(result, key=lambda item: (_created_at_order(item.get('created_at')),
+                                            item['session_id']))
+
+
+def _created_at_order(value):
+    """Sort real timestamps numerically while keeping malformed values unknown."""
+    if type(value) is bool:
+        return 0
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float) and math.isfinite(value):
+        return value
+    return 0
 
 
 def group_finished(state_dir, group):
@@ -278,12 +292,24 @@ def resolve_task(rows, requested=None):
     return matched[0]
 
 
+def _event_time(value):
+    if type(value) is bool or not isinstance(value, (int, float)):
+        return UNKNOWN_TIME
+    if isinstance(value, float) and not math.isfinite(value):
+        return UNKNOWN_TIME
+    try:
+        return '[' + time.strftime('%H:%M:%S', time.localtime(value)) + ']'
+    except (TypeError, ValueError, OverflowError, OSError):
+        # A damaged or platform-unrepresentable clock value is unknown, not now.
+        return UNKNOWN_TIME
+
+
 def render(event):
-    stamp = time.strftime('%H:%M:%S', time.localtime(event.get('time', 0)))
+    stamp = _event_time(event.get('time'))
     tag = activity.clean(event.get('kind', 'event'))
     phase = activity.clean(event.get('phase', 'work'))
     status = activity.clean(event.get('status') or event.get('event_type') or '')
-    return f'[{stamp}] {tag} ({phase}) {status}\n' + activity.clean(event.get('text', ''))
+    return f'{stamp} {tag} ({phase}) {status}\n' + activity.clean(event.get('text', ''))
 
 
 def stream(b, sid, *, follow=True, history=False, tail=100, json_output=False, auto_close_group=None):
