@@ -1,5 +1,14 @@
 # Changelog / 更新记录
 
+## Unreleased
+
+- Add an explicitly started `telos compare` CLI with frozen runtime/configuration snapshots, 20 public development tasks, paired/counterbalanced ordering and independent trial state.
+- Reuse the existing original-supervisor work/exam/repair/acceptance gate in explicit manual experiments; preserve the ordinary MCP catalog and task workflow.
+- Report outcome regressions, independent outcome checks, code-audit detection, requests/tokens including failed attempts, unknown usage and separately labelled provider/wall time. Add bounded trials, pause/cancel and a serial experiment lease. No automatic grading, promotion, installation or main-branch changes.
+- Fix the isolated native verifier's outdated runtime copy list so newly imported modules are included in MCP startup verification.
+
+新增独立评测与版本对比入口，复用现有验收流程，隔离实验状态与经验。内置 20 个公开开发样例，输出质量、用量、耗时和成对退步记录；不代表私有盲测、真实页面走查或已经实现 RSI。
+
 ## 3.5.0 — 2026-10-19
 
 - Check the actual CLI/Python/Git work environment before model calls, with isolated Python startup that cannot import task-repository modules.

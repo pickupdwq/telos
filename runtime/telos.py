@@ -1868,8 +1868,11 @@ def serve():
 
 def main():
     os.umask(0o077)
+    if sys.argv[1:2] == ['compare']:
+        from comparison import main as compare_main
+        return compare_main(sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["serve", "doctor", "auth", "local", "status", "review", "receive", "pause", "resume", "cancel", "recover", "cache", "_job", "_dispatch", "_project_check"])
+    parser.add_argument("command", choices=["serve", "doctor", "auth", "local", "status", "review", "receive", "pause", "resume", "cancel", "recover", "cache", "compare", "_job", "_dispatch", "_project_check"])
     parser.add_argument("ids", nargs="*")
     parser.add_argument('--action', choices=['inventory', 'archive', 'cleanup'], default='inventory')
     parser.add_argument('--apply', action='store_true', help='Apply explicit archive/cleanup; default is preview')

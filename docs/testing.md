@@ -54,6 +54,19 @@ The fixture exercises desktop/mobile form interaction, deliberately broken mobil
 
 ## Optional paid integration checks
 
+The independent comparison runner is covered by `test_comparison.py`, included
+in `verify_all.py`. It checks frozen inputs, variant ordering, serial leases,
+configuration/experience isolation, explicit live opt-in, pause/cancel, budget
+preservation, incomplete/unknown reports, seeded outcome oracles and a real CLI
+work → exam → rejected review → repair → accepted review cycle for both variants.
+An additional accepted-audit cycle checks same-thread tool-free exams, preserved
+supervisor finding decisions and independently scored detection counts.
+That regression uses a deterministic HTTP model fixture and synthetic review
+scores. A real-model comparison must be run separately and reviewed by the
+original supervisor; see [comparison](comparison.md). Reports must distinguish
+that small live smoke run from the full public 20-case suite and a private
+capability benchmark.
+
 ```sh
 python3 "$HOME/.local/share/telos/verify_live_providers.py" \
   --live --report .artifacts/live-providers.json

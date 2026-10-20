@@ -113,8 +113,11 @@ def main():
         base = Path(folder).resolve()
         runtime = base / "runtime"
         runtime.mkdir()
-        for name in ("telos.py", "exam_loop.py", "identity.py", "codex_rpc.py", "desktop_rpc.py", "projects.py", "processes.py", "experience.py", "isolation.py", "storage.py", "providers.py", "executor.py", "closed_book.py", "supervisor.py", "legacy_exam.py", "deepseek_models.json", "check_runtime.py", "audit.py", "audit_probe.py", "audit_schema.py", "audit_browser.cjs", "local_executor.py", "chat_adapter.py"):
-            shutil.copy2(args.source / name, runtime / name)
+        # Match the installer's runtime payload. A fixed module list silently
+        # misses newly imported modules and breaks only the isolated MCP process.
+        for source in sorted(args.source.iterdir()):
+            if source.suffix in (".py", ".cjs") or source.name == "deepseek_models.json":
+                shutil.copy2(source, runtime / source.name)
         state_root = base / "private"
         cache = base / "cache"
         socket_path = base / "control.sock"
