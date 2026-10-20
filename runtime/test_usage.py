@@ -638,6 +638,237 @@ def post(relay, path='/responses', payload=None):
     return urllib.request.urlopen(request, timeout=10).read()
 
 
+def work_guidance_text(item):
+    content = item.get('content')
+    if isinstance(content, str):
+        return content
+    if isinstance(content, list):
+        return ''.join(part['text'] for part in content
+                       if isinstance(part, dict) and part.get('type') == 'input_text')
+    return ''
+
+
+def work_guidance_budget(item):
+    text = work_guidance_text(item)
+    if not text.startswith(isolation.WORK_BUDGET_PREFIX):
+        raise AssertionError(text)
+    return text, json.loads(text[len(isolation.WORK_BUDGET_PREFIX):])
+
+
+class WorkGuidanceTests(unittest.TestCase):
+    def test_list_input_preserves_payload_and_appends_one_developer_message(self):
+        payload = {
+            'model': 'frozen-model',
+            'input': [
+                {'type': 'message', 'role': 'user',
+                 'content': [{'type': 'input_text', 'text': 'original one'}]},
+                {'type': 'function_call', 'call_id': 'call-1', 'name': 'shell', 'arguments': '{}'},
+                {'type': 'function_call_output', 'call_id': 'call-1', 'output': 'ok'},
+            ],
+            'tools': [{'type': 'function', 'name': 'shell',
+                       'parameters': {'type': 'object', 'properties': {}}}],
+            'tool_choice': 'auto', 'stream': True, 'metadata': {'key': 'value'},
+        }
+        raw = json.dumps(payload, indent=2).encode()
+        prepared = isolation.prepare_work_request(
+            raw, seconds_remaining=12.75, requests_remaining=4)
+        self.assertIsInstance(prepared, bytes)
+        updated = json.loads(prepared)
+        self.assertEqual({key: value for key, value in updated.items() if key != 'input'},
+                         {key: value for key, value in payload.items() if key != 'input'})
+        self.assertEqual(updated['input'][:-1], payload['input'])
+        self.assertEqual(len(updated['input']), len(payload['input']) + 1)
+        message = updated['input'][-1]
+        self.assertEqual(message['role'], 'developer')
+        self.assertEqual(set(message), {'role', 'content'})
+        text, budget = work_guidance_budget(message)
+        self.assertEqual(budget['admission_seconds_remaining'], 12)
+        self.assertEqual(budget['further_work_requests_remaining'], 4)
+        self.assertLessEqual(len(text), 1000)
+        self.assertIn('advisory', budget['instruction'].lower())
+        self.assertIn('not acceptance', budget['instruction'].lower())
+
+    def test_string_input_becomes_one_user_message_with_original_text(self):
+        raw = json.dumps({'model': 'm', 'input': 'keep this text unchanged'}).encode()
+        updated = json.loads(isolation.prepare_work_request(raw, seconds_remaining=3))
+        self.assertEqual(len(updated['input']), 2)
+        self.assertEqual(updated['input'][0],
+                         {'role': 'user', 'content': 'keep this text unchanged'})
+        text, budget = work_guidance_budget(updated['input'][-1])
+        self.assertEqual(set(budget), {'admission_seconds_remaining', 'instruction'})
+        self.assertNotIn('further_work_requests_remaining', budget)
+        self.assertLessEqual(len(text), 1000)
+
+    def test_zero_is_known_and_unknown_values_are_omitted(self):
+        raw = json.dumps({'model': 'm', 'input': []}).encode()
+        updated = json.loads(isolation.prepare_work_request(
+            raw, seconds_remaining=0, requests_remaining=0))
+        _, budget = work_guidance_budget(updated['input'][-1])
+        self.assertEqual(budget['admission_seconds_remaining'], 0)
+        self.assertEqual(budget['further_work_requests_remaining'], 0)
+
+        updated = json.loads(isolation.prepare_work_request(
+            raw, seconds_remaining=0.9, requests_remaining=None))
+        _, budget = work_guidance_budget(updated['input'][-1])
+        self.assertEqual(budget['admission_seconds_remaining'], 0)
+        self.assertNotIn('further_work_requests_remaining', budget)
+
+        updated = json.loads(isolation.prepare_work_request(
+            raw, seconds_remaining=None, requests_remaining=2))
+        _, budget = work_guidance_budget(updated['input'][-1])
+        self.assertNotIn('admission_seconds_remaining', budget)
+        self.assertEqual(budget['further_work_requests_remaining'], 2)
+
+        for seconds, requests in ((None, None), (True, None), (-1, None),
+                                  (float('nan'), None), (float('inf'), None), ('4', None),
+                                  (None, True), (None, -1), (None, 2.5), (None, '2')):
+            with self.subTest(seconds=seconds, requests=requests):
+                self.assertIs(isolation.prepare_work_request(
+                    raw, seconds_remaining=seconds, requests_remaining=requests), raw)
+
+    def test_unsupported_bodies_are_returned_unchanged(self):
+        for raw in (b'not-json', b'[]', b'{}', b'{"input":3}', b'{"input":{"a":1}}', b'"text"'):
+            with self.subTest(raw=raw):
+                self.assertIs(isolation.prepare_work_request(
+                    raw, seconds_remaining=5, requests_remaining=1), raw)
+
+    def test_admission_remaining_uses_monotonic_deadline_and_window(self):
+        with patch.object(isolation.time, 'monotonic') as clock:
+            clock.return_value = 100.0
+            unarmed = isolation.RelayCloseout()
+            self.assertIsNone(unarmed.admission_remaining())
+            armed = isolation.RelayCloseout(duration=30, request_window=5)
+            self.assertEqual(armed.admission_remaining(), 25.0)
+            clock.return_value = 110.0
+            self.assertEqual(armed.admission_remaining(), 15.0)
+            clock.return_value = 124.5
+            self.assertEqual(armed.admission_remaining(), 0.5)
+            clock.return_value = 125.0
+            self.assertEqual(armed.admission_remaining(), 0)
+            clock.return_value = 1000.0
+            self.assertEqual(armed.admission_remaining(), 0)
+
+            clock.return_value = 50.0
+            started = isolation.RelayCloseout()
+            started.start(10)
+            self.assertEqual(started.admission_remaining(), 10.0)
+            started.stop('finished')
+            clock.return_value = 51.0
+            self.assertEqual(started.admission_remaining(), 0)
+
+
+class WorkGuidanceRelayTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.path = Path(self.temp.name) / 'usage.json'
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    @staticmethod
+    def completed_reply(request, n):
+        return 200, 'application/json', json.dumps(
+            {'status': 'completed', 'usage': responses_usage()}).encode()
+
+    def test_relay_injects_hint_for_direct_work_responses(self):
+        with upstream(self.completed_reply) as (port, seen):
+            ledger = usage.UsageLedger(self.path, {'max_requests': 5})
+            closeout = isolation.RelayCloseout(duration=60, request_window=5)
+            with isolation.model_relay(f'http://127.0.0.1:{port}', 'KEY', usage_ledger=ledger,
+                                       usage_context={'phase': 'work'}, closeout=closeout) as relay:
+                post(relay, payload={'model': 'm', 'input': [
+                    {'type': 'message', 'role': 'user',
+                     'content': [{'type': 'input_text', 'text': 'hello'}]}]})
+        self.assertEqual(len(seen), 1)
+        forwarded = seen[0]
+        self.assertEqual(forwarded['input'][0]['content'][0]['text'], 'hello')
+        self.assertEqual(len(forwarded['input']), 2)
+        text, budget = work_guidance_budget(forwarded['input'][-1])
+        self.assertLessEqual(len(text), 1000)
+        self.assertEqual(budget['further_work_requests_remaining'], 4)
+        self.assertIsInstance(budget['admission_seconds_remaining'], int)
+        self.assertGreaterEqual(budget['admission_seconds_remaining'], 0)
+        self.assertLessEqual(budget['admission_seconds_remaining'], 55)
+
+    def test_each_request_refreshes_decreasing_allowances(self):
+        allowances, seconds = [], []
+        with upstream(self.completed_reply) as (port, seen):
+            ledger = usage.UsageLedger(self.path, {'max_requests': 5})
+            closeout = isolation.RelayCloseout(duration=60, request_window=5)
+            with isolation.model_relay(f'http://127.0.0.1:{port}', 'KEY', usage_ledger=ledger,
+                                       usage_context={'phase': 'work'}, closeout=closeout) as relay:
+                for _ in range(3):
+                    post(relay, payload={'model': 'm', 'input': []})
+        self.assertEqual(len(seen), 3)
+        for forwarded in seen:
+            _, budget = work_guidance_budget(forwarded['input'][-1])
+            allowances.append(budget['further_work_requests_remaining'])
+            seconds.append(budget['admission_seconds_remaining'])
+        self.assertEqual(allowances, [4, 3, 2])
+        self.assertEqual(seconds, sorted(seconds, reverse=True))
+
+    def test_exam_reserve_is_visible_exhausted_and_not_used_for_work(self):
+        with upstream(self.completed_reply) as (port, seen):
+            ledger = usage.UsageLedger(
+                self.path, {'max_requests': 3, 'exam_reserve_requests': 1})
+            closeout = isolation.RelayCloseout(duration=60, request_window=5)
+            with isolation.model_relay(f'http://127.0.0.1:{port}', 'KEY', usage_ledger=ledger,
+                                       usage_context={'phase': 'work'}, closeout=closeout) as relay:
+                post(relay, payload={'model': 'm', 'input': []})
+                post(relay, payload={'model': 'm', 'input': []})
+                with self.assertRaises(urllib.error.HTTPError) as error:
+                    post(relay, payload={'model': 'm', 'input': []})
+                self.assertEqual(error.exception.code, 400)
+            self.assertEqual(len(seen), 2)
+            allowances = []
+            for forwarded in seen:
+                _, budget = work_guidance_budget(forwarded['input'][-1])
+                allowances.append(budget['further_work_requests_remaining'])
+            self.assertEqual(allowances, [1, 0])
+
+            with isolation.model_relay(f'http://127.0.0.1:{port}', 'KEY', usage_ledger=ledger,
+                                       usage_context={'phase': 'exam'}) as relay:
+                post(relay, payload={'model': 'm', 'input': []})
+        self.assertEqual(len(seen), 3)
+        self.assertNotIn(isolation.WORK_BUDGET_PREFIX, json.dumps(seen[2]))
+
+    def test_work_hint_is_absent_for_exams_compaction_and_unspecified_phase(self):
+        cases = [
+            ('exam', {'phase': 'exam'}, '/responses'),
+            ('compaction', {'phase': 'work'}, '/responses/compact'),
+            ('unspecified', {}, '/responses'),
+        ]
+        for name, context, path in cases:
+            with self.subTest(case=name):
+                with upstream(self.completed_reply) as (port, seen):
+                    ledger = usage.UsageLedger(Path(self.temp.name) / (name + '.json'))
+                    with isolation.model_relay(f'http://127.0.0.1:{port}', 'KEY', usage_ledger=ledger,
+                                               usage_context=context) as relay:
+                        post(relay, path=path, payload={'model': 'm', 'input': []})
+                self.assertEqual(len(seen), 1)
+                self.assertNotIn(isolation.WORK_BUDGET_PREFIX, json.dumps(seen[0]))
+
+    def test_work_hint_is_absent_for_local_chat_adaptation(self):
+        binding = {'provider': 'local', 'model': 'local-model', 'wire_api': 'chat',
+                   'reasoning_effort': 'none'}
+        response = {'model': 'local-model',
+                    'choices': [{'message': {'role': 'assistant', 'content': 'ok'},
+                                 'finish_reason': 'stop'}], 'usage': chat_usage()}
+
+        def reply(request, n):
+            return 200, 'application/json', json.dumps(response).encode()
+
+        with upstream(reply) as (port, seen):
+            ledger = usage.UsageLedger(self.path)
+            with isolation.model_relay(f'http://127.0.0.1:{port}', 'KEY', binding=binding,
+                                       usage_ledger=ledger,
+                                       usage_context={'phase': 'work'}) as relay:
+                post(relay, payload={'model': 'local-model', 'input': 'hello'})
+        self.assertEqual(len(seen), 1)
+        self.assertNotIn(isolation.WORK_BUDGET_PREFIX, json.dumps(seen[0]))
+        self.assertNotIn('developer', [message.get('role') for message in seen[0]['messages']])
+
+
 class RelayAccountingTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

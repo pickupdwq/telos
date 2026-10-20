@@ -3,6 +3,7 @@ import contextlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
 import json
+import math
 import secrets
 import shutil
 import socket
@@ -68,6 +69,15 @@ class RelayCloseout:
                 self.reason = reason
             self.condition.notify_all()
 
+    def admission_remaining(self):
+        """Seconds that can still be admitted, or None before the deadline is armed."""
+        with self.condition:
+            if self.closing_at is not None:
+                return 0
+            if self.deadline is None:
+                return None
+            return max(0, self.deadline - self.request_window - time.monotonic())
+
     @staticmethod
     def response_socket(response):
         # CPython urllib HTTP(S)Response owns this socket. Other response types
@@ -112,6 +122,90 @@ class RelayCloseout:
             # Never leave an interrupted reservation looking like an ongoing
             # request forever. Missing provider usage remains unknown, not zero.
             interrupt()
+
+
+WORK_BUDGET_PREFIX = 'TELOS_WORK_BUDGET '
+_WORK_INSTRUCTION = (
+    'Advisory only; this is not acceptance and does not change tools, policy or permission. '
+    'Reserve enough remaining time and requests to stop starting new work and send one brief '
+    'factual final reply covering changed files, checks run and remaining issues.'
+)
+_SHORT_WORK_INSTRUCTION = 'Advisory only; not acceptance. Reserve budget for a factual final reply.'
+
+
+def _budget_seconds(value):
+    if type(value) is int:
+        return value if value >= 0 else None
+    if type(value) is float:
+        if not math.isfinite(value) or value < 0:
+            return None
+        return math.floor(value)
+    return None
+
+
+def _budget_requests(value):
+    if type(value) is int and value >= 0:
+        return value
+    return None
+
+
+def _work_budget_content(seconds, requests):
+    fields = {}
+    if seconds is not None:
+        fields['admission_seconds_remaining'] = seconds
+    if requests is not None:
+        fields['further_work_requests_remaining'] = requests
+    if not fields:
+        return None
+    for instruction in (_WORK_INSTRUCTION, _SHORT_WORK_INSTRUCTION):
+        payload = dict(fields, instruction=instruction)
+        content = WORK_BUDGET_PREFIX + json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+        if len(content) <= 1000:
+            return content
+    return None
+
+
+def prepare_work_request(raw, *, seconds_remaining=None, requests_remaining=None):
+    """Append one advisory developer message while preserving the request body."""
+    seconds = _budget_seconds(seconds_remaining)
+    requests = _budget_requests(requests_remaining)
+    content = _work_budget_content(seconds, requests)
+    if content is None:
+        return raw
+    try:
+        request = json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
+    if not isinstance(request, dict):
+        return raw
+    history = request.get('input')
+    if isinstance(history, str):
+        history = [{'role': 'user', 'content': history}]
+    elif isinstance(history, list):
+        history = list(history)
+    else:
+        return raw
+    history.append({'role': 'developer', 'content': content})
+    updated = dict(request)
+    updated['input'] = history
+    return json.dumps(updated, ensure_ascii=False, separators=(',', ':')).encode()
+
+
+def _work_requests_remaining(snapshot):
+    """Further work requests after the current reservation, respecting exam reserves."""
+    if not isinstance(snapshot, dict):
+        return None
+    state = snapshot.get('budget_state')
+    remaining = state.get('remaining') if isinstance(state, dict) else None
+    value = remaining.get('max_requests') if isinstance(remaining, dict) else None
+    if type(value) is not int or value < 0:
+        return None
+    work_state = snapshot.get('work_budget_state')
+    work_remaining = work_state.get('remaining') if isinstance(work_state, dict) else None
+    work_value = work_remaining.get('max_requests') if isinstance(work_remaining, dict) else None
+    if type(work_value) is int and work_value >= 0:
+        value = min(value, work_value)
+    return value
 
 
 # Only the current SSE event is retained. The cap matches the largest response
@@ -388,8 +482,10 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
     token = secrets.token_urlsafe(48)
     local = binding is not None and binding.get('provider') == 'local'
     bailian = binding is not None and binding.get('provider') == 'bailian'
-    opener = urllib.request.build_opener(NoRedirect(), *([urllib.request.ProxyHandler({})] if local else []))
     context = usage_context or {}
+    work_guidance = (context.get('phase') == 'work' and policy is None
+                     and not (local and binding.get('wire_api') == 'chat'))
+    opener = urllib.request.build_opener(NoRedirect(), *([urllib.request.ProxyHandler({})] if local else []))
     closeout = closeout or RelayCloseout()
 
     class Handler(BaseHTTPRequestHandler):
@@ -493,6 +589,13 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                             budget_failure['snapshot'] = None
                         self.send_error(400, 'Usage accounting failed; no upstream request was sent')
                         return
+                if work_guidance and self.path == '/v1/responses':
+                    requests_remaining = None
+                    if usage_ledger is not None and request_id is not None:
+                        requests_remaining = _work_requests_remaining(usage_ledger.snapshot())
+                    body = prepare_work_request(
+                        body, seconds_remaining=closeout.admission_remaining(),
+                        requests_remaining=requests_remaining)
                 headers = {'Content-Type': 'application/json'}
                 if key:
                     headers['Authorization'] = 'Bearer ' + key
