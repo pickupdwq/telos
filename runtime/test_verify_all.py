@@ -3,10 +3,13 @@ import contextlib
 import io
 import json
 import math
+import os
 from pathlib import Path
+import subprocess
 import sys
 import tempfile
 import textwrap
+import time
 import unittest
 from unittest import mock
 import uuid
@@ -79,6 +82,61 @@ def _run_main(argv):
 
 def _suite_ids(suite):
     return [test.id() for test in verify_all._iter_test_cases(suite)]
+
+
+class _CopiedRunner:
+    """Write a disposable runner whose allowlist is just the fixtures."""
+
+    def __init__(self, sources, corrupt_child_reports=False):
+        self.sources = sources
+        self.corrupt_child_reports = corrupt_child_reports
+        self._temporary = None
+        self.path = None
+
+    def __enter__(self):
+        self._temporary = tempfile.TemporaryDirectory(
+            prefix='verify-all-copied-runner-')
+        self.path = Path(self._temporary.name)
+        for name, source in self.sources.items():
+            (self.path / f'{name}.py').write_text(
+                textwrap.dedent(source), encoding='utf-8')
+
+        source = Path(verify_all.__file__).read_text(encoding='utf-8')
+        marker = "\nif __name__ == '__main__':"
+        modules = f'\nMODULES = {list(self.sources)!r}\n'
+        self.assert_replaced = source.count(marker) == 1
+        source = source.replace(marker, modules + marker, 1)
+        if self.corrupt_child_reports:
+            needle = '    if args.report is not None:\n'
+            injection = (
+                "    if ('--jobs' not in sys.argv and\n"
+                "            __import__('os').environ.get("
+                "'VERIFY_ALL_CORRUPT_CHILD')):\n"
+                "        report['test_results'].append({\n"
+                "            'id': '__foreign__.Foreign.test_foreign',\n"
+                "            'outcome': 'passed',\n"
+                "            'seconds': 0.0,\n"
+                "        })\n"
+                "        report['tests'] += 1\n"
+            )
+            self.assert_replaced = (
+                self.assert_replaced and source.count(needle) == 1)
+            source = source.replace(needle, injection + needle, 1)
+        (self.path / 'verify_all.py').write_text(source, encoding='utf-8')
+        return self.path
+
+    def __exit__(self, exc_type, exc, traceback):
+        self._temporary.cleanup()
+
+
+def _run_copied_runner(root, argv, env=None, timeout=30):
+    child_env = os.environ.copy()
+    if env:
+        child_env.update(env)
+    return subprocess.run(
+        [sys.executable, '-B', str(root / 'verify_all.py'), *argv],
+        cwd=root, env=child_env, text=True, capture_output=True,
+        timeout=timeout)
 
 
 class VerifyAllTests(unittest.TestCase):
@@ -803,6 +861,619 @@ class TestSelectionTests(unittest.TestCase):
                 })
                 self.assertEqual(
                     set(payload), {'modules', 'test_ids', 'count'})
+
+
+class ParallelRunnerTests(unittest.TestCase):
+    def test_parallel_is_bounded_isolated_and_ordered(self):
+        prefix = _prefix()
+        module_names = [f'{prefix}_slow_a', f'{prefix}_slow_b',
+                        f'{prefix}_slow_c']
+        with tempfile.TemporaryDirectory(
+                prefix='verify-all-parallel-events-') as event_directory:
+            events_path = Path(event_directory) / 'events.jsonl'
+            sources = {
+                name: f'''
+                    import json
+                    import os
+                    import time
+                    from pathlib import Path
+                    from unittest import TestCase
+
+                    EVENTS = Path({str(events_path)!r})
+
+                    def record(kind):
+                        with EVENTS.open('a', encoding='utf-8') as handle:
+                            handle.write(json.dumps({{
+                                'module': __name__,
+                                'kind': kind,
+                                'pid': os.getpid(),
+                                'at': time.time(),
+                            }}) + '\\n')
+
+                    class SlowCase(TestCase):
+                        def test_slow(self):
+                            record('start')
+                            time.sleep(0.3)
+                            record('end')
+                '''
+                for name in module_names
+            }
+            with _CopiedRunner(sources) as root:
+                report_path = root / 'report.json'
+                completed = _run_copied_runner(
+                    root, [str(report_path), '--jobs', '2'])
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                report = json.loads(report_path.read_text(encoding='utf-8'))
+
+            records = [
+                json.loads(line)
+                for line in events_path.read_text(encoding='utf-8').splitlines()
+            ]
+
+        self.assertEqual(report['execution'], {
+            'mode': 'parallel',
+            'jobs': 2,
+            'worker_errors': [],
+        })
+        self.assertEqual(report['selection'], {
+            'mode': 'full',
+            'modules': module_names,
+        })
+        self.assertEqual(
+            [row['id'] for row in report['test_results']],
+            [f'{name}.SlowCase.test_slow' for name in module_names])
+        self.assertEqual(report['tests'], 3)
+        self.assertTrue(report['passed'])
+
+        by_module = {}
+        for record in records:
+            by_module.setdefault(record['module'], []).append(record)
+        self.assertEqual(set(by_module), set(module_names))
+        pids = {records_for_module[0]['pid']
+                for records_for_module in by_module.values()}
+        self.assertEqual(len(pids), 3)
+        intervals = []
+        for records_for_module in by_module.values():
+            self.assertEqual(
+                [record['kind'] for record in records_for_module],
+                ['start', 'end'])
+            intervals.append((records_for_module[0]['at'],
+                              records_for_module[1]['at']))
+        peak = max(
+            sum(start <= candidate_start < end
+                for start, end in intervals)
+            for candidate_start, _ in intervals)
+        self.assertEqual(peak, 2)
+
+    def test_default_and_explicit_jobs_one_remain_serially_compatible(self):
+        prefix = _prefix()
+        first_name = f'{prefix}_serial_first'
+        second_name = f'{prefix}_serial_second'
+        sources = {
+            first_name: '''
+                from unittest import TestCase
+
+                class FirstCase(TestCase):
+                    def test_one(self):
+                        pass
+
+                    def test_two(self):
+                        pass
+            ''',
+            second_name: '''
+                from unittest import TestCase
+
+                class SecondCase(TestCase):
+                    def test_three(self):
+                        pass
+            ''',
+        }
+        with _CopiedRunner(sources) as root:
+            default_report = root / 'default.json'
+            jobs_one_report = root / 'jobs-one.json'
+            default = _run_copied_runner(root, [str(default_report)])
+            explicit = _run_copied_runner(
+                root, [str(jobs_one_report), '--jobs', '1'])
+            listed = _run_copied_runner(
+                root, ['--list', '--jobs', '4'])
+            self.assertEqual(default.returncode, 0, default.stderr)
+            self.assertEqual(explicit.returncode, 0, explicit.stderr)
+            self.assertEqual(listed.returncode, 0, listed.stderr)
+            serial = json.loads(default_report.read_text(encoding='utf-8'))
+            explicit_serial = json.loads(
+                jobs_one_report.read_text(encoding='utf-8'))
+            list_payload = json.loads(listed.stdout)
+
+        self.assertNotIn('execution', serial)
+        self.assertNotIn('execution', explicit_serial)
+        self.assertEqual(set(serial), set(explicit_serial))
+        self.assertEqual(serial['selection'], explicit_serial['selection'])
+        self.assertEqual(serial['tests'], 3)
+        self.assertEqual(
+            [(row['id'], row['outcome'])
+             for row in serial['test_results']],
+            [(row['id'], row['outcome'])
+             for row in explicit_serial['test_results']])
+        self.assertEqual(
+            list_payload,
+            {
+                'modules': [first_name, second_name],
+                'test_ids': [
+                    f'{first_name}.FirstCase.test_one',
+                    f'{first_name}.FirstCase.test_two',
+                    f'{second_name}.SecondCase.test_three',
+                ],
+                'count': 3,
+            })
+
+    def test_parallel_preserves_exact_selection_and_first_appearance_order(self):
+        prefix = _prefix()
+        first_name = f'{prefix}_selected_first'
+        second_name = f'{prefix}_selected_second'
+        with tempfile.TemporaryDirectory(
+                prefix='verify-all-parallel-selection-') as marker_directory:
+            markers = {
+                key: Path(marker_directory) / key
+                for key in ('alpha', 'beta', 'extra', 'gamma')
+            }
+            sources = {
+                first_name: f'''
+                    from pathlib import Path
+                    from unittest import TestCase
+
+                    class FirstCase(TestCase):
+                        def test_alpha(self):
+                            Path({str(markers['alpha'])!r}).write_text(
+                                'ran', encoding='utf-8')
+
+                        def test_beta(self):
+                            Path({str(markers['beta'])!r}).write_text(
+                                'ran', encoding='utf-8')
+
+                    class ExtraCase(TestCase):
+                        def test_extra(self):
+                            Path({str(markers['extra'])!r}).write_text(
+                                'ran', encoding='utf-8')
+                ''',
+                second_name: f'''
+                    from pathlib import Path
+                    from unittest import TestCase
+
+                    class SecondCase(TestCase):
+                        def test_gamma(self):
+                            Path({str(markers['gamma'])!r}).write_text(
+                                'ran', encoding='utf-8')
+                ''',
+            }
+            selectors = [
+                f'{second_name}.SecondCase',
+                f'{first_name}.FirstCase.test_alpha',
+                f'{first_name}.FirstCase',
+                f'{second_name}.SecondCase',
+            ]
+            expected_ids = [
+                f'{second_name}.SecondCase.test_gamma',
+                f'{first_name}.FirstCase.test_alpha',
+                f'{first_name}.FirstCase.test_beta',
+            ]
+            with _CopiedRunner(sources) as root:
+                report_path = root / 'report.json'
+                argv = [str(report_path), '--jobs', '4']
+                for selector in selectors:
+                    argv.extend(['--test', selector])
+                completed = _run_copied_runner(root, argv)
+                self.assertEqual(completed.returncode, 0, completed.stderr)
+                report = json.loads(report_path.read_text(encoding='utf-8'))
+            marker_observations = {
+                key: marker.exists() for key, marker in markers.items()
+            }
+
+        self.assertEqual(report['selection'], {
+            'mode': 'selected',
+            'modules': [second_name, first_name],
+            'selectors': [
+                f'{second_name}.SecondCase',
+                f'{first_name}.FirstCase.test_alpha',
+                f'{first_name}.FirstCase',
+            ],
+            'test_ids': expected_ids,
+        })
+        self.assertEqual(
+            [row['id'] for row in report['test_results']],
+            expected_ids)
+        self.assertTrue(report['passed'])
+        self.assertTrue(marker_observations['alpha'])
+        self.assertTrue(marker_observations['beta'])
+        self.assertTrue(marker_observations['gamma'])
+        self.assertFalse(marker_observations['extra'])
+
+    def test_parallel_aggregates_all_unittest_outcomes(self):
+        prefix = _prefix()
+        module_name = f'{prefix}_parallel_outcomes'
+        sources = {
+            module_name: '''
+                from unittest import TestCase, expectedFailure, skip
+
+                class OutcomeCase(TestCase):
+                    def test_pass(self):
+                        pass
+
+                    def test_fail(self):
+                        self.assertEqual(1, 2)
+
+                    def test_error(self):
+                        raise RuntimeError('boom')
+
+                    @skip('intentional')
+                    def test_skip(self):
+                        pass
+
+                    @expectedFailure
+                    def test_expected_failure(self):
+                        self.fail('expected')
+
+                    @expectedFailure
+                    def test_unexpected_success(self):
+                        pass
+
+                    def test_subtest_failure(self):
+                        with self.subTest(value=1):
+                            self.assertEqual(2, 1)
+            ''',
+        }
+        with _CopiedRunner(sources) as root:
+            report_path = root / 'report.json'
+            completed = _run_copied_runner(
+                root, [str(report_path), '--jobs', '2'])
+            self.assertEqual(completed.returncode, 1)
+            report = json.loads(report_path.read_text(encoding='utf-8'))
+
+        self.assertEqual(report['execution']['worker_errors'], [])
+        self.assertEqual(report['tests'], 7)
+        self.assertFalse(report['passed'])
+        self.assertEqual(
+            (report['failures'], report['errors'], report['skipped']),
+            (2, 1, 1))
+        outcomes = {
+            row['id'].rsplit('.', 1)[-1]: row['outcome']
+            for row in report['test_results']
+        }
+        self.assertEqual(outcomes, {
+            'test_pass': 'passed',
+            'test_fail': 'failed',
+            'test_error': 'error',
+            'test_skip': 'skipped',
+            'test_expected_failure': 'expected_failure',
+            'test_unexpected_success': 'unexpected_success',
+            'test_subtest_failure': 'failed',
+        })
+
+    def test_parallel_fixture_failures_keep_counts_without_fake_rows(self):
+        prefix = _prefix()
+        setup_name = f'{prefix}_setup_failure'
+        teardown_name = f'{prefix}_teardown_failure'
+        sources = {
+            setup_name: '''
+                from unittest import TestCase
+
+                class SetupCase(TestCase):
+                    @classmethod
+                    def setUpClass(cls):
+                        raise RuntimeError('class setup failed')
+
+                    def test_one(self):
+                        pass
+
+                    def test_two(self):
+                        pass
+            ''',
+            teardown_name: '''
+                from unittest import TestCase
+
+                class TeardownCase(TestCase):
+                    @classmethod
+                    def tearDownClass(cls):
+                        raise RuntimeError('class teardown failed')
+
+                    def test_three(self):
+                        pass
+
+                    def test_four(self):
+                        pass
+            ''',
+        }
+        with _CopiedRunner(sources) as root:
+            report_path = root / 'report.json'
+            completed = _run_copied_runner(
+                root, [str(report_path), '--jobs', '2'])
+            self.assertEqual(completed.returncode, 1)
+            report = json.loads(report_path.read_text(encoding='utf-8'))
+
+        self.assertEqual(report['execution']['worker_errors'], [])
+        self.assertEqual(report['tests'], 2)
+        self.assertFalse(report['passed'])
+        self.assertEqual(
+            (report['failures'], report['errors'], report['skipped']),
+            (0, 2, 0))
+        self.assertEqual(
+            [row['id'] for row in report['test_results']],
+            [f'{teardown_name}.TeardownCase.test_three',
+             f'{teardown_name}.TeardownCase.test_four'])
+        self.assertEqual(
+            [row['outcome'] for row in report['test_results']],
+            ['passed', 'passed'])
+
+    def test_invalid_jobs_are_rejected_before_import_test_or_report(self):
+        prefix = _prefix()
+        module_name = f'{prefix}_invalid_jobs'
+        with tempfile.TemporaryDirectory(
+                prefix='verify-all-invalid-jobs-') as directory:
+            root_path = Path(directory)
+            import_marker = root_path / 'imported'
+            test_marker = root_path / 'ran'
+            report_path = root_path / 'report.json'
+            sentinel = '{"keep": true}\n'
+            report_path.write_text(sentinel, encoding='utf-8')
+            sources = {
+                module_name: f'''
+                    from pathlib import Path
+                    from unittest import TestCase
+
+                    Path({str(import_marker)!r}).write_text(
+                        'imported', encoding='utf-8')
+
+                    class InvalidJobsCase(TestCase):
+                        def test_must_not_run(self):
+                            Path({str(test_marker)!r}).write_text(
+                                'ran', encoding='utf-8')
+                ''',
+            }
+            with _CopiedRunner(sources) as root:
+                for jobs in ('0', '5', '-1', 'abc', '1.5'):
+                    completed = _run_copied_runner(
+                        root, [str(report_path), '--module', module_name,
+                               '--jobs', jobs])
+                    self.assertEqual(completed.returncode, 2, jobs)
+                    self.assertEqual(completed.stdout, '', jobs)
+                    self.assertFalse(import_marker.exists(), jobs)
+                    self.assertFalse(test_marker.exists(), jobs)
+                    self.assertEqual(
+                        report_path.read_text(encoding='utf-8'),
+                        sentinel, jobs)
+
+    def test_invalid_parallel_selection_returns_two_without_a_report(self):
+        prefix = _prefix()
+        module_name = f'{prefix}_invalid_selection'
+        with tempfile.TemporaryDirectory(
+                prefix='verify-all-invalid-selection-') as directory:
+            report_path = Path(directory) / 'report.json'
+            import_marker = Path(directory) / 'imported'
+            test_marker = Path(directory) / 'ran'
+            sentinel = '{"keep": true}\n'
+            report_path.write_text(sentinel, encoding='utf-8')
+            sources = {
+                module_name: f'''
+                    from pathlib import Path
+                    from unittest import TestCase
+
+                    Path({str(import_marker)!r}).write_text(
+                        'imported', encoding='utf-8')
+
+                    class KnownCase(TestCase):
+                        def test_one(self):
+                            Path({str(test_marker)!r}).write_text(
+                                'ran', encoding='utf-8')
+                ''',
+            }
+            with _CopiedRunner(sources) as root:
+                malformed = _run_copied_runner(
+                    root, [str(report_path), '--jobs', '4',
+                           '--test', 'not a selector'])
+                unknown_module = _run_copied_runner(
+                    root, [str(report_path), '--jobs', '4',
+                           '--module', 'not_a_module'])
+                unmatched = _run_copied_runner(
+                    root, [str(report_path), '--jobs', '4',
+                           '--module', module_name,
+                           '--test', f'{module_name}.MissingCase'])
+                for completed in (malformed, unknown_module, unmatched):
+                    self.assertEqual(completed.returncode, 2)
+                    self.assertEqual(completed.stdout, '')
+                    self.assertEqual(
+                        report_path.read_text(encoding='utf-8'), sentinel)
+                self.assertFalse(test_marker.exists())
+                self.assertTrue(import_marker.exists())
+
+    def test_unexpected_child_exit_is_a_worker_error(self):
+        prefix = _prefix()
+        module_name = f'{prefix}_child_exit'
+        sources = {
+            module_name: '''
+                import os
+                from unittest import TestCase
+
+                class ExitCase(TestCase):
+                    def test_exits_without_report(self):
+                        os._exit(7)
+            ''',
+        }
+        with _CopiedRunner(sources) as root:
+            report_path = root / 'report.json'
+            completed = _run_copied_runner(
+                root, [str(report_path), '--jobs', '2'])
+            self.assertEqual(completed.returncode, 1)
+            report = json.loads(report_path.read_text(encoding='utf-8'))
+
+        self.assertFalse(report['passed'])
+        self.assertEqual(report['tests'], 0)
+        self.assertEqual(report['test_results'], [])
+        self.assertEqual(report['execution']['mode'], 'parallel')
+        self.assertTrue(report['execution']['worker_errors'])
+        self.assertTrue(any(
+            'report is unavailable' in error
+            for error in report['execution']['worker_errors']))
+
+    def test_foreign_child_report_ids_are_not_propagated(self):
+        prefix = _prefix()
+        module_name = f'{prefix}_foreign_report'
+        sources = {
+            module_name: '''
+                from unittest import TestCase
+
+                class TunneledCase(TestCase):
+                    def test_passes(self):
+                        pass
+            ''',
+        }
+        with _CopiedRunner(
+                sources, corrupt_child_reports=True) as root:
+            report_path = root / 'report.json'
+            completed = _run_copied_runner(
+                root, [str(report_path), '--jobs', '2'],
+                env={'VERIFY_ALL_CORRUPT_CHILD': '1'})
+            self.assertEqual(completed.returncode, 1)
+            report = json.loads(report_path.read_text(encoding='utf-8'))
+
+        self.assertFalse(report['passed'])
+        self.assertEqual(report['test_results'], [])
+        self.assertEqual(report['tests'], 0)
+        self.assertTrue(report['execution']['worker_errors'])
+        self.assertTrue(any(
+            'unknown test ID' in error
+            for error in report['execution']['worker_errors']))
+        self.assertNotIn(
+            '__foreign__.Foreign.test_foreign',
+            json.dumps(report['test_results']))
+
+    def test_hostile_child_report_types_do_not_escape_validation(self):
+        module_name = 'fixture_hostile_report'
+        expected_ids = [f'{module_name}.Case.test_one']
+        payload = verify_all._build_report(
+            1, True, 0, 0, 0, 'selected', [module_name], 0.01,
+            expected_ids, expected_ids,
+            [{'id': expected_ids[0], 'outcome': 'passed', 'seconds': 0.01}])
+
+        bad_outcome = json.loads(json.dumps(payload))
+        bad_outcome['test_results'][0]['outcome'] = []
+        errors, trusted = verify_all._validate_child_report(
+            bad_outcome, module_name, expected_ids, 0)
+        self.assertTrue(any('unittest outcome' in error for error in errors))
+        self.assertIsNone(trusted)
+
+        huge_duration = json.loads(json.dumps(payload))
+        huge_duration['seconds'] = 10 ** 1000
+        errors, trusted = verify_all._validate_child_report(
+            huge_duration, module_name, expected_ids, 0)
+        self.assertTrue(any('seconds must be' in error for error in errors))
+        self.assertIsNone(trusted)
+
+        huge_row_duration = json.loads(json.dumps(payload))
+        huge_row_duration['test_results'][0]['seconds'] = 10 ** 1000
+        errors, trusted = verify_all._validate_child_report(
+            huge_row_duration, module_name, expected_ids, 0)
+        self.assertTrue(any('seconds must be' in error for error in errors))
+        self.assertIsNone(trusted)
+
+    def test_undecodable_child_report_becomes_a_worker_error(self):
+        module_name = 'fixture_undecodable_report'
+        expected_ids = [f'{module_name}.Case.test_one']
+        with tempfile.TemporaryDirectory(
+                prefix='verify-all-undecodable-report-') as directory:
+            root = Path(directory)
+            report_path = root / 'report.json'
+            stderr_path = root / 'stderr.log'
+            report_path.write_bytes(b'{"tests": "\xff"}')
+            stderr_path.write_bytes(b'\xff')
+            report = verify_all._combine_parallel(
+                [{
+                    'module': module_name,
+                    'expected_ids': expected_ids,
+                    'report_path': str(report_path),
+                    'stderr_path': str(stderr_path),
+                    'returncode': 0,
+                }],
+                'selected', [module_name], 0.01, None, expected_ids, 2)
+
+        self.assertFalse(report['passed'])
+        self.assertEqual(report['tests'], 0)
+        self.assertEqual(report['test_results'], [])
+        self.assertTrue(report['execution']['worker_errors'])
+        self.assertTrue(any(
+            'unavailable or undecodable' in error
+            for error in report['execution']['worker_errors']))
+
+    def test_child_report_validator_rejects_integrity_violations(self):
+        module_name = 'fixture_report_module'
+        expected_ids = [
+            f'{module_name}.Case.test_alpha',
+            f'{module_name}.Case.test_beta',
+        ]
+        rows = [
+            {'id': expected_ids[0], 'outcome': 'passed', 'seconds': 0.01},
+            {'id': expected_ids[1], 'outcome': 'skipped', 'seconds': 0.01},
+        ]
+        payload = verify_all._build_report(
+            2, True, 0, 0, 1, 'selected', [module_name], 0.02,
+            expected_ids, expected_ids, rows)
+        errors, trusted = verify_all._validate_child_report(
+            payload, module_name, expected_ids, 0)
+        self.assertEqual(errors, [])
+        self.assertIsNotNone(trusted)
+
+        missing = json.loads(json.dumps(payload))
+        missing['tests'] = 1
+        missing['test_results'] = missing['test_results'][:1]
+        missing['skipped'] = 0
+        errors, trusted = verify_all._validate_child_report(
+            missing, module_name, expected_ids, 0)
+        self.assertTrue(any('missing expected test ID' in error
+                            for error in errors))
+        self.assertIsNone(trusted)
+
+        duplicate = json.loads(json.dumps(payload))
+        duplicate['test_results'][1] = dict(duplicate['test_results'][0])
+        duplicate['skipped'] = 0
+        errors, trusted = verify_all._validate_child_report(
+            duplicate, module_name, expected_ids, 0)
+        self.assertTrue(any('duplicate test ID' in error for error in errors))
+        self.assertIsNone(trusted)
+
+        foreign = json.loads(json.dumps(payload))
+        foreign['test_results'][1]['id'] = 'foreign.Case.test_foreign'
+        errors, trusted = verify_all._validate_child_report(
+            foreign, module_name, expected_ids, 0)
+        self.assertTrue(any('unknown test ID' in error for error in errors))
+        self.assertIsNone(trusted)
+
+        bad_outcome = json.loads(json.dumps(payload))
+        bad_outcome['test_results'][0]['outcome'] = 'flaky'
+        errors, trusted = verify_all._validate_child_report(
+            bad_outcome, module_name, expected_ids, 0)
+        self.assertTrue(any('unittest outcome' in error for error in errors))
+        self.assertIsNone(trusted)
+
+        contradictory = json.loads(json.dumps(payload))
+        contradictory['passed'] = False
+        errors, trusted = verify_all._validate_child_report(
+            contradictory, module_name, expected_ids, 0)
+        self.assertTrue(any('passed contradicts' in error
+                            for error in errors))
+        self.assertIsNone(trusted)
+
+        orphan_failure_count = json.loads(json.dumps(payload))
+        orphan_failure_count['failures'] = 1
+        orphan_failure_count['passed'] = False
+        errors, trusted = verify_all._validate_child_report(
+            orphan_failure_count, module_name, expected_ids, 1)
+        self.assertTrue(any('no corresponding test result row' in error
+                            for error in errors))
+        self.assertIsNone(trusted)
+
+        errors, trusted = verify_all._validate_child_report(
+            payload, module_name, expected_ids, 9)
+        self.assertTrue(any('unexpected status 9' in error
+                            for error in errors))
+        self.assertIsNone(trusted)
 
 
 if __name__ == '__main__':
