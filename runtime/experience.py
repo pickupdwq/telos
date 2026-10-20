@@ -143,27 +143,34 @@ class Experience:
         repo = str(Path(repo).resolve())
         if type(limit) is not int or not 1 <= limit <= 20:
             raise self.b.GateError('Experience limit must be 1-20')
-        found = []
         with self.locked() as folder:
+            candidates = []
             for path in folder.glob('*.json'):
                 e = self.b.read_json(path)
                 if not self.valid(e) or e['repo'] != repo or e.get('disabled'):
                     continue
                 if not include_candidates and not e['reusable']:
                     continue
-                if not include_candidates and not self.source_valid(e):
-                    continue
                 if paths and not self.b.project_manager().overlap(paths, e['paths']):
                     continue
-                found.append(e)
-        # Prioritize repaired-and-verified experience over unremarkable successes;
-        # keep the most recent record per task/session instead of failed rounds.
-        found.sort(key=lambda e: (bool(e['public_lessons']), e['created_at']), reverse=True)
-        unique, seen = [], set()
-        for e in found:
-            if e['session_id'] not in seen:
-                seen.add(e['session_id']); unique.append(e)
-        return unique[:limit]
+                candidates.append(e)
+            # Prioritize repaired-and-verified experience over unremarkable successes;
+            # keep the most recent record per task/session instead of failed rounds.
+            candidates.sort(key=lambda e: (bool(e['public_lessons']), e['created_at']), reverse=True)
+            # Provenance checks are expensive; run them lazily in rank order and stop
+            # once enough distinct sessions are selected. Rejected sources are skipped
+            # so older valid records can still fill the requested slots.
+            unique, seen = [], set()
+            for e in candidates:
+                if e['session_id'] in seen:
+                    continue
+                if not include_candidates and not self.source_valid(e):
+                    continue
+                seen.add(e['session_id'])
+                unique.append(e)
+                if len(unique) >= limit:
+                    break
+        return unique
 
     def context(self, repo, paths, enabled=True):
         if not enabled:
