@@ -1,5 +1,6 @@
 """Direct behavioral tests for usage normalization, durable budgets and the relay."""
 import contextlib
+import io
 import json
 import os
 from pathlib import Path
@@ -11,6 +12,7 @@ import time
 import unittest
 import urllib.error
 import urllib.request
+from email.message import Message
 from unittest.mock import patch
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 
@@ -599,6 +601,324 @@ class RelayCloseoutTests(unittest.TestCase):
                     self.ledger.ensure_available()
         finally:
             release.set()
+
+
+class _RelayPolicySpy:
+    MAX_RESPONSE_BYTES = 16 * 1024 * 1024
+
+    def __init__(self):
+        self.prepared = []
+        self.failure = None
+        self.transport_error = None
+
+    def prepare(self, raw):
+        self.prepared.append(raw)
+        return raw
+
+    def validate_response(self, raw, content_type):
+        raise AssertionError('response validation must not run before admission')
+
+
+class _RelayOpener:
+    def __init__(self, response=None, error=None):
+        self.response = response
+        self.error = error
+        self.calls = []
+
+    def open(self, request, timeout):
+        self.calls.append((request, timeout))
+        if self.error is not None:
+            raise self.error
+        if self.response is None:
+            raise AssertionError('rejected admission must not reach upstream transport')
+        return self.response
+
+
+class _JsonResponse:
+    status = 200
+
+    def __init__(self, payload=None):
+        self.headers = Message()
+        self.headers['Content-Type'] = 'application/json'
+        self.payload = json.dumps(payload or {
+            'status': 'completed', 'usage': responses_usage()}).encode()
+
+    def read(self, amount=-1):
+        return self.payload if amount < 0 else self.payload[:amount]
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, *_):
+        return False
+
+
+class _RaisingCloseout:
+    def __init__(self, error_type=TimeoutError, message='admission rejected'):
+        self.error_type = error_type
+        self.message = message
+        self.begin_calls = 0
+        self.drained = False
+
+    def begin(self, interrupt):
+        self.begin_calls += 1
+        raise self.error_type(self.message)
+
+    def end(self, lease):
+        pass
+
+    def drain(self):
+        self.drained = True
+
+
+class RelayAdmissionDiagnosticTests(unittest.TestCase):
+    """Socket-free diagnostics for the real model_relay Handler.do_POST."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.path = Path(self.temp.name) / 'usage.json'
+        self.ledger = usage.UsageLedger(self.path)
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    @contextlib.contextmanager
+    def relay(self, *, ledger=None, opener=None, key='UPSTREAM_SECRET', **kwargs):
+        captured = {}
+
+        class FakeServer:
+            server_port = 9
+
+            def __init__(self, address, handler):
+                captured['handler'] = handler
+
+            def serve_forever(self):
+                pass
+
+            def shutdown(self):
+                pass
+
+            def server_close(self):
+                pass
+
+        opener = opener or _RelayOpener()
+        arguments = {'usage_ledger': ledger or self.ledger,
+                     'usage_context': {'phase': 'exam'}}
+        arguments.update(kwargs)
+        with patch.object(isolation, 'ThreadingHTTPServer', FakeServer), \
+                patch.object(isolation.urllib.request, 'build_opener',
+                             lambda *args, **options: opener):
+            with isolation.model_relay('http://127.0.0.1:9', key, **arguments) as relay:
+                yield captured['handler'], relay, opener
+
+    def invoke(self, handler_class, relay, *, path='/v1/responses', payload=None,
+               authorization=None):
+        raw = json.dumps(payload if payload is not None else {}).encode()
+        handler = handler_class.__new__(handler_class)
+        handler.headers = Message()
+        handler.headers['Authorization'] = authorization or 'Bearer ' + relay[1]
+        handler.headers['Content-Length'] = str(len(raw))
+        handler.rfile = io.BytesIO(raw)
+        handler.wfile = io.BytesIO()
+        handler.path = path
+        handler.request_version = 'HTTP/1.1'
+        handler.command = 'POST'
+        handler.close_connection = False
+        handler._headers_buffer = []
+        handler.requestline = f'POST {path} HTTP/1.1'
+        handler.client_address = ('127.0.0.1', 0)
+        handler.do_POST()
+        response = handler.wfile.getvalue()
+        head, _, body = response.partition(b'\r\n\r\n')
+        return handler, int(head.split(b' ', 2)[1]), body
+
+    def test_expired_admission_returns_fixed_message_without_reservation_or_transport(self):
+        policy = _RelayPolicySpy()
+        diagnostics = {}
+        closeout = isolation.RelayCloseout(duration=0, grace=0.05)
+        with self.relay(policy=policy, diagnostics=diagnostics,
+                        closeout=closeout) as (handler_class, relay, opener):
+            handler, status, body = self.invoke(handler_class, relay)
+        self.assertEqual(status, 400)
+        self.assertIn(b'Execution admission closed; no upstream request was sent', body)
+        self.assertNotIn(b'Model protocol or frozen endpoint validation failed', body)
+        self.assertTrue(handler.close_connection)
+        self.assertEqual(opener.calls, [])
+        totals = self.ledger.snapshot()['totals']
+        self.assertEqual((totals['requests'], totals['in_flight_requests']), (0, 0))
+        self.assertEqual(closeout.reason, 'execution_deadline')
+        self.assertEqual(closeout.active, {})
+        self.assertEqual(len(policy.prepared), 1)
+        self.assertIn('Execution admission deadline reached', policy.failure)
+        self.assertEqual(policy.transport_error, 'Exam endpoint transport failed')
+        self.assertIn('Execution admission deadline reached', diagnostics['failure'])
+
+    def test_closing_and_repeated_admission_are_rejected_without_accounting(self):
+        closeout = isolation.RelayCloseout()
+        closeout.stop('execution_finished')
+        with self.relay(closeout=closeout) as (handler_class, relay, opener):
+            first = self.invoke(handler_class, relay)
+            second = self.invoke(handler_class, relay)
+        for handler, status, body in (first, second):
+            self.assertEqual(status, 400)
+            self.assertIn(b'Execution admission closed; no upstream request was sent', body)
+            self.assertNotIn(b'Model protocol or frozen endpoint validation failed', body)
+            self.assertTrue(handler.close_connection)
+        self.assertEqual(opener.calls, [])
+        totals = self.ledger.snapshot()['totals']
+        self.assertEqual((totals['requests'], totals['in_flight_requests']), (0, 0))
+        self.assertEqual(closeout.reason, 'execution_finished')
+        self.assertEqual(closeout.active, {})
+
+    def test_admission_rejection_never_copies_exception_text_or_credentials_publicly(self):
+        closeout = _RaisingCloseout()
+        diagnostics = {}
+        with self.relay(closeout=closeout,
+                        diagnostics=diagnostics) as (handler_class, relay, opener):
+            closeout.message = (relay[1] + ' UPSTREAM_SECRET '
+                                + 'credential-detail ' * 200)
+            _, status, body = self.invoke(handler_class, relay)
+        self.assertEqual(status, 400)
+        self.assertIn(b'Execution admission closed; no upstream request was sent', body)
+        for value in (relay[1].encode(), b'UPSTREAM_SECRET', b'credential-detail'):
+            self.assertNotIn(value, body)
+        self.assertLessEqual(len(diagnostics['failure']), 600)
+        self.assertNotIn(relay[1], diagnostics['failure'])
+        self.assertNotIn('UPSTREAM_SECRET', diagnostics['failure'])
+        self.assertEqual(closeout.begin_calls, 1)
+        self.assertEqual(opener.calls, [])
+        self.assertEqual(self.ledger.snapshot()['totals']['requests'], 0)
+
+    def test_validation_timeout_before_admission_keeps_generic_protocol_error(self):
+        diagnostics = {}
+        closeout = isolation.RelayCloseout(duration=60, request_window=5)
+
+        def validate():
+            raise TimeoutError('validation timed out')
+
+        with self.relay(validate=validate, closeout=closeout,
+                        diagnostics=diagnostics) as (handler_class, relay, opener):
+            handler, status, body = self.invoke(handler_class, relay)
+        self.assertEqual(status, 400)
+        self.assertIn(b'Model protocol or frozen endpoint validation failed', body)
+        self.assertNotIn(b'Execution admission closed', body)
+        self.assertTrue(handler.close_connection)
+        self.assertEqual(diagnostics['failure'], 'validation timed out')
+        self.assertEqual(opener.calls, [])
+        self.assertEqual(self.ledger.snapshot()['totals']['requests'], 0)
+        self.assertEqual(closeout.active, {})
+
+    def test_policy_preparation_timeout_before_admission_keeps_generic_protocol_error(self):
+        class TimeoutPreparingPolicy(_RelayPolicySpy):
+            def prepare(self, raw):
+                raise TimeoutError('policy preparation timed out')
+
+        policy = TimeoutPreparingPolicy()
+        diagnostics = {}
+        with self.relay(policy=policy,
+                        diagnostics=diagnostics) as (handler_class, relay, opener):
+            handler, status, body = self.invoke(handler_class, relay)
+        self.assertEqual(status, 400)
+        self.assertIn(b'Model protocol or frozen endpoint validation failed', body)
+        self.assertNotIn(b'Execution admission closed', body)
+        self.assertEqual(policy.failure, 'policy preparation timed out')
+        self.assertEqual(policy.transport_error, 'Exam endpoint transport failed')
+        self.assertEqual(diagnostics['failure'], 'policy preparation timed out')
+        self.assertEqual(opener.calls, [])
+        self.assertEqual(self.ledger.snapshot()['totals']['requests'], 0)
+        self.assertTrue(handler.close_connection)
+
+    def test_non_timeout_from_admission_keeps_generic_protocol_error(self):
+        closeout = _RaisingCloseout(RuntimeError, 'closeout setup failed')
+        policy = _RelayPolicySpy()
+        diagnostics = {}
+        with self.relay(closeout=closeout, policy=policy,
+                        diagnostics=diagnostics) as (handler_class, relay, opener):
+            handler, status, body = self.invoke(handler_class, relay)
+        self.assertEqual(status, 400)
+        self.assertIn(b'Model protocol or frozen endpoint validation failed', body)
+        self.assertNotIn(b'Execution admission closed', body)
+        self.assertEqual(policy.failure, 'closeout setup failed')
+        self.assertIsNone(policy.transport_error)
+        self.assertEqual(diagnostics['failure'], 'closeout setup failed')
+        self.assertEqual(closeout.begin_calls, 1)
+        self.assertEqual(opener.calls, [])
+        self.assertEqual(self.ledger.snapshot()['totals']['requests'], 0)
+        self.assertTrue(handler.close_connection)
+
+    def test_timeout_after_reservation_keeps_protocol_failure_and_accounts_request(self):
+        closeout = isolation.RelayCloseout(duration=60, request_window=5)
+        policy = _RelayPolicySpy()
+        diagnostics = {}
+        with self.relay(closeout=closeout, policy=policy,
+                        diagnostics=diagnostics) as (handler_class, relay, opener):
+            with patch.object(closeout, 'timeout',
+                              side_effect=TimeoutError('Execution closeout deadline reached')):
+                handler, status, body = self.invoke(handler_class, relay)
+        self.assertEqual(status, 400)
+        self.assertIn(b'Model protocol or frozen endpoint validation failed', body)
+        self.assertNotIn(b'Execution admission closed', body)
+        totals = self.ledger.snapshot()['totals']
+        self.assertEqual(totals['requests'], 1)
+        self.assertEqual(totals['failed_requests'], 1)
+        self.assertEqual(totals['unknown_usage_requests'], 1)
+        self.assertEqual(totals['in_flight_requests'], 0)
+        self.assertEqual(totals['unresolved_requests'], 0)
+        self.assertEqual(closeout.active, {})
+        self.assertEqual(policy.transport_error, 'Exam endpoint transport failed')
+        self.assertIn('Execution closeout deadline reached', policy.failure)
+        self.assertEqual(opener.calls, [])
+        self.assertTrue(handler.close_connection)
+
+    def test_auth_path_and_budget_short_circuits_never_reach_admission(self):
+        closeout = _RaisingCloseout(AssertionError, 'admission must not run')
+        budget_failure = {'message': 'Task budget exhausted; no upstream request was sent'}
+        with self.relay(closeout=closeout,
+                        budget_failure=budget_failure) as (handler_class, relay, opener):
+            _, auth_status, _ = self.invoke(handler_class, relay,
+                                            authorization='Bearer wrong-token')
+            _, path_status, _ = self.invoke(handler_class, relay, path='/v1/not-allowed')
+            _, budget_status, budget_body = self.invoke(handler_class, relay)
+        self.assertEqual((auth_status, path_status, budget_status), (403, 404, 400))
+        self.assertIn(b'Task budget or usage accounting stop; no upstream request was sent',
+                      budget_body)
+        self.assertEqual(closeout.begin_calls, 0)
+        self.assertEqual(opener.calls, [])
+        self.assertEqual(self.ledger.snapshot()['totals']['requests'], 0)
+
+    def test_completed_response_keeps_success_on_responses_and_compact_routes(self):
+        for index, path in enumerate(('/v1/responses', '/v1/responses/compact')):
+            with self.subTest(path=path):
+                opener = _RelayOpener(_JsonResponse())
+                ledger = usage.UsageLedger(Path(self.temp.name) / f'success-{index}.json')
+                with self.relay(ledger=ledger, opener=opener) as (handler_class, relay, unused):
+                    handler, status, body = self.invoke(handler_class, relay, path=path,
+                                                        payload={'model': 'm'})
+                self.assertEqual(status, 200)
+                self.assertIn(b'"status": "completed"', body)
+                self.assertEqual(len(opener.calls), 1)
+                totals = ledger.snapshot()['totals']
+                self.assertEqual((totals['requests'], totals['failed_requests']), (1, 0))
+                self.assertEqual(totals['total_tokens'], 120)
+
+    def test_provider_http_failure_keeps_existing_status_and_public_error(self):
+        headers = Message()
+        headers['Content-Type'] = 'application/json'
+        error = urllib.error.HTTPError('http://127.0.0.1:9/v1/responses', 503,
+                                       'provider failure', headers, io.BytesIO(b'{}'))
+        policy = _RelayPolicySpy()
+        with self.relay(opener=_RelayOpener(error=error),
+                        policy=policy) as (handler_class, relay, opener):
+            handler, status, body = self.invoke(handler_class, relay)
+        self.assertEqual(status, 503)
+        self.assertIn(b'Model endpoint rejected request', body)
+        self.assertNotIn(b'Execution admission closed', body)
+        self.assertEqual(policy.transport_error, 'Exam endpoint HTTP 503')
+        self.assertEqual(self.ledger.snapshot()['totals']['failed_requests'], 1)
+        self.assertEqual(len(opener.calls), 1)
+        self.assertTrue(handler.close_connection)
+
+
 
 
 @contextlib.contextmanager
