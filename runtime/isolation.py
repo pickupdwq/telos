@@ -191,6 +191,25 @@ def prepare_work_request(raw, *, seconds_remaining=None, requests_remaining=None
     return json.dumps(updated, ensure_ascii=False, separators=(',', ':')).encode()
 
 
+def _work_request_supported(raw):
+    try:
+        request = json.loads(raw)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(request, dict) and isinstance(request.get('input'), (list, str))
+
+
+def _apply_work_guidance(raw, *, usage_ledger, request_id, closeout):
+    """Add advisory values only when the request can accept a developer message."""
+    if not _work_request_supported(raw):
+        return raw
+    requests_remaining = None
+    if usage_ledger is not None and request_id is not None:
+        requests_remaining = _work_requests_remaining(usage_ledger.snapshot())
+    return prepare_work_request(raw, seconds_remaining=closeout.admission_remaining(),
+                                requests_remaining=requests_remaining)
+
+
 def _work_requests_remaining(snapshot):
     """Further work requests after the current reservation, respecting exam reserves."""
     if not isinstance(snapshot, dict):
@@ -590,12 +609,8 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                         self.send_error(400, 'Usage accounting failed; no upstream request was sent')
                         return
                 if work_guidance and self.path == '/v1/responses':
-                    requests_remaining = None
-                    if usage_ledger is not None and request_id is not None:
-                        requests_remaining = _work_requests_remaining(usage_ledger.snapshot())
-                    body = prepare_work_request(
-                        body, seconds_remaining=closeout.admission_remaining(),
-                        requests_remaining=requests_remaining)
+                    body = _apply_work_guidance(
+                        body, usage_ledger=usage_ledger, request_id=request_id, closeout=closeout)
                 headers = {'Content-Type': 'application/json'}
                 if key:
                     headers['Authorization'] = 'Bearer ' + key

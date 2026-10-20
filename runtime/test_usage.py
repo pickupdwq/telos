@@ -732,6 +732,20 @@ class WorkGuidanceTests(unittest.TestCase):
                 self.assertIs(isolation.prepare_work_request(
                     raw, seconds_remaining=5, requests_remaining=1), raw)
 
+    def test_ineligible_payload_never_reads_optional_hint_metadata(self):
+        class Sentinel:
+            def snapshot(self):
+                raise AssertionError('optional snapshot accessed')
+
+            def admission_remaining(self):
+                raise AssertionError('optional time accessed')
+
+        sentinel = Sentinel()
+        for raw in (b'{"model":"m"}', b'not-json', b'{"model":"m","input":3}'):
+            with self.subTest(raw=raw):
+                self.assertIs(isolation._apply_work_guidance(
+                    raw, usage_ledger=sentinel, request_id='request-1', closeout=sentinel), raw)
+
     def test_admission_remaining_uses_monotonic_deadline_and_window(self):
         with patch.object(isolation.time, 'monotonic') as clock:
             clock.return_value = 100.0
