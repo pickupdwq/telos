@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 from test_telos import b, BridgeTests
 from test_providers import configured
-from closed_book import ExamPolicy, validate_evidence
+from closed_book import ANSWER_SCHEMA, ExamPolicy, format_diagnostic, validate_evidence
 import isolation
 import providers
 import supervisor
@@ -227,6 +227,228 @@ class WorkflowTests(unittest.TestCase):
         for provider, model in [('deepseek', 'deepseek-flash'), ('openai', 'gpt-mini'), ('custom', 'gpt-6-astra')]:
             with self.assertRaises(b.GateError):
                 supervisor.verify_thread({'modelProvider': provider, 'model': model}, cfg)
+
+
+class _PureBridge:
+    """Minimal answer() boundary: no CLI, relay, filesystem or network."""
+    GateError = b.GateError
+    ExamFormatError = b.ExamFormatError
+    encoded = staticmethod(b.encoded)
+    digest = staticmethod(b.digest)
+    parse_answers = staticmethod(b.parse_answers)
+    providers = b.providers
+
+    def __init__(self, summaries):
+        self.summaries = list(summaries)
+        self.prompts = []
+        self.wire_requests = []
+        self.calls = 0
+
+    def backend_bindings(self, contract):
+        return {'executor': contract['executor']}
+
+    def peer_turn(self, state, contract, prompt, phase=None, policy=None):
+        self.calls += 1
+        self.prompts.append(prompt)
+        self.wire_requests.append(json.loads(policy.prepare(json.dumps({
+            'model': contract['executor']['model'],
+            'input': [{'role': 'user', 'content': prompt}]}))))
+        policy.responses.append({'response_hash': '0' * 64,
+                                 'reported_model': contract['executor']['model'],
+                                 'tool_call_count': 0,
+                                 'usage': {'input_tokens': 10, 'output_tokens': 5, 'total_tokens': 15}})
+        return {'thread_id': state['thread_id'], 'summary': self.summaries.pop(0),
+                'usage': {'input_tokens': 10, 'output_tokens': 5}}
+
+
+class FormatPolicyTests(unittest.TestCase):
+    """Pure closed-book format tests; native CLI coverage remains in WorkflowTests."""
+
+    @staticmethod
+    def binding(provider='bailian', model='deepseek-v4.1-flash-1017', attempts=1):
+        return {'version': 1, 'profile': 'format-test', 'provider': provider, 'model': model,
+                'base_url': 'https://models.example.invalid/v1', 'wire_api': 'responses',
+                'exam_wire_api': 'responses', 'credential_ref': {'env': 'KEY', 'opencode_provider': None},
+                'reasoning_effort': 'max', 'http_timeout': 180, 'job_timeout': 600,
+                'exam_max_tokens': 4096, 'exam_format_attempts': attempts}
+
+    @staticmethod
+    def request(model, **extra):
+        value = {'model': model, 'input': [{'role': 'user', 'content': 'work history'}],
+                 'tools': [{'type': 'function', 'name': 'shell_command'}], 'tool_choice': 'auto',
+                 'store': True, 'previous_response_id': 'previous', 'parallel_tool_calls': True,
+                 'reasoning': {'effort': 'low', 'summary': 'auto'}}
+        value.update(extra)
+        return value
+
+    def contract(self, binding):
+        return {'executor': binding,
+                'questions': [{'id': 'q1', 'prompt': 'What is add(2, 3)?',
+                               'reference': 'PRIVATE_REFERENCE_771', 'points': 50},
+                              {'id': 'q2', 'prompt': 'What is add(-2, 5)?',
+                               'reference': 'PRIVATE_REFERENCE_772', 'points': 50}],
+                'checks': [{'id': 'private', 'argv': ['PRIVATE_CHECK_881']}],
+                'private_feedback': 'PRIVATE_FEEDBACK_662'}
+
+    def test_json_object_format_is_scoped_and_preserves_other_text_options(self):
+        binding = self.binding()
+        original_text = {'verbosity': 'low',
+                         'format': {'type': 'json_schema', 'json_schema': {'name': 'answers'}}}
+        policy = ExamPolicy(binding)
+        for _ in range(2):
+            wire = json.loads(policy.prepare(json.dumps(self.request(binding['model'], text=original_text))))
+            self.assertEqual(wire['text'], {'verbosity': 'low', 'format': {'type': 'json_object'}})
+            self.assertEqual(wire['model'], binding['model'])
+            self.assertEqual(wire['reasoning'], {'effort': 'max', 'summary': 'auto'})
+            self.assertEqual(wire['tools'], [])
+            self.assertEqual(wire['tool_choice'], 'none')
+            self.assertFalse(wire['store'])
+            self.assertNotIn('previous_response_id', wire)
+            self.assertNotIn('parallel_tool_calls', wire)
+        self.assertEqual([r['text_format'] for r in policy.requests], ['json_object', 'json_object'])
+        self.assertEqual(original_text['format']['type'], 'json_schema')
+
+        for provider, model in [('openai', 'deepseek-v4.1-flash-1017'),
+                                ('bailian', 'some-other-model'),
+                                ('deepseek', 'deepseek-flash')]:
+            unscoped = self.binding(provider=provider, model=model)
+            policy = ExamPolicy(unscoped)
+            wire = json.loads(policy.prepare(json.dumps(self.request(model, text=original_text))))
+            self.assertEqual(wire['text'], original_text)
+            self.assertEqual(policy.requests[0]['text_format'], 'json_schema')
+            without_text = json.loads(policy.prepare(json.dumps(self.request(model))))
+            self.assertNotIn('text', without_text)
+            self.assertIsNone(policy.requests[1]['text_format'])
+
+    def test_prepare_keeps_conversation_but_disables_tool_declarations(self):
+        binding = self.binding(provider='deepseek', model='deepseek-flash')
+        history = [{'type': 'message', 'role': 'user', 'content': 'work'},
+                   {'type': 'additional_tools', 'tools': [{'name': 'shell_command'}]},
+                   {'type': 'function_call', 'call_id': 'call-1', 'name': 'shell_command',
+                    'arguments': '{"command":"pwd"}'},
+                   {'type': 'function_call_output', 'call_id': 'call-1', 'output': 'fixture'},
+                   {'type': 'tool_search_output', 'tools': [{'name': 'apply_patch'}]}]
+        policy = ExamPolicy(binding)
+        wire = json.loads(policy.prepare(json.dumps(self.request(binding['model'], input=history))))
+        self.assertEqual(wire['input'], [history[0], history[2], history[3]])
+        self.assertEqual(wire['tools'], [])
+        self.assertEqual(wire['tool_choice'], 'none')
+        self.assertEqual(wire['max_output_tokens'], 4096)
+        self.assertEqual(wire['reasoning']['effort'], 'max')
+        policy = ExamPolicy(binding)
+        with self.assertRaises(b.GateError):
+            policy.validate_response(json.dumps({
+                'status': 'completed',
+                'output': [{'type': 'function_call', 'call_id': 'call-2', 'name': 'shell_command',
+                            'arguments': '{"command":"pwd"}'}]}).encode(), 'application/json')
+        self.assertEqual(policy.responses, [])
+        with self.assertRaises(b.GateError):
+            policy.validate_response(json.dumps({'status': 'incomplete', 'output': []}).encode(),
+                                     'application/json')
+        self.assertEqual(policy.responses, [])
+
+    def test_initial_and_retry_prompts_repeat_schema_ids_and_stay_private(self):
+        binding = self.binding(attempts=2)
+        contract = self.contract(binding)
+        bridge = _PureBridge(['PRIVATE_MODEL_OUTPUT_991 {"answers": ',
+                              json.dumps({'answers': [{'id': 'q1', 'answer': '5'},
+                                                      {'id': 'q2', 'answer': '3'}]})])
+        state = {'thread_id': 'thread-1', 'session_id': 'session-1'}
+        import closed_book
+        result = closed_book.answer(bridge, state, contract, 'c' * 40)
+
+        self.assertEqual(bridge.calls, 2)
+        initial, retry = bridge.prompts
+        for prompt in (initial, retry):
+            self.assertIn(ANSWER_SCHEMA, prompt)
+            self.assertIn('"id" and "prompt"', prompt)
+            self.assertIn('"id" and "answer"', prompt)
+            self.assertIn('never return or copy a "prompt" field', prompt)
+            self.assertIn('top-level object must contain only the single key "answers"', prompt)
+            self.assertIn('exactly one nonempty answer per ID', prompt)
+            self.assertIn('escape double quotes', prompt)
+            self.assertIn('newlines as \\n', prompt)
+            self.assertIn('Required question IDs: ["q1","q2"]', prompt)
+            for secret in ('PRIVATE_REFERENCE_771', 'PRIVATE_REFERENCE_772',
+                           'PRIVATE_CHECK_881', 'PRIVATE_FEEDBACK_662'):
+                self.assertNotIn(secret, prompt)
+        self.assertIn('What is add(2, 3)?', initial)
+        self.assertNotIn('What is add(2, 3)?', retry)
+
+        first, second = result['attempts']
+        self.assertIs(first['format_valid'], False)
+        self.assertEqual(first['format_error'], 'invalid JSON')
+        self.assertLessEqual(len(first['format_error']), 160)
+        self.assertNotIn('PRIVATE_MODEL_OUTPUT_991', json.dumps(first))
+        self.assertIs(second['format_valid'], True)
+        self.assertIsNone(second['format_error'])
+        self.assertTrue(all(r['requests'] and r['responses'] for r in result['attempts']))
+        self.assertEqual(result['answers'], [{'id': 'q1', 'answer': '5'}, {'id': 'q2', 'answer': '3'}])
+        self.assertEqual(result['usage']['input_tokens'], 20)
+        self.assertEqual(result['usage']['output_tokens'], 10)
+        self.assertEqual(result['commit'], 'c' * 40)
+        for wire in bridge.wire_requests:
+            self.assertEqual(wire['text']['format'], {'type': 'json_object'})
+            self.assertEqual(wire['tools'], [])
+            self.assertEqual(wire['tool_choice'], 'none')
+
+    def test_exhausted_attempts_keep_bounded_safe_metadata(self):
+        binding = self.binding(attempts=2)
+        contract = self.contract(binding)
+        bridge = _PureBridge(['PRIVATE_FIRST_RAW {', 'PRIVATE_SECOND_RAW ['])
+        import closed_book
+        with self.assertRaises(b.ExamFormatError) as raised:
+            closed_book.answer(bridge, {'thread_id': 'thread-2', 'session_id': 'session-2'},
+                               contract, 'd' * 40)
+        self.assertEqual(bridge.calls, 2)
+        diagnostics = raised.exception.diagnostics
+        self.assertEqual(diagnostics['executor_thread_id'], 'thread-2')
+        self.assertEqual(len(diagnostics['attempts']), 2)
+        for attempt in diagnostics['attempts']:
+            self.assertIs(attempt['format_valid'], False)
+            self.assertEqual(attempt['format_error'], 'invalid JSON')
+            self.assertLessEqual(len(attempt['format_error']), 160)
+            self.assertTrue(attempt['requests'] and attempt['responses'])
+        self.assertNotIn('PRIVATE_FIRST_RAW', json.dumps(diagnostics))
+        self.assertNotIn('PRIVATE_SECOND_RAW', json.dumps(diagnostics))
+        self.assertIn('no acceptance', str(raised.exception))
+
+    def test_diagnostics_are_allowlisted_bounded_and_never_echo_raw_text(self):
+        expected = {'Exam returned invalid JSON': 'invalid JSON',
+                    'Exam must return only an answers array': 'root must contain only an answers array',
+                    'Each answer must contain exactly id and answer': 'each answer needs exactly id and answer',
+                    'Answer id and answer must be nonempty strings': 'id and answer must be nonempty strings',
+                    'Missing, duplicate, or unknown question ids': 'missing, duplicate, or unknown question ids'}
+        for message, diagnostic in expected.items():
+            self.assertEqual(format_diagnostic(b.ExamFormatError(message)), diagnostic)
+            self.assertLessEqual(len(diagnostic), 160)
+        hostile = format_diagnostic(b.ExamFormatError('PRIVATE_RAW_OUTPUT_' * 100))
+        self.assertEqual(hostile, 'answer schema violation')
+        self.assertLessEqual(len(hostile), 160)
+        self.assertNotIn('PRIVATE_RAW_OUTPUT', hostile)
+
+    def test_strict_parse_answers_is_unchanged(self):
+        questions = self.contract(self.binding())['questions']
+        valid = {'answers': [{'id': 'q1', 'answer': '5'}, {'id': 'q2', 'answer': '3'}]}
+        self.assertEqual(b.parse_answers(json.dumps(valid), questions), valid)
+        invalid = [
+            'PRIVATE_TRUNCATED {"answers": [',
+            json.dumps({'answers': valid['answers'], 'extra': 1}),
+            json.dumps({'answers': [{'id': 'q1', 'prompt': 'What is add(2, 3)?'},
+                                    {'id': 'q2', 'prompt': 'What is add(-2, 5)?'}]}),
+            json.dumps({'answers': [{'id': 'q1', 'answer': '  '},
+                                    {'id': 'q2', 'answer': '3'}]}),
+            json.dumps({'answers': [{'id': 'q1', 'answer': '5'}]}),
+            json.dumps({'answers': [{'id': 'q1', 'answer': '5'},
+                                    {'id': 'q1', 'answer': '3'}]}),
+            json.dumps({'answers': [{'id': 'q1', 'answer': '5'},
+                                    {'id': 'unknown', 'answer': '3'}]}),
+            json.dumps({'answers': [{'id': 'q1', 'answer': '5'},
+                                    {'id': 'q2', 'answer': '3', 'extra': 'no'}]}),
+        ]
+        for text in invalid:
+            with self.assertRaises(b.ExamFormatError):
+                b.parse_answers(text, questions)
 
 
 if __name__ == '__main__': unittest.main()
