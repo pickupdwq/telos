@@ -128,7 +128,7 @@ class PreflightTests(unittest.TestCase):
         if preflight.CLT_GIT.is_file():
             self.assertNotEqual(Path(selected), Path('/usr/bin/git'))
         runtime = [str(Path(path)) for path in preflight.git_runtime_paths()]
-        self.assertIn(str(Path(selected)), runtime)
+        self.assertIn(str(Path(selected).resolve()), runtime)
         self.assertNotIn(str(Path.home()), runtime)
 
     def test_runtime_allowlist_does_not_add_private_home_or_cache(self):
@@ -136,8 +136,25 @@ class PreflightTests(unittest.TestCase):
         home = self.root / 'home'
         paths = [str(path) for path in isolation.runtime_paths(install, home)]
         self.assertNotIn(str(home), paths)
-        self.assertIn(str(Path(preflight.git_executable())), paths)
+        self.assertIn(str(Path(preflight.git_executable()).resolve()), paths)
         self.assertIn(str(home / '.local/share/telos-cli'), paths)
+
+    def test_symlinked_git_keeps_a_narrow_canonical_runtime_allowlist(self):
+        selected = Path(preflight.git_executable()).resolve()
+        alias = self.root / 'bin' / 'git'
+        alias.parent.mkdir()
+        alias.symlink_to(selected)
+        # Reproduce package-manager entrypoints even on hosts without Homebrew.
+        preflight._git_runtime_dirs.cache_clear()
+        self.addCleanup(preflight._git_runtime_dirs.cache_clear)
+        with patch.object(preflight, 'git_executable', return_value=str(alias)):
+            runtime = preflight.git_runtime_paths()
+            paths = isolation.runtime_paths(self.root / 'install', self.root / 'home')
+        self.assertIn(selected, runtime)
+        self.assertIn(selected, paths)
+        self.assertNotIn(alias, runtime)
+        self.assertNotIn(alias.parent.resolve(), runtime)
+        self.assertNotIn(self.root.resolve(), runtime)
 
 
 def binding():
@@ -165,6 +182,15 @@ class ExecutorPreflightOrderTests(unittest.TestCase):
             read_json=lambda path: {},
             encoded=json.dumps,
             sandbox_profile=lambda **kwargs: 'PROFILE')
+        # These tests mock process launch; provide their own CLI entrypoint
+        # instead of silently relying on a developer's global Codex install.
+        self.cli = self.bridge.HOME / '.local/share/telos-cli/node_modules/.bin/codex'
+        self.cli.parent.mkdir(parents=True)
+        self.cli.write_text('#!/bin/sh\nexit 99\n')
+        self.cli.chmod(0o700)
+        lookup = patch.object(executor.shutil, 'which', return_value=None)
+        self.addCleanup(lookup.stop)
+        lookup.start()
 
     def tearDown(self):
         self.temp.cleanup()
@@ -182,7 +208,7 @@ class ExecutorPreflightOrderTests(unittest.TestCase):
 
         with patch.object(preflight, 'git_executable', return_value=sys.executable), \
                 patch.object(preflight, 'run', return_value=evidence or {}) as probe, \
-                patch.object(executor.subprocess, 'Popen', return_value=CapturingProcess()):
+                patch.object(executor.subprocess, 'Popen', return_value=CapturingProcess()) as popen:
             with self.assertRaises(providers.ProviderError):
                 executor._run(self.bridge, self.state, contract or self.contract, 'message',
                               'http://127.0.0.1:9/v1', 'KEY', 1234, phase=phase)
@@ -191,6 +217,7 @@ class ExecutorPreflightOrderTests(unittest.TestCase):
         else:
             probe.assert_not_called()
         self.assertEqual(len(prompts), 1)
+        self.assertIn(str(self.cli), popen.call_args.args[0])
         return prompts[0]
 
     def test_initial_work_prompt_has_compact_verified_guidance_without_probe_output(self):
@@ -317,10 +344,22 @@ class ExecutorPreflightOrderTests(unittest.TestCase):
             popen.assert_not_called()
         self.assertEqual(len(calls), 1)
         args, kwargs = calls[0]
+        self.assertEqual(args[1], str(self.cli))
         self.assertEqual(Path(args[2]), self.work)
         self.assertEqual(args[4], 'PROFILE')
         self.assertEqual(kwargs['check_repo'], True)
         self.assertIn('KEY', kwargs['secrets'])
+
+    def test_missing_cli_stops_before_preflight_or_executor_launch(self):
+        self.cli.unlink()
+        with patch.object(preflight, 'git_executable', return_value=sys.executable), \
+                patch.object(preflight, 'run') as probe, \
+                patch.object(executor.subprocess, 'Popen') as popen:
+            with self.assertRaisesRegex(providers.ProviderError, 'dedicated Codex CLI not found'):
+                executor._run(self.bridge, self.state, self.contract, 'message',
+                              'http://127.0.0.1:9/v1', 'KEY', 1234)
+            probe.assert_not_called()
+            popen.assert_not_called()
 
     def test_execution_deadline_starts_at_launch_after_preflight(self):
         clock = [100]
