@@ -64,12 +64,15 @@ class EvaluationTests(BridgeTests):
         with self.assertRaisesRegex(b.GateError, 'not bound'):
             b.grade(sid, state['packet_id'], self.scores(), [])
 
-    def test_checks_mutating_snapshot_do_not_change_review_source(self):
+    def test_checks_mutating_snapshot_fail_before_exam_and_preserve_review_source(self):
         checks = [{'id': 'mutate', 'argv': ['{python}', '-c', "from pathlib import Path; Path('calc.py').write_text('POISON')"]}]
         sid = self.create(assessment_mode='code_review', checks=checks)
         seen = self.evaluate(sid)
-        self.assertNotIn('POISON', json.dumps(seen))
-        self.assertIn('a + b', json.dumps(seen))
+        self.assertEqual(seen, [])
+        packet = b.review_packet(sid)['evidence']
+        self.assertEqual(packet['checks'][0]['status'], 'failed')
+        self.assertNotIn('POISON', json.dumps(packet['submission']))
+        self.assertIn('a + b', json.dumps(packet['submission']))
 
     def test_failed_real_check_skips_model_and_goes_directly_to_repair(self):
         sid = self.create(checks=[{'id': 'failure', 'argv': ['{python}', '-c', 'assert False']}])

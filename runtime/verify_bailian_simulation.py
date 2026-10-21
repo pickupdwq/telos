@@ -10,6 +10,8 @@ import urllib.request
 from isolation import model_relay, response_outcome
 from providers import resolve_binding
 from usage import UsageLedger
+from activity import Recorder, Reader, FILENAME
+from watch import EventBuffer
 
 
 def main():
@@ -28,8 +30,10 @@ def main():
                           'parameters': {'type': 'object', 'properties': {'value': {'type': 'integer'}}}}]}
     with tempfile.TemporaryDirectory(prefix='telos-bailian-simulation-') as folder:
         ledger = UsageLedger(Path(folder) / 'usage.json', {'max_requests': 2})
+        recorder = Recorder(folder, 'simulation', 'work')
         with model_relay(args.base_url, 'SYNTHETIC_SIMULATION_ONLY', binding=binding, usage_ledger=ledger,
-                         usage_context={'phase': 'work', 'provider': 'bailian', 'model': binding['model']}) as (endpoint, token, _):
+                         usage_context={'phase': 'work', 'provider': 'bailian', 'model': binding['model']},
+                         activity_recorder=recorder) as (endpoint, token, _):
             opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
             def send(data):
                 req = urllib.request.Request(endpoint + '/responses', data=json.dumps(data).encode(),
@@ -47,7 +51,11 @@ def main():
         snapshot = ledger.snapshot()
         assert snapshot['totals']['total_tokens'] == 240, snapshot
         assert snapshot['totals']['reasoning_output_tokens'] == 24, snapshot
+        displayed = [event for event in EventBuffer(Reader(Path(folder) / FILENAME).read())
+                     if event.get('kind') == 'reasoning']
+        assert len(displayed) == 1 and displayed[0]['text'] == 'Check tool results. Both values match.', displayed
         print(json.dumps({'passed': True, 'boundary': 'local Postman HTTP fixture, not live inference',
+                          'reasoning_observed': True,
                           'json_and_sse': True, 'parallel_history_repaired': True,
                           'tool_round_trip': True, 'usage': snapshot}, indent=2))
 

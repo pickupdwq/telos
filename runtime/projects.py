@@ -124,7 +124,7 @@ class Projects:
             if t.get('dependency_paths') is not None:
                 t['dependency_paths'] = self.b.validate_dependencies(t['dependency_paths'])
             self.b.validate_exam(t['questions'], t['checks'], t['threshold'], t['max_rounds'])
-            self.b.deny_leak(t['message'], t)
+            self.validate_public_task(t, t)
             result.append(t)
         all_tasks = list(existing) + result
         by_id = {t['id']: t for t in all_tasks}
@@ -153,6 +153,13 @@ class Projects:
                     raise self.b.GateError(f"Overlapping writers {a['id']} / {c['id']}; add an explicit dependency")
         return result
 
+    def validate_public_task(self, t, private_contract):
+        fields = {key: t.get(key, '') for key in ('task', 'context', 'message')}
+        fields['allowed_paths'] = self.b.encoded(t.get('allowed_paths'))
+        if t.get('audit'):
+            fields['audit'] = self.b.encoded(t['audit'])
+        self.b.validate_public_material(private_contract, **fields)
+
     def create(self, repo, task, tasks, questions, checks, decision_reason,
                execution_mode='auto', strategy='single', max_parallel=3,
                max_jobs=40, context='', notify=True, caller=None, use_experience=True, dependency_paths=None):
@@ -168,6 +175,10 @@ class Projects:
         b = self.b
         dependency_paths = b.validate_dependencies([] if dependency_paths is None else dependency_paths)
         b.validate_exam(questions, checks, 90, 5)
+        final_contract = {'questions': questions, 'checks': checks}
+        b.validate_public_material(final_contract, task=task, context=context)
+        for t in tasks:
+            self.validate_public_task(t, final_contract)
         repo = Path(b.git(repo, 'rev-parse', '--show-toplevel')).resolve()
         if b.git(repo, 'status', '--porcelain'):
             raise b.GateError('Source repository must be clean; commit/stash explicitly')
@@ -197,13 +208,22 @@ class Projects:
 
     def child(self, t):
         path = self.b.run_dir(t['session_id']) / 'state.json'
-        return self.b.read_json(path) if path.exists() else None
+        if not path.exists() and t.get('phase') in ('pending', 'starting', 'setup_error'):
+            return None
+        return self.b.load_session(path.parent)[0]
+
+    def isolate(self, t, error):
+        t.update(phase='quarantined', error=str(error)[:500], accepted_commit=None, event_id=None)
 
     def refresh(self, p):
         for t in p['tasks']:
-            s = self.child(t)
+            try:
+                s = self.child(t)
+                stat = self.b.status(t['session_id']) if s else None
+            except (self.b.GateError, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+                self.isolate(t, error)
+                continue
             if s:
-                stat = self.b.status(t['session_id'])
                 t['phase'] = stat['phase']
                 t['error'] = stat.get('last_error')
                 t['accepted_commit'] = stat.get('acceptance', {}).get('commit') if stat.get('accepted') else None
@@ -277,14 +297,17 @@ class Projects:
                                            'executor_profile', 'workflow_version', 'reasoning_effort',
                                            'session_id', 'phase', 'accepted_commit', 'event_id', 'error',
                                            'budget', 'revision')}
-            child = self.child(t)
-            if child:
-                try:
+            try:
+                child = self.child(t)
+                if child:
                     _, contract = self.b.load_session(self.b.run_dir(t['session_id']))
                     item['budget'] = contract.get('budget')
                     item['usage'] = self.b.usage_snapshot(child, contract)
-                except Exception:
-                    pass
+                    if child.get('delivery'):
+                        from delivery import summary
+                        item['delivery'] = summary(child['delivery'])
+            except (self.b.GateError, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
+                self.isolate(item, error)
             tasks.append(item)
         result['tasks'] = tasks
         result['usage'] = self._usage(p)
@@ -292,14 +315,19 @@ class Projects:
         if 'final_review' in p:
             result['final_review'] = p['final_review']
         result['accepted'] = p['phase'] == 'accepted'
-        courier = self.b.read_json(self.b.run_dir(p['project_id']) / 'state.json')
+        try:
+            courier, _ = self.b.load_session(self.b.run_dir(p['project_id']))
+        except (self.b.GateError, OSError, ValueError, KeyError, TypeError) as error:
+            courier = {}
+            result['return_error'] = str(error)[:500]
         events = courier.get('events')
         last_event_id = courier.get('last_event_id')
         event = events.get(last_event_id) if isinstance(events, dict) and last_event_id is not None else None
         result['return_event'] = ({'id': last_event_id, 'status': event.get('status')}
                                   if isinstance(event, dict) else None)
         result['return_health'] = ({'status': 'complete', 'next_action': None} if result['accepted']
-                                   else self.b.return_health(courier))
+                                   else {'status': 'quarantined', 'next_action': 'restore_courier_state'}
+                                   if 'return_error' in result else self.b.return_health(courier))
         if detail == 'summary':
             from compact import project as project_view
             return project_view(result)
@@ -331,13 +359,23 @@ class Projects:
     def capacity(self, p, provider):
         # All launch paths hold the coordinator lock, including standalone tasks.
         running = []
-        for path in (self.b.STATE / 'runs').glob('*/state.json'):
-            s = self.b.read_json(path)
+        roots = {path.parent for pattern in ('*/state.json', '*/job-lease.json')
+                 for path in (self.b.STATE / 'runs').glob(pattern)}
+        for root in roots:
+            import state_store
+            try:
+                s = state_store.read(self.b, root)
+            except self.b.GateError:
+                slot = state_store.isolated_slot(self.b, root)
+                if slot is not None:
+                    running.append(slot)
+                continue
             if s.get('phase') == 'running':
                 running.append(s)
-        if p is not None and sum(s.get('project_id') == p['project_id'] for s in running) >= self.limit(p):
+        child_ids = {t['session_id'] for t in p['tasks']} if p else set()
+        if p is not None and sum(s.get('project_id') == p['project_id'] or s.get('session_id') in child_ids for s in running) >= self.limit(p):
             return False
-        if sum(s.get('active_provider', s.get('provider', 'ark')) == provider for s in running) >= self.b.config().get('provider_max_parallel', 3):
+        if sum(s.get('capacity_unknown') or s.get('active_provider', s.get('provider', 'ark')) == provider for s in running) >= self.b.config().get('provider_max_parallel', 3):
             return False
         if p is not None and p['jobs_started'] >= p['max_jobs']:
             raise self.b.GateError('Project job budget exhausted; no more model jobs')
@@ -467,7 +505,7 @@ class Projects:
     def start_child(self, sid, kind, message='', event_id=None):
         b = self.b
         with self.lock():
-            s = b.read_json(b.run_dir(sid) / 'state.json')
+            s, _ = b.load_session(b.run_dir(sid))
             if s.get('notification_only'):
                 raise b.GateError('Project courier cannot execute tasks')
             p = self.refresh(self.load(s['project_id'])) if s.get('project_id') else None
@@ -502,7 +540,12 @@ class Projects:
         # Never overwrite an in-flight courier event: receive always gathers the
         # latest project state, so one outstanding wake-up covers all completions.
         with b.locked(p['project_id']) as root:
-            state, _ = b.load_session(root)
+            try:
+                state, _ = b.load_session(root)
+            except b.GateError as error:
+                p['return_error'] = str(error)[:500]
+                return
+            p.pop('return_error', None)
             event = state['events'].get(state.get('last_event_id'), {})
             if event.get('status') not in (*b.WATCH_EVENTS, 'received'):
                 if quiet:
@@ -535,6 +578,8 @@ class Projects:
                     return self._receive_result({'proceed': False, 'event_id': event_id, 'events': [], 'project': self.view(p), 'project_id': pid}, detail)
             events = []
             for t in p['tasks']:
+                if t['phase'] == 'quarantined':
+                    continue
                 s = self.child(t)
                 if s and s.get('last_event_id'):
                     r = b.receive_event(t['session_id'], s['last_event_id'])
@@ -594,6 +639,8 @@ class Projects:
             if add_tasks:
                 tasks = self.validate_tasks(add_tasks, p['tasks'])
                 for t in tasks:
+                    self.validate_public_task(t, p['contract'])
+                for t in tasks:
                     t.update(session_id=uuid.uuid4().hex, phase='pending', revision=1)
                 p['tasks'].extend(tasks)
                 p.pop('integration', None)
@@ -643,6 +690,8 @@ class Projects:
                     raise self.b.GateError('Public handoff message must be nonempty')
                 self.b.deny_leak(message, t)
                 new['message'] = message
+            self.validate_public_task(new, new)
+            self.validate_public_task(new, p['contract'])
             old = self.child(t)
             if old:
                 self.b.return_control(t['session_id'], 'cancel')
@@ -669,8 +718,12 @@ class Projects:
             p['continuation'] = {'pause': 'paused', 'resume': 'active', 'cancel': 'cancelled'}[action]
             self.save(p)  # persisted before touching children or callbacks
             receipts = []
-            for sid in [pid] + [t['session_id'] for t in p['tasks'] if self.child(t)]:
-                receipts.append(self.b.return_control(sid, action))
+            for sid in [pid] + [t['session_id'] for t in p['tasks'] if self.b.run_dir(t['session_id']).exists()]:
+                try:
+                    receipts.append(self.b.return_control(sid, action))
+                except (self.b.GateError, OSError, ValueError) as error:
+                    receipts.append({'session_id': sid, 'action': action, 'applied': False,
+                                     'error': str(error)[:500]})
             if action == 'resume':
                 p.pop('notice_signature', None)
                 self.refresh(p); self.publish(p); self.save(p)
@@ -785,17 +838,25 @@ class Projects:
             state = {'session_id': pid, 'worktree': p['integration']['worktree']}
             commit, target = b.snapshot(state, ident)
             audit_reports = {}
+            deliveries = {}
             for task in p['tasks']:
                 child_state, child_contract = b.load_session(b.run_dir(task['session_id']))
+                child_packet = b.read_json(b.run_dir(task['session_id']) / f"attempt-{child_state['rounds']}.json")
+                if b.digest(child_packet) != child_state.get('packet_id') or child_packet.get('commit') != p['integration']['pins'][task['id']]:
+                    raise b.GateError('Child delivery/evidence changed after acceptance')
+                deliveries[task['id']] = {'session_id': task['session_id'],
+                    'commit': child_packet['commit'], 'packet_id': child_state['packet_id'],
+                    'delivery': child_packet.get('delivery')}
                 if child_contract.get('task_type') == 'audit':
                     import audit
-                    evidence = b.read_json(b.run_dir(task['session_id']) / f"attempt-{child_state['rounds']}.json")['audit']
+                    evidence = child_packet['audit']
                     audit.verify(b, child_state, child_contract, evidence)
                     audit_reports[task['id']] = {'evidence': evidence, 'review': child_state['acceptance']['audit_review']}
                     shutil.copytree(evidence['evidence_dir'], target / '.telos-audits' / task['id'])
             checks = b.executable_checks(check_contract, target)
             packet = {'project_id': pid, 'commit': commit, 'pins': p['integration']['pins'],
                       'contract_hash': p['contract_hash'], 'checks': checks,
+                      'deliveries': deliveries,
                       'dependency_paths': check_contract['dependency_paths'],
                       'dependency_contracts': dependency_contracts}
             if audit_reports:

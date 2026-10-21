@@ -54,6 +54,14 @@ http.createServer(async (req, res) => {
     if (!body.stream) return send(200, response);
     res.writeHead(200, { 'Content-Type': 'text/event-stream' });
     const events = [{ type: 'response.created', response: { ...response, status: 'in_progress', output: [] } }];
+    events.push(
+      { type: 'response.reasoning_text.delta', item_id: 'reason_probe', output_index: 1,
+        content_index: 0, delta: 'Check tool results. ' },
+      { type: 'response.reasoning_text.delta', item_id: 'reason_probe', output_index: 1,
+        content_index: 0, delta: 'Both values match.' },
+      { type: 'response.reasoning_text.done', item_id: 'reason_probe', output_index: 1,
+        content_index: 0, text: 'Check tool results. Both values match.' }
+    );
     output.forEach((item, output_index) => events.push(
       { type: 'response.output_item.added', output_index, item },
       { type: 'response.output_item.done', output_index, item }

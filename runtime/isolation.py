@@ -555,7 +555,7 @@ def _bailian_request(raw, binding):
 
 @contextlib.contextmanager
 def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=None, diagnostics=None,
-                usage_ledger=None, usage_context=None, budget_failure=None, closeout=None):
+                usage_ledger=None, usage_context=None, budget_failure=None, closeout=None, activity_recorder=None):
     """Only the bridge holds upstream credentials. No arbitrary URL/proxy methods."""
     token = secrets.token_urlsafe(48)
     local = binding is not None and binding.get('provider') == 'local'
@@ -565,6 +565,17 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                      and not (local and binding.get('wire_api') == 'chat'))
     opener = urllib.request.build_opener(NoRedirect(), *([urllib.request.ProxyHandler({})] if local else []))
     closeout = closeout or RelayCloseout()
+    observer = None
+    if policy is None and context.get('phase') == 'work' and activity_recorder is not None:
+        # Telemetry never changes request/response bytes, usage or admission.
+        with contextlib.suppress(Exception):
+            import reasoning
+            observer = reasoning.start(activity_recorder, secrets=(key, token))
+
+    def observe(method, *args):
+        if observer is not None:
+            with contextlib.suppress(Exception):
+                getattr(observer, method)(*args)
 
     class Handler(BaseHTTPRequestHandler):
         def log_message(self, *_):
@@ -593,6 +604,7 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
             client_gone = False
             finish_lock = threading.Lock()
             upstream_request_id = None
+            observation_id = secrets.token_hex(16) if observer is not None else None
 
             def complete(status, raw_usage=None, error_kind=None):
                 nonlocal finished
@@ -775,6 +787,7 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                         # Account before delivery: a broken downstream must not
                         # discard a terminal usage event that already arrived.
                         tracker.feed(chunk)
+                        observe('feed', observation_id, chunk)
                         if tracker.outcome:
                             status, error_kind = _terminal('completed', tracker.outcome)
                             complete('failed' if client_gone else status, tracker.usage,
@@ -812,6 +825,7 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                     pass
                 self.close_connection = True
             finally:
+                observe('end', observation_id)
                 if lease is not None:
                     closeout.end(lease)
 
@@ -824,3 +838,4 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
     finally:
         closeout.drain()
         server.shutdown(); server.server_close(); worker.join(timeout=2)
+        observe('close')

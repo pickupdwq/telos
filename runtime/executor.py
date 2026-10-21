@@ -225,7 +225,9 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
     initial = (f"You are an independent coding session using {binding['model']}, communicating with the GPT supervisor through a local MCP bridge. "
                "Work only on the specified task in this isolated git worktree. Do not use subagents, OMX team, MCP, "
                "or read reviewer materials. Leave your changes for the bridge to snapshot; do not push, merge, or deploy. "
-               "Keep your reply compact: changed files, checks performed, remaining issues. Never claim final acceptance.\n"
+               "End work turns with a compact JSON delivery object: summary (string), changed_files, "
+               "checks_performed and remaining_issues (arrays of strings). Include failures and unfinished work; "
+               "these are your claims for supervisor verification. Never claim final acceptance.\n"
                + "Task:\n" + contract["task"] + "\nPublic context:\n" + contract["context"] + "\n")
     if contract.get('allowed_paths'):
         initial += "Allowed change paths (enforced at submission): " + encoded(contract['allowed_paths']) + "\n"

@@ -841,6 +841,26 @@ class TmuxTests(unittest.TestCase):
         wait_for(lambda: 'AFTER_VIEWER_CLOSED' in self.capture(reopened))
         self.assertEqual(watch.tmux(self.context, 'display-message', '-p', '#{pane_id}'), self.pane)
 
+    def test_reasoning_grows_in_real_pane_and_task_switch_does_not_mix_streams(self):
+        first, second = self.create(1), self.create(2)
+        panel = watch.panel(self.bridge, self.context)['pane_id']
+        recorders = {sid: activity.Recorder(self.bridge.STATE / 'runs' / sid, sid) for sid in (first, second)}
+        for sid, text in ((first, 'FIRST_REASONING '), (second, 'SECOND_REASONING ')):
+            recorders[sid].emit('reasoning', text, item_id='same-id', offset=0,
+                                event_type='reasoning.delta', status='streaming')
+        wait_for(lambda: 'SECOND_REASONING' in self.capture(panel))
+        self.assertNotIn('FIRST_REASONING', self.capture(panel))
+        recorders[second].emit('reasoning', 'INCREMENT', item_id='same-id', offset=len('SECOND_REASONING '),
+                               event_type='reasoning.delta', status='streaming')
+        wait_for(lambda: 'SECOND_REASONING INCREMENT' in self.capture(panel))
+        self.assertEqual(self.capture(panel).count('SECOND_REASONING'), 1)
+        watch.tmux(self.context, 'send-keys', '-t', panel, 'n')
+        wait_for(lambda: 'FIRST_REASONING' in self.capture(panel))
+        self.assertNotIn('SECOND_REASONING', self.capture(panel))
+        watch.tmux(self.context, 'send-keys', '-t', panel, 'q')
+        wait_for(lambda: len(watch.tmux(self.context, 'list-panes', '-F', '#{pane_id}').splitlines()) == 1)
+        self.assertEqual(json.loads((self.bridge.STATE / 'runs' / first / 'state.json').read_text())['phase'], 'running')
+
     def test_dead_pane_reused_and_invalid_context_does_not_target_another_window(self):
         self.create(1)
         pane = watch.panel(self.bridge, self.context)['pane_id']

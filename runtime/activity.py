@@ -1,7 +1,8 @@
 """Private, append-only execution telemetry. Never used as acceptance evidence.
 
 Only the bridge writes this file, outside the worker sandbox. Readers have no
-connection to the executor's stdin. Exam content and reasoning are not recorded.
+connection to the executor's stdin. Exam content is never recorded. Work-phase
+reasoning comes only from the optional relay observer, not CLI item events.
 """
 from collections import deque
 import contextlib
@@ -57,6 +58,8 @@ class Recorder:
                   'phase': self.phase, 'kind': kind, 'text': clean(text, self.secrets)}
         record.update({k: clean(v, self.secrets) for k, v in fields.items()
                        if k in ('item_id', 'status', 'event_type') and v is not None})
+        if type(fields.get('offset')) is int and fields['offset'] >= 0:
+            record['offset'] = fields['offset']
         try:
             # The run directory already exists; never create arbitrary paths.
             fd = os.open(self.directory / FILENAME,
