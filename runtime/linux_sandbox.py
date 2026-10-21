@@ -60,6 +60,12 @@ def connection_broker(ports):
                     upstream.settimeout(None)
                     self.request.sendmsg([b'Y'], [(socket.SOL_SOCKET, socket.SCM_RIGHTS,
                                                   array.array('i', [upstream.fileno()]))])
+                    # Do not close a connected socket while its descriptor is
+                    # still in transit. Darwin can otherwise expose early EOF
+                    # to the receiver; the bounded acknowledgement fixes the
+                    # ownership handoff without expanding destination access.
+                    if self.request.recv(1) != b'A':
+                        return
             except OSError:
                 with contextlib.suppress(OSError):
                     self.request.sendall(b'N')
@@ -91,7 +97,12 @@ def broker_connection(address, port):
             raise OSError('The sandbox broker refused the connection')
         os.set_inheritable(received[0], False)
         result = socket.socket(fileno=received[0])
-        result.settimeout(None)
+        try:
+            result.settimeout(None)
+            control.sendall(b'A')
+        except OSError:
+            result.close()
+            raise
         return result
 
 

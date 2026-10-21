@@ -162,6 +162,44 @@ class LinuxBrokerTests(unittest.TestCase):
             thread.join(2)
             self.assertFalse(thread.is_alive())
 
+    def test_broker_retains_the_socket_until_receiver_acknowledges_ownership(self):
+        linux = self.module()
+        import array
+        import contextlib
+        import struct
+        from unittest.mock import patch
+        released = threading.Event()
+        connect = socket.create_connection
+        @contextlib.contextmanager
+        def tracked_connection(*args, **kwargs):
+            with connect(*args, **kwargs) as upstream:
+                try:
+                    yield upstream
+                finally:
+                    released.set()
+        with socket.socket() as listener:
+            listener.bind(('127.0.0.1', 0)); listener.listen()
+            with patch.object(socket, 'create_connection', tracked_connection), \
+                    linux.connection_broker([listener.getsockname()[1]]) as address:
+                with socket.socket(socket.AF_UNIX) as control:
+                    control.settimeout(3)
+                    control.connect(address)
+                    control.sendall(struct.pack('!H', listener.getsockname()[1]))
+                    data, ancillary, _, _ = control.recvmsg(1, socket.CMSG_SPACE(array.array('i').itemsize))
+                    received = array.array('i')
+                    for level, kind, payload in ancillary:
+                        if level == socket.SOL_SOCKET and kind == socket.SCM_RIGHTS:
+                            received.frombytes(payload)
+                    try:
+                        self.assertEqual(data, b'Y')
+                        self.assertEqual(len(received), 1)
+                        self.assertFalse(released.wait(.05), 'sender closed before the receiver acknowledged ownership')
+                        control.sendall(b'A')
+                        self.assertTrue(released.wait(2), 'sender leaked its acknowledged descriptor')
+                    finally:
+                        for descriptor in received:
+                            os.close(descriptor)
+
     def test_namespace_proxy_streams_bytes_bidirectionally(self):
         linux = self.module()
         with socket.socket() as listener:

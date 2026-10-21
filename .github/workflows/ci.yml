@@ -48,6 +48,21 @@ jobs:
         run: |
           mkdir -p .artifacts
           python3 runtime/verify_all.py .artifacts/regression.json --jobs 4
+      - name: Show failed macOS tests with full diagnostics
+        if: failure()
+        run: |
+          python3 - <<'PY'
+          import json, pathlib, subprocess, sys
+          report = pathlib.Path('.artifacts/regression.json')
+          if report.is_file():
+              failed = [row['id'] for row in json.loads(report.read_text())['test_results']
+                        if row['outcome'] in ('failed', 'error', 'unexpected_success')]
+              if failed:
+                  argv = [sys.executable, 'runtime/verify_all.py']
+                  for test_id in failed:
+                      argv += ['--test', test_id]
+                  sys.exit(subprocess.run(argv).returncode)
+          PY
       - name: Fresh-install and native callback smoke test
         run: |
           python3 install.py --prefix "$PWD/.artifacts/installed" --bin-dir "$PWD/.artifacts/bin" --skills-dir "$PWD/.artifacts/skills"
