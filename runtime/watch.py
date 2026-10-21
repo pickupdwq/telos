@@ -306,6 +306,60 @@ def _event_time(value):
         return UNKNOWN_TIME
 
 
+def reasoning_key(event):
+    if event.get('kind') == 'reasoning' and isinstance(event.get('item_id'), str):
+        return (str(event.get('session_id', '')), str(event.get('job_id', '')), event['item_id'])
+    return None
+
+
+class EventBuffer:
+    """Bounded view state: reasoning deltas update one block, never task state."""
+    def __init__(self, events=(), maxlen=2000):
+        self.events, self.reasoning = deque(), {}
+        self.maxlen = maxlen
+        self.extend(events)
+
+    def __iter__(self):
+        return iter(self.events)
+
+    def append(self, event):
+        key = reasoning_key(event)
+        current = self.reasoning.get(key) if key else None
+        before = current.get('text', '') if current else ''
+        if current is None:
+            current = dict(event)
+            if len(self.events) >= self.maxlen:
+                old = self.events.popleft()
+                self.reasoning.pop(reasoning_key(old), None)
+            self.events.append(current)
+            if key:
+                self.reasoning[key] = current
+                current['text'] = ''
+        if key:
+            text = activity.clean(event.get('text', ''))
+            offset = event.get('offset', 0)
+            if type(offset) is not int or offset < 0:
+                return current, ''
+            if event.get('event_type') == 'reasoning.delta':
+                end = current.get('_end', 0)
+                if offset < end:  # Duplicate/replayed delta.
+                    return current, ''
+                gap = '\n[earlier reasoning omitted]\n' if offset > end else ''
+                current['text'] = (before + gap + text)[-activity.MAX_TEXT:]
+                current['_end'] = offset + len(text)
+            else:  # Final snapshots also repair a viewer opened mid-stream.
+                current['text'], current['_end'] = text, len(text)
+            current['status'] = event.get('status', '')
+            current['event_type'] = event.get('event_type', '')
+            after = current['text']
+            return current, after[len(before):] if after.startswith(before) else after
+        return current, current.get('text', '')
+
+    def extend(self, events):
+        for event in events:
+            self.append(event)
+
+
 def render(event):
     stamp = _event_time(event.get('time'))
     tag = activity.clean(event.get('kind', 'event'))
@@ -318,15 +372,41 @@ def stream(b, sid, *, follow=True, history=False, tail=100, json_output=False, a
     reader = activity.Reader(b.run_dir(sid) / activity.FILENAME)
     if not history:
         reader.seek_tail(tail)
+    view, active_reasoning = EventBuffer(), None
     def output(event):
+        nonlocal active_reasoning
         if json_output:
             print(json.dumps(event, ensure_ascii=False), flush=True)
         else:
-            print(render(event), flush=True)
+            merged, added = view.append(event)
+            key = reasoning_key(event)
+            if key:
+                if added:
+                    if active_reasoning != key:
+                        if active_reasoning:
+                            print()
+                        print(render({**merged, 'text': ''}).rstrip(), flush=True)
+                    print(added, end='', flush=True)
+                    active_reasoning = key
+            else:
+                if active_reasoning:
+                    print()
+                active_reasoning = None
+                print(render(event), flush=True)
     events = reader.read()
-    for event in events if history else deque(events, maxlen=tail):
+    initial = events if history else deque(events, maxlen=tail)
+    # Coalesce a bounded tail. Full history must still stream every old event.
+    coalesced = not json_output and not history
+    if coalesced:
+        initial = EventBuffer(initial)
+    for event in initial:
+        if coalesced and reasoning_key(event):
+            event = {**event, 'event_type': 'reasoning.snapshot', 'offset': 0}
         output(event)
     if not json_output:
+        if active_reasoning:
+            print()
+            active_reasoning = None
         print(f'Watching {sid}; Ctrl-C exits the viewer only.' if follow else
               f'End of recorded history for {sid}.', flush=True)
         if (b.run_dir(sid) / 'activity-unavailable').exists():
@@ -348,7 +428,7 @@ def ui(b, initial=None, group=None, project=None, tail=200, auto_close=False):
             curses.curs_set(0)
         screen.timeout(200)
         sid, reader = initial, None
-        events = deque(maxlen=2000)
+        events = EventBuffer()
         scroll, following = 0, True
         rows = []
         refresh_at = 0
@@ -373,8 +453,7 @@ def ui(b, initial=None, group=None, project=None, tail=200, auto_close=False):
             if sid and (reader is None or reader.path.parent.name != sid):
                 reader = activity.Reader(b.run_dir(sid) / activity.FILENAME)
                 reader.seek_tail(min(tail, 2000))
-                events = deque(reader.read(), maxlen=min(tail, 2000))
-                events = deque(events, maxlen=2000)
+                events = EventBuffer(reader.read())
                 scroll, following = 0, True
                 layout = None
             changed = list(reader.read()) if reader else []

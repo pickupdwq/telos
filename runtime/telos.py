@@ -1097,6 +1097,7 @@ def peer_turn(state, contract, message, phase="work", policy=None):
             model_relay(binding['base_url'], key, binding['http_timeout'], policy=policy,
                         usage_ledger=ledger, usage_context=usage_context, budget_failure=budget_failure,
                         closeout=closeout,
+                        activity_recorder=activity.for_state(bridge_services(), state, phase, secrets=(key,)),
                         **options) as (endpoint, token, port):
         try:
             result = isolated_peer_turn(state, contract, message, endpoint, token, port,

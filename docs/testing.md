@@ -47,6 +47,13 @@ No existing terminal panes are changed. It verifies streaming before process
 completion, one shared panel, focus retention, task switching, close/reopen,
 history and private-exam boundaries. See [observer behavior](watch.md).
 
+`test_reasoning` verifies incremental reasoning before a real HTTP response
+finishes, byte-for-byte forwarding and unchanged usage, fragmented UTF-8/SSE,
+cross-chunk credential redaction, duplicate/final-event merging, bounded queues,
+slow/broken observers, and the exam boundary. The real tmux tests also exercise
+reasoning growth and switching tasks without mixing their text. These use local
+fixtures; provider-specific event cadence still requires live verification.
+
 Local endpoint regressions exercise both Responses and Chat against real HTTP servers and the real Codex CLI, including namespaced tools, work-history recall, zero-tool exams, supervisor grading, key/port isolation and selection locks. These are deterministic model fixtures; a real local gateway needs a separate small work → exam → supervisor acceptance run. See [local executor configuration](local-executors.md).
 
 Usage/preflight regressions cover Chat and Responses JSON/SSE accounting, malformed and partial usage, duplicate terminal events, concurrent reservations, frozen budgets shared by work/exam/repair, exhaustion and unknown-usage stops. `test_preflight.py` also checks the no-model probe order and, when nested Seatbelt is available, runs the selected Python and Git inside the real profile while confirming the private path remains denied. A container or outer sandbox that denies `sandbox-exec` or loopback listeners can run the pure accounting/preflight/compact tests but must report those integration tests as blocked, not passed; run the full command on the supervisor host.

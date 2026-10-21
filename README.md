@@ -294,7 +294,9 @@ Default: at most five evaluation rounds, including the first. Infrastructure fai
 Use `telos watch` for a live, read-only executor view with task switching and
 history. In Ghostty or iTerm2 with Codex CLI inside tmux, tasks share one
 automatic right-side panel and focus stays on the supervisor. Outside tmux,
-open the viewer manually. See [observer setup and controls](docs/watch.md).
+open the viewer manually. Work-phase reasoning text streams into the panel when
+the provider exposes Responses reasoning events; exams remain status-only.
+See [observer setup and controls](docs/watch.md).
 
 ```sh
 "$HOME/.local/bin/telos" watch

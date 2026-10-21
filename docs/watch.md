@@ -119,9 +119,26 @@ lifecycle transitions. Shell-based file changes are additionally summarized at
 the end of each implementation work attempt, including attempts that report
 an error or time out. A forcibly killed bridge can retain only events already
 written before it stopped.
-Updates follow CLI event boundaries; this is not token-by-token streaming or
-a byte-by-byte shell terminal. Command output becomes visible when the CLI
-emits an update/result event.
+Messages and command output follow CLI event boundaries; shell output becomes
+visible when the CLI emits an update/result event, not byte by byte.
+
+During work and repair, the Responses SSE relay also observes provider-returned
+`response.reasoning_text.delta` and `response.reasoning_summary_text.delta`
+events. The panel grows one reasoning block per request/item/part, batching
+updates about every 150 ms; the UI refreshes about every 200 ms. This shows only
+reasoning text the provider exposes, not a guarantee of all internal thinking.
+Providers without reasoning events simply retain the usual activity view. A
+completed reasoning item can be shown as a fallback, but cannot retroactively
+provide live deltas. The local Chat adapter does not synthesize reasoning.
+
+The relay enqueues bytes without waiting for logging. Parsing and recording use
+a bounded background queue, independently of response forwarding and usage
+accounting. An observer fault/backlog stops reasoning recording, not the task;
+partial blocks are marked interrupted when possible. Incomplete credential-like
+words can be held until a safe boundary for redaction. Text is bounded to 32,000
+characters per part and 32 parts per response. Final snapshots replace streamed
+text instead of duplicating it; reopening mid-stream may temporarily show an
+explicit omitted-prefix marker. No additional model request is made for display.
 
 Records live at:
 
@@ -136,7 +153,10 @@ created before this feature have no reconstructed activity transcript.
 The bridge writes outside the executor's sandbox. The viewer does not open
 private contracts or review packets, invoke models, grade, send input to an
 executor, or control tasks. Exam progress is visible, but exam text, answers,
-references, executable-check source/output, and reasoning items are excluded.
+references, executable-check source/output, and exam reasoning are excluded.
+CLI reasoning items remain ignored to avoid duplicate display; only the
+work-phase relay supplies reasoning events. These events are local telemetry,
+never acceptance evidence or input to an executor.
 Reported state is the stored lifecycle state, not a fresh acceptance decision.
 
 Files are created with mode `0600`. Known relay/probe credentials and common
