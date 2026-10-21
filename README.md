@@ -1,5 +1,7 @@
 # Telos
 
+![Telos — Turn coding goals into reviewed, testable results.](docs/assets/telos-banner.png)
+
 **Turn coding goals into reviewed, testable results.**
 
 [简体中文](README.zh-CN.md) · [Architecture](docs/architecture.md) · [Configuration](docs/configuration.md) · [MCP tools](docs/tools.md)
