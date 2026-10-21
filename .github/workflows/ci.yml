@@ -77,6 +77,24 @@ jobs:
           node-version: '24'
       - name: Install Linux isolation dependencies
         run: sudo apt-get update && sudo apt-get install -y bubblewrap libseccomp2
+      - name: Diagnose namespace prerequisites
+        run: |
+          id
+          uname -r
+          bwrap --version
+          cat /proc/self/attr/current
+          sysctl kernel.apparmor_restrict_unprivileged_userns user.max_user_namespaces || true
+          python3 - <<'PY'
+          import subprocess
+          for label, flags in [
+              ('mount', ['--unshare-user']),
+              ('network', ['--unshare-user', '--unshare-net']),
+              ('all', ['--unshare-user', '--unshare-all']),
+              ('all-drop', ['--unshare-user', '--unshare-all', '--cap-drop', 'ALL']),
+          ]:
+              p = subprocess.run(['bwrap', *flags, '--ro-bind', '/', '/', '--', '/bin/true'], capture_output=True, text=True)
+              print(label, p.returncode, p.stderr.strip())
+          PY
       - name: Install dedicated CLI
         run: npm install --prefix "$HOME/.local/share/telos-cli" @openai/codex@0.163.0
       - name: Require working isolation before testing
