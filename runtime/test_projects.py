@@ -6,6 +6,7 @@ import json
 import os
 from pathlib import Path
 import subprocess
+import sys
 import tempfile
 import threading
 import time
@@ -463,7 +464,10 @@ class RobustnessTests(ProjectTests):
         result = subprocess.run(b.sandbox_command(profile, [__import__('sys').executable, '-c', code]), cwd=a['worktree'], capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(str(sibling), result.stderr)
-        self.assertRegex(result.stderr, 'Operation not permitted|Permission denied|No such file')
+        if sys.platform == 'linux':
+            self.assertRegex(result.stderr, 'Operation not permitted|Permission denied|No such file')
+        else:
+            self.assertIn('Operation not permitted', result.stderr)
 
     def test_concurrent_start_calls_do_not_duplicate_dispatch(self):
         pid = self.create()

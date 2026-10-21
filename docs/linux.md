@@ -8,7 +8,9 @@ is retained. Linux execution requires all of:
 - Bubblewrap 0.8+ and `libseccomp.so.2` (Debian/Ubuntu: `bubblewrap libseccomp2`).
 - Permission to create user, mount, PID, IPC and network namespaces.
 
-After installing those OS packages, use the same README installation commands.
+Until this branch is merged, clone with `--branch telos-linux` before following
+the README installation commands; the default branch does not include this port.
+After installing the OS packages and dedicated CLI, use the same installer.
 `python3 install.py --dry-run` runs a real isolated Python process before
 installing files. `telos doctor` reports the backend and its failure reason.
 Package presence alone is not sufficient: an outer container, AppArmor policy

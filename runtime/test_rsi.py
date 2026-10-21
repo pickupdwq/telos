@@ -1,4 +1,4 @@
-"""RSI reproductions at real Git, process and macOS sandbox boundaries."""
+"""RSI reproductions at real Git, process and platform sandbox boundaries."""
 import copy
 import json
 import os
@@ -299,8 +299,8 @@ class IsolationTests(BridgeTests):
             code = ("import os,socket\nfrom pathlib import Path\n"
                     "assert not any(os.environ.get(k) for k in ['ARK_API_KEY','OPENAI_API_KEY','TELOS_RELAY_TOKEN'])\n"
                     "assert 'a + b' in Path('calc.py').read_text()\n"
-                    f"try:\n Path({str(secret)!r}).read_text()\n raise AssertionError('read escaped')\nexcept OSError as e: assert e.errno in (1,2,13), e\n"
-                    f"try:\n socket.create_connection(('127.0.0.1',{forbidden.getsockname()[1]}),timeout=2)\n raise AssertionError('network escaped')\nexcept OSError as e: assert e.errno in (1,13,101,111), e\n"
+                    f"try:\n Path({str(secret)!r}).read_text()\n raise AssertionError('read escaped')\nexcept OSError as e: assert e.errno in {(1,2,13) if sys.platform == 'linux' else (1,13)!r}, e\n"
+                    f"try:\n socket.create_connection(('127.0.0.1',{forbidden.getsockname()[1]}),timeout=2)\n raise AssertionError('network escaped')\nexcept OSError as e: assert e.errno in {(1,13,101,111) if sys.platform == 'linux' else (1,13)!r}, e\n"
                     "Path('guard.txt').write_text('ISOLATION_OK')\nprint('ISOLATION_OK')")
             command = "cat <<'EOF'\nHEREDOC_OK\nEOF\n" + shlex.quote(sys.executable) + ' -c ' + shlex.quote(code)
             class Model(BaseHTTPRequestHandler):
@@ -350,7 +350,7 @@ class IsolationTests(BridgeTests):
         code = 'from pathlib import Path\n'
         code += "assert 'a + b' in Path('calc.py').read_text()\n"
         for p in probes:
-            code += f"try:\n Path({str(p)!r}).read_text()\n raise AssertionError('read escaped')\nexcept OSError as e: assert e.errno in (1,2,13), e\n"
+            code += f"try:\n Path({str(p)!r}).read_text()\n raise AssertionError('read escaped')\nexcept OSError as e: assert e.errno in {(1,2,13) if sys.platform == 'linux' else (1,13)!r}, e\n"
         result = subprocess.run(b.sandbox_command(profile, [sys.executable, '-c', code]),
                                 cwd=state['worktree'], capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
@@ -359,7 +359,7 @@ class IsolationTests(BridgeTests):
         dependency = self.base / 'dependency'; dependency.mkdir(); (dependency / 'data').write_text('fixture')
         sid = self.create(dependency_paths=[str(dependency)]); state, contract = b.load_session(b.run_dir(sid))
         _, tree = b.snapshot(state, 'dep')
-        code = f"from pathlib import Path\np=Path({str(dependency / 'data')!r})\nassert p.read_text() == 'fixture'\ntry:\n p.write_text('bad')\n raise AssertionError('write escaped')\nexcept OSError as e: assert e.errno in (1,13,30), e"
+        code = f"from pathlib import Path\np=Path({str(dependency / 'data')!r})\nassert p.read_text() == 'fixture'\ntry:\n p.write_text('bad')\n raise AssertionError('write escaped')\nexcept OSError as e: assert e.errno in {(1,13,30) if sys.platform == 'linux' else (1,13)!r}, e"
         result = b.executable_checks({**contract, 'checks': [{'id': 'dep', 'argv': ['{python}', '-c', code]}]}, tree)
         self.assertEqual(result[0]['status'], 'passed', result)
 
@@ -374,7 +374,7 @@ class IsolationTests(BridgeTests):
                 other.bind(('127.0.0.1', 0)); other.listen()
                 sid = self.create(); state = b.read_json(b.run_dir(sid) / 'state.json')
                 profile = b.sandbox_profile(writable=[state['worktree']], relay_port=port)
-                code = f"import socket\ns=socket.socket()\ntry:\n s.connect(('127.0.0.1',{other.getsockname()[1]}))\n raise AssertionError('network escaped')\nexcept OSError as e: assert e.errno in (1,13,101,111), e"
+                code = f"import socket\ns=socket.socket()\ntry:\n s.connect(('127.0.0.1',{other.getsockname()[1]}))\n raise AssertionError('network escaped')\nexcept OSError as e: assert e.errno in {(1,13,101,111) if sys.platform == 'linux' else (1,13)!r}, e"
                 result = subprocess.run(b.sandbox_command(profile, [sys.executable, '-c', code]),
                                         cwd=state['worktree'], capture_output=True, text=True)
                 self.assertEqual(result.returncode, 0, result.stderr)
