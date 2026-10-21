@@ -193,7 +193,8 @@ def _run(b, sid, request, job_id=None):
     ident = secrets.token_hex(12)
     # Chromium's Unix-domain socket paths have a small platform limit. Grant
     # only this private short directory, never the entire system temp root.
-    staging = Path(tempfile.mkdtemp(prefix='telos-audit-', dir='/private/tmp')).resolve()
+    staging = Path(tempfile.mkdtemp(prefix='telos-audit-',
+                   dir='/private/tmp' if sys.platform == 'darwin' else '/tmp')).resolve()
     started = time.time()
     try:
         try:

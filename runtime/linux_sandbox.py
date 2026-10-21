@@ -9,7 +9,6 @@ import contextlib
 import json
 import os
 from pathlib import Path
-import shutil
 import socket
 import socketserver
 import struct
@@ -64,7 +63,9 @@ def connection_broker(ports):
             except OSError:
                 with contextlib.suppress(OSError):
                     self.request.sendall(b'N')
-    with tempfile.TemporaryDirectory(prefix='tlx-') as folder:
+    # The task's TMPDIR may be deeply nested. Unix socket addresses have a
+    # kernel length limit; a private short directory does not expose all /tmp.
+    with tempfile.TemporaryDirectory(prefix='tlx-', dir='/tmp') as folder:
         address = str(Path(folder) / 'broker.sock')
         server = UnixServer(address, Handler)
         os.chmod(address, 0o600)
@@ -174,9 +175,12 @@ def inner(policy, address, argv):
 def launch(policy, argv):
     if sys.platform != 'linux':
         raise RuntimeError('The Linux backend can only execute on Linux')
-    bwrap = shutil.which('bwrap')
-    if not bwrap:
-        raise RuntimeError('Install bubblewrap; isolation cannot be disabled')
+    # Resolve the helper in the supervisor, before a worker's PATH is narrowed.
+    bwrap = policy.get('bwrap')
+    if (not isinstance(bwrap, str) or not Path(bwrap).is_absolute()
+            or not Path(bwrap).is_file() or Path(bwrap).resolve() != Path(bwrap)
+            or not os.access(bwrap, os.X_OK)):
+        raise RuntimeError('The pinned Bubblewrap helper is unavailable; isolation cannot be disabled')
     if policy.get('backend') != 'linux' or type(policy.get('network')) is not bool:
         raise ValueError('Invalid Linux sandbox policy')
     ports = policy.get('ports')
@@ -206,6 +210,9 @@ def launch(policy, argv):
             args += ['--ro-bind', str(file), str(file)]
         if address:
             args += ['--ro-bind', address, address]
+        # Synthetic parents of selected audit files must not accept new files.
+        # This is non-recursive: explicit writable bind mounts stay writable.
+        args += ['--remount-ro', '/']
         args += ['--chdir', os.getcwd(), '--', sys.executable, '-I', str(Path(__file__).resolve()),
                  '--inner', json.dumps(policy, separators=(',', ':')), address, '--', *argv]
         result = subprocess.run(args, pass_fds=tuple(fds))

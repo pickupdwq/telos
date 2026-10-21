@@ -15,12 +15,22 @@ Package presence alone is not sufficient: an outer container, AppArmor policy
 or host setting may still deny mounts. Telos does not disable isolation, modify
 host security settings or request a privileged container automatically.
 
+Check the actual Bubblewrap version: Ubuntu 22.04's original 0.6 package is too
+old for this backend. CI builds the pinned upstream 0.9.0 release without setuid
+on an Ubuntu 22.04 runner. The tested Ubuntu 24.04 hosted image rejected even a
+minimal unprivileged Bubblewrap UID/network setup with its existing AppArmor
+policy; this is a host prerequisite failure, not permission to turn that policy
+off. Other images and container policies must pass the same real probe.
+
 ## What the backend enforces
 
 The namespace filesystem exposes explicit read-only toolchain/dependency paths
 and per-task writable directories. Git metadata and protected dependencies are
 mounted read-only; private materials are hidden. Closed-book exams retain their
 isolated home and receive no worktree/dependency grants.
+Synthetic parent directories are also read-only, so granting one audit source
+file cannot expose its siblings or allow new files beside it. Bubblewrap's
+absolute executable path is frozen before the worker environment is narrowed.
 
 By default each worker has a separate network namespace. A trusted local proxy
 can reach only the task's frozen loopback model-relay and audit-broker ports.

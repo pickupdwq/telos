@@ -37,9 +37,11 @@ def linux_profile(*, readable, writable, protected, private, network, ports):
         raise ValueError('The host root cannot be writable')
     aliases = {str(Path(p).absolute()): str(Path(p).resolve()) for p in [*readable, *writable]
                if Path(p).exists() and Path(p).absolute() != Path(p).resolve()}
+    helper = shutil.which('bwrap')
     return {'backend': 'linux', 'readable': paths(readable), 'writable': writes, 'aliases': aliases,
             'protected': paths(protected), 'private': paths(private),
-            'network': network, 'ports': sorted(set(ports))}
+            'network': network, 'ports': sorted(set(ports)),
+            'bwrap': str(Path(helper).resolve()) if helper else None}
 
 
 def command(profile, argv):

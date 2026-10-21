@@ -93,6 +93,17 @@ class PlatformSandboxTests(unittest.TestCase):
                                            private=[], network=False, ports=[])
             self.assertEqual(policy.get('aliases', {}).get(str(entry)), str(entry.resolve()))
 
+    def test_linux_policy_pins_the_resolved_helper_before_restricting_path(self):
+        sandbox = backend(self)
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as folder:
+            entry = Path(folder) / 'bwrap'
+            entry.symlink_to(sys.executable)
+            with patch.object(sandbox.shutil, 'which', return_value=str(entry)):
+                policy = sandbox.linux_profile(readable=[], writable=[], protected=[],
+                                               private=[], network=False, ports=[])
+            self.assertEqual(policy.get('bwrap'), str(entry.resolve()))
+
 
 class LinuxSecurityTests(unittest.TestCase):
     @unittest.skipUnless(sys.platform == 'linux', 'Linux kernel security primitives')
@@ -120,6 +131,17 @@ class LinuxBrokerTests(unittest.TestCase):
         self.assertTrue(Path(__file__).with_name('linux_sandbox.py').exists(),
                         'The fixed-destination Linux relay broker is required')
         return importlib.import_module('linux_sandbox')
+
+    def test_broker_address_stays_short_with_a_deep_task_temp_directory(self):
+        linux = self.module()
+        from unittest.mock import patch
+        with tempfile.TemporaryDirectory() as folder:
+            deep = Path(folder) / ('task-' + 'x' * 100)
+            deep.mkdir()
+            with patch.object(tempfile, 'tempdir', str(deep)):
+                with linux.connection_broker([]) as address:
+                    self.assertLess(len(os.fsencode(address)), 104)
+                    self.assertEqual(Path(address).stat().st_mode & 0o777, 0o600)
 
     def test_broker_only_connects_to_frozen_loopback_ports(self):
         linux = self.module()
@@ -180,6 +202,34 @@ class LinuxBrokerTests(unittest.TestCase):
             self.assertLess(plan.index(('rw', str(root), str(root))),
                             plan.index(('ro', str(git), str(git))))
             self.assertIn(('hide-dir', None, str(private)), plan)
+
+    def test_launcher_uses_frozen_helper_with_a_restricted_path(self):
+        linux = self.module()
+        from unittest.mock import patch
+        policy = {'backend': 'linux', 'bwrap': str(Path(sys.executable).resolve()),
+                  'readable': [], 'writable': [], 'protected': [], 'private': [],
+                  'network': False, 'ports': []}
+        with patch.object(sys, 'platform', 'linux'), \
+                patch('shutil.which', return_value=None), \
+                patch.object(linux.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
+            try:
+                linux.launch(policy, ['/bin/true'])
+            except RuntimeError as error:
+                self.fail('The frozen helper must survive a restricted PATH: ' + str(error))
+            self.assertEqual(run.call_args.args[0][0], policy['bwrap'])
+
+    def test_launcher_freezes_synthetic_directories_after_mounting_grants(self):
+        linux = self.module()
+        from unittest.mock import patch
+        policy = {'backend': 'linux', 'bwrap': str(Path(sys.executable).resolve()),
+                  'readable': [], 'writable': [], 'protected': [], 'private': [],
+                  'network': False, 'ports': []}
+        with patch.object(sys, 'platform', 'linux'), \
+                patch('shutil.which', return_value=policy['bwrap']), \
+                patch.object(linux.subprocess, 'run', return_value=subprocess.CompletedProcess([], 0)) as run:
+            linux.launch(policy, ['/bin/true'])
+        argv = run.call_args.args[0]
+        self.assertEqual(argv[argv.index('--chdir') - 2:argv.index('--chdir')], ['--remount-ro', '/'])
 
 
 @unittest.skipUnless(sys.platform == 'linux', 'Linux namespace integration')
