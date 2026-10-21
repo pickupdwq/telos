@@ -1,5 +1,14 @@
 # Changelog / 更新记录
 
+## 3.7.3 — 2026-10-21
+
+- Merge the accepted RSI campaign improvements into main: faster bounded SSE scanning and observer log tailing, lazy experience lookup with stronger provenance checks, and isolation of malformed experience records.
+- Improve closed-book JSON formatting and compact diagnostics, expose project callback identity, suppress non-actionable progress notifications, and provide advisory work-budget guidance without changing acceptance or budget enforcement.
+- Add exact regression selection, per-test timing and optional isolated module workers; the default full-suite path remains serial. Preserve the original supervisor's review, frozen contracts and credential boundaries.
+- Retain the campaign's measured results and limitations. Component benchmarks and small paired task comparisons do not establish general model capability or consistent end-to-end speed improvements.
+
+将 RSI 实验中已接受的改进合入主分支：优化流式响应解析、日志尾部读取和经验检索，强化经验来源校验与损坏记录隔离；改善闭卷格式、项目回调诊断和工作预算提示。新增精确测试选择、逐项计时与可选模块并行验证，默认仍为串行全量回归。保留原大总管验收、冻结合同和凭据边界；局部性能及小样本比较不代表通用能力或稳定的端到端提速。
+
 ## 3.7.2 — 2026-10-20
 
 - Automatically close managed tmux observer panes after all associated tasks and projects finish acceptance or cancellation and their execution processes exit. Keep panels open during review, repair, errors, pauses and pending project work.
