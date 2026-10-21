@@ -1,5 +1,12 @@
 # Changelog / 更新记录
 
+## 3.7.6 — 2026-10-21
+
+- Reuse each child session/contract pair and displayed usage snapshot within a project view. Keep status recovery, integrity checks and acceptance paths unchanged; every new view reads current records, including queued reassignment usage and incomplete data.
+- Remove an unused budget-error helper and import; construct project, experience and storage service bridges through the existing shared factory.
+
+复用单次项目展示中的子任务记录和用量快照，减少重复读取；每次新查询仍读取最新数据，保留状态恢复、合同校验、验收、重分派历史和不完整标记。删除未使用的辅助函数与导入，统一三个管理器的桥接对象构造。
+
 ## 3.7.5 — 2026-10-21
 
 - Make full project receipt lookups read-only even before the first acknowledgement; keep child recovery and continuation on the summary path.

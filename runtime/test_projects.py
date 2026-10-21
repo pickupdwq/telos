@@ -1,6 +1,7 @@
 """Behavior tests: real Git worktrees/snapshots/checks, deterministic model boundary."""
 import copy
 import contextlib
+from collections import Counter
 import io
 import json
 import os
@@ -546,6 +547,67 @@ class RobustnessTests(ProjectTests):
             self.assertEqual(courier['events'][courier['last_event_id']]['status'], 'pending')
 
 
+class ProjectReadTests(ProjectTests):
+    def test_status_reuses_reads_but_observes_changes_on_each_query(self):
+        pid = self.create([self.task('a')]); self.start(pid)
+        manager = b.project_manager()
+        state = self.child(pid, 'a')
+        root = b.run_dir(state['session_id'])
+        _, contract = b.load_session(root)
+        ledger = b.usage_ledger(state, contract)
+        for count, detail in enumerate(('full', 'summary'), 1):
+            ledger.finish(ledger.begin('work'), {'input_tokens': 7, 'output_tokens': 3}, latency_ms=1250)
+            with patch.object(b, 'read_json', wraps=b.read_json) as reads, \
+                    patch.object(b, 'usage_snapshot', wraps=b.usage_snapshot) as usage, \
+                    patch.object(manager.b, 'usage_snapshot', usage):
+                result = manager.status(pid, detail=detail)
+            child_reads = Counter(Path(call.args[0]).name for call in reads.call_args_list
+                                  if Path(call.args[0]).parent == root)
+            self.assertLessEqual(child_reads['state.json'], 3)
+            self.assertLessEqual(child_reads['contract.json'], 3)
+            self.assertLessEqual(usage.call_count, 2)
+            self.assertEqual(result['usage']['requests'], count)
+            self.assertEqual(result['usage']['total_tokens'], count * 10)
+            self.assertEqual(result['tasks'][0]['usage']['totals']['requests'], count)
+        # The same manager must not reuse a previously valid contract on a
+        # subsequent query, or retain a quarantine after the record is restored.
+        original = (root / 'contract.json').read_bytes()
+        b.write_json(root / 'contract.json', {**contract, 'task': 'Changed frozen contract'})
+        damaged = manager.status(pid)
+        self.assertEqual(damaged['tasks'][0]['phase'], 'quarantined')
+        self.assertFalse(damaged['accepted'])
+        self.assertTrue(damaged['usage']['incomplete'])
+        self.assertIn('a', damaged['usage']['unavailable_tasks'])
+        (root / 'contract.json').write_bytes(original)
+        restored = manager.status(pid)
+        self.assertEqual(restored['tasks'][0]['phase'], 'running')
+        self.assertEqual(restored['usage']['total_tokens'], 20)
+
+    def test_view_aggregate_uses_the_displayed_child_usage_snapshot(self):
+        pid = self.create([self.task('a')]); self.start(pid)
+        manager = b.project_manager(); project = manager.load(pid)
+        state = self.child(pid, 'a')
+        _, contract = b.load_session(b.run_dir(state['session_id']))
+        ledger = b.usage_ledger(state, contract)
+        ledger.finish(ledger.begin('work'), {'input_tokens': 7, 'output_tokens': 3}, latency_ms=1250)
+        real_snapshot = b.usage_snapshot
+
+        def finish_another_request(*args):
+            snapshot = real_snapshot(*args)
+            ledger.finish(ledger.begin('work'), {'input_tokens': 2, 'output_tokens': 1}, latency_ms=500)
+            return snapshot
+
+        with patch.object(manager.b, 'usage_snapshot', side_effect=finish_another_request):
+            result = manager.view(project)
+        self.assertEqual(result['tasks'][0]['usage']['totals']['total_tokens'], 10)
+        self.assertEqual(result['usage']['total_tokens'], 10)
+        self.assertEqual(result['usage']['request_latency']['observed_seconds'], 1.25)
+        fresh = manager.view(project)
+        self.assertEqual(fresh['tasks'][0]['usage']['totals']['total_tokens'], 13)
+        self.assertEqual(fresh['usage']['total_tokens'], 13)
+        self.assertEqual(fresh['usage']['request_latency']['observed_seconds'], 1.75)
+
+
 class _ProjectViewBridge:
     """In-memory bridge for project-view identity tests; no runtime services."""
 
@@ -584,7 +646,7 @@ class ProjectEventViewTests(unittest.TestCase):
         self.projects = Projects(self.bridge)
         # These projection tests supply courier records only. Child-state
         # validation and missing-state isolation have separate integration tests.
-        child_lookup = patch.object(self.projects, 'child', return_value=None)
+        child_lookup = patch.object(self.projects, '_child_session', return_value=None)
         child_lookup.start()
         self.addCleanup(child_lookup.stop)
         self.pid = 'p' * 32

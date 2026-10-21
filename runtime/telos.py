@@ -112,10 +112,6 @@ def usage_snapshot(state, contract):
         return {"error": "usage ledger unavailable", "detail": str(error)[:200]}
 
 
-def budget_error(message, snapshot=None):
-    return BudgetExceeded(message, snapshot)
-
-
 def run_dir(sid):
     if not isinstance(sid, str) or not re.fullmatch(r"[a-f0-9]{32}", sid):
         raise GateError("Invalid session ID")
@@ -1175,6 +1171,7 @@ def peer_turn(state, contract, message, phase="work", policy=None):
 
 
 def bridge_services():
+    # Keep a fresh namespace even when tests load this module under a private alias.
     from types import SimpleNamespace
     return SimpleNamespace(**globals())
 
@@ -1778,21 +1775,17 @@ def request_openai_exam(payload, key, cfg):
 
 def project_manager():
     from projects import Projects
-    # Tests import this module under a private alias without sys.modules registration.
-    from types import SimpleNamespace
-    return Projects(SimpleNamespace(**globals()))
+    return Projects(bridge_services())
 
 
 def experience_manager():
     from experience import Experience
-    from types import SimpleNamespace
-    return Experience(SimpleNamespace(**globals()))
+    return Experience(bridge_services())
 
 
 def storage_manager():
     from storage import Storage
-    from types import SimpleNamespace
-    return Storage(SimpleNamespace(**globals()))
+    return Storage(bridge_services())
 
 def obj(props, required=None):
     return {"type": "object", "properties": dict(props),

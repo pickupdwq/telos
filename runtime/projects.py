@@ -8,7 +8,6 @@ from __future__ import annotations
 import copy
 import contextlib
 import fcntl
-import json
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -208,11 +207,15 @@ class Projects:
             self.save(p)
         return self.status(pid)
 
-    def child(self, t):
+    def _child_session(self, t):
         path = self.b.run_dir(t['session_id']) / 'state.json'
         if not path.exists() and t.get('phase') in ('pending', 'starting', 'setup_error'):
             return None
-        return self.b.load_session(path.parent)[0]
+        return self.b.load_session(path.parent)
+
+    def child(self, t):
+        session = self._child_session(t)
+        return session[0] if session else None
 
     def isolate(self, t, error):
         t.update(phase='quarantined', error=str(error)[:500], accepted_commit=None, event_id=None)
@@ -236,7 +239,7 @@ class Projects:
                 t.update(phase='setup_error', error='Interrupted task setup; inspect workspace, then replace this unstarted task')
         return p
 
-    def _usage(self, p):
+    def _usage(self, p, snapshots=None):
         import timing
         totals = {'requests': 0, 'failed_requests': 0, 'unknown_usage_requests': 0,
                   'in_flight_requests': 0, 'input_tokens': 0, 'cached_input_tokens': 0,
@@ -248,37 +251,41 @@ class Projects:
         unavailable = []
         latencies = []
         for t in p['tasks']:
-            try:
-                state = self.child(t)
-            except Exception:
-                # A corrupt child state after setup is a started but unavailable
-                # ledger; never silently omit it from the aggregate.
-                if t.get('phase') != 'pending':
-                    started += 1
+            if snapshots is not None and t['session_id'] in snapshots:
+                started += 1
+                snapshot = snapshots[t['session_id']]
+            else:
+                try:
+                    session = self._child_session(t)
+                except Exception:
+                    # A corrupt child state after setup is a started but unavailable
+                    # ledger; never silently omit it from the aggregate.
+                    if t.get('phase') != 'pending':
+                        started += 1
+                        incomplete = True
+                        unavailable.append(t['id'])
+                        latencies.append(None)
+                    continue
+                prior_usage = not session and t.get('usage_id')
+                if not session and not prior_usage:
+                    continue
+                started += 1
+                try:
+                    if prior_usage:
+                        # A replacement may still be queued. Its original ledger
+                        # already contains spend and must not disappear until start.
+                        if not self.b.usage_path(prior_usage).is_file():
+                            raise ValueError('Prior assignment usage ledger unavailable')
+                        state = {'session_id': t['session_id'], 'usage_id': prior_usage}
+                        contract = {'budget': t.get('budget')}
+                    else:
+                        state, contract = session
+                    snapshot = self.b.usage_snapshot(state, contract)
+                except Exception:
                     incomplete = True
                     unavailable.append(t['id'])
                     latencies.append(None)
-                continue
-            prior_usage = not state and t.get('usage_id')
-            if not state and not prior_usage:
-                continue
-            started += 1
-            try:
-                if prior_usage:
-                    # A replacement may still be queued. Its original ledger
-                    # already contains spend and must not disappear until start.
-                    if not self.b.usage_path(prior_usage).is_file():
-                        raise ValueError('Prior assignment usage ledger unavailable')
-                    state = {'session_id': t['session_id'], 'usage_id': prior_usage}
-                    contract = {'budget': t.get('budget')}
-                else:
-                    _, contract = self.b.load_session(self.b.run_dir(t['session_id']))
-                snapshot = self.b.usage_snapshot(state, contract)
-            except Exception:
-                incomplete = True
-                unavailable.append(t['id'])
-                latencies.append(None)
-                continue
+                    continue
             snapshot_totals = snapshot.get('totals') if isinstance(snapshot, dict) else None
             if not isinstance(snapshot_totals, dict):
                 incomplete = True
@@ -316,17 +323,21 @@ class Projects:
         result['contract_hash'] = p.get('contract_hash')
         result['effective_parallel'] = self.limit(p)
         tasks = []
+        # Reuse only this view's observations. New views and acceptance paths
+        # still load and validate current records; no cache survives this call.
+        snapshots = {}
         for t in p['tasks']:
             item = {k: t.get(k) for k in ('id', 'task', 'depends_on', 'allowed_paths', 'provider', 'model',
                                            'executor_profile', 'workflow_version', 'reasoning_effort',
                                            'session_id', 'phase', 'accepted_commit', 'event_id', 'error',
                                            'budget', 'revision')}
             try:
-                child = self.child(t)
-                if child:
-                    _, contract = self.b.load_session(self.b.run_dir(t['session_id']))
+                session = self._child_session(t)
+                if session:
+                    child, contract = session
                     item['budget'] = contract.get('budget')
                     item['usage'] = self.b.usage_snapshot(child, contract)
+                    snapshots[t['session_id']] = item['usage']
                     item['timing'] = timing.snapshot(child)
                     if child.get('delivery'):
                         from delivery import summary
@@ -335,7 +346,7 @@ class Projects:
                 self.isolate(item, error)
             tasks.append(item)
         result['tasks'] = tasks
-        result['usage'] = self._usage(p)
+        result['usage'] = self._usage(p, snapshots)
         result['timing'] = self._timing(p, tasks)
         result['integration'] = p.get('integration')
         if 'final_review' in p:
