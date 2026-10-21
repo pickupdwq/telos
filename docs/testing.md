@@ -12,6 +12,10 @@ python3 runtime/verify_all.py .artifacts/regression.json
 
 The installer tests use temporary directories and mocked prerequisites. They cover runtime/Skill packaging, legacy upgrades, exact configuration preservation, conflicts, active-task locks and publication rollback. The runtime suite requires macOS and runs each locally declared test once; avoid broad `unittest discover` over `runtime/`, which can repeat inherited tests. Coverage includes task gates, callbacks, project orchestration, isolation, providers, closed-book exams, experience, storage, audits and local endpoints. Use the generated report for the current test count.
 
+`test_integrity.py` covers immutable check source (write/replace/rename/shadow attempts), separate writable build/temp outputs, rejected checks skipping exams, commit-bound delivery receipts through repair and project integration, status ownership, initial public-material leakage, and corrupt/missing child or courier state. It runs real Git and macOS Seatbelt with deterministic executor/exam responses. It also confirms the existing `max_jobs=40` default and admission of smaller explicit job budgets remain unchanged. No extra executor formatting requests are introduced.
+
+验收检查只能读取提交快照，构建产物使用 `TELOS_CHECK_OUTPUT`，临时文件使用 `TMPDIR`；目录在检查后清理。默认状态/验收包保留结构化交付摘要，并明确区分执行者声称做过的检查与真实执行的验收检查。损坏的任务状态单独标记、保留原始文件并报告用量缺口；仍在运行的任务继续占用并发名额。此处验证不代表真实服务商或桌面自动回传已通过。
+
 ### Selection and parallel verification
 
 The RSI campaign added reusable test selection and optional parallel execution:

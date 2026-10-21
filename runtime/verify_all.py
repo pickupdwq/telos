@@ -36,6 +36,7 @@ MODULES = [
     'test_preflight',
     'test_compact',
     'test_mcp_contract',
+    'test_integrity',
     'test_comparison',
     'test_watch',
     'test_verify_all',

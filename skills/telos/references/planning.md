@@ -27,6 +27,10 @@ Where supported, freeze `closeout_reserve_seconds` from observed request latency
 
 The current check schema accepts `argv` as `['{python}', '-c', inline_code]`; that code may run appropriate project test commands in the verification snapshot. Verify the connected schema before constructing a contract. Resolve dependencies within the approved read-only paths. Command/check network access is off by default; a blocked dependency is not permission to relax isolation.
 
+The entire verification snapshot is read-only, including new paths and parent directories. Checks cannot patch source, replace directories or create modules that shadow the submitted code. Put build outputs under `os.environ['TELOS_CHECK_OUTPUT']` and temporary files under `TMPDIR`; both are separate from the snapshot and are removed after the check sequence. Checks in one sequence may share these outputs. Configure tools that write into the source tree (for example coverage output or build directories) to use these paths. This also applies to project final checks and historical contracts; a frozen check that requires source mutation must fail and be replaced through a new reviewed contract, not silently loosened.
+
+Initial task/context, public audit boundaries and retrieved experience use the same private-material guard as later messages. Project creation checks child briefs before saving the project; additions and reassignment are checked too. This guard detects known reference/check text and private-field labels, not all possible paraphrases. Keep public requirements and private answers separate when drafting them.
+
 Create the contract with `telos_open` or `telos_project_open`; creation does not itself call the execution model. Start standalone work with `telos_send` or eligible project tasks with `telos_project_start`. Follow tool results and [acceptance](acceptance.md).
 
 ## Project completion

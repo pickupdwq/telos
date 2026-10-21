@@ -29,7 +29,7 @@ def _text(value, limit=1200):
 def _checks(checks):
     result = []
     for check in checks or []:
-        item = {key: check.get(key) for key in ('id', 'status', 'returncode', 'seconds') if key in check}
+        item = {key: check.get(key) for key in ('id', 'status', 'returncode', 'seconds', 'source_read_only') if key in check}
         # Successful logs are usually noise. Failures remain actionable and are
         # bounded; full evidence is always available with detail="full".
         if check.get('status') != 'passed':
@@ -103,6 +103,13 @@ def _evidence(evidence):
             result['submission'] = {k: submission.get(k) for k in ('commit', 'status', 'backend') if k in submission}
     if 'audit' in evidence:
         result['audit'] = evidence.get('audit')
+    if 'delivery' in evidence:
+        from delivery import summary
+        result['delivery'] = summary(evidence['delivery'])
+    if 'deliveries' in evidence:
+        from delivery import summary
+        result['deliveries'] = {key: {**value, 'delivery': summary(value.get('delivery'))}
+                                for key, value in evidence['deliveries'].items()}
     return result
 
 
@@ -141,6 +148,9 @@ def status(full):
         result['acceptance'] = _verdict(full.get('acceptance'))
     if 'last_result' in full:
         result['last_result'] = _last_result(full.get('last_result'))
+    if 'delivery' in full:
+        from delivery import summary
+        result['delivery'] = summary(full['delivery'])
     channel = full.get('return_channel')
     if isinstance(channel, dict):
         compact = {key: channel.get(key) for key in (
@@ -198,7 +208,7 @@ def _project_task(task):
     result = {key: task.get(key) for key in (
         'id', 'phase', 'depends_on', 'allowed_paths', 'provider', 'model', 'executor_profile',
         'workflow_version', 'reasoning_effort', 'session_id', 'event_id', 'accepted_commit',
-        'base_commit', 'budget', 'usage', 'revision') if key in task}
+        'base_commit', 'budget', 'usage', 'revision', 'delivery') if key in task}
     if 'error' in task:
         result['error'] = _text(task.get('error'), 1200)
     return result
@@ -214,7 +224,7 @@ def project(full):
     result = {key: full.get(key) for key in (
         'project_id', 'phase', 'accepted', 'continuation', 'execution_mode', 'strategy',
         'effective_parallel', 'max_parallel', 'max_jobs', 'jobs_started', 'base_commit',
-        'decision_reason', 'return_health', 'usage', 'contract_hash') if key in full}
+        'decision_reason', 'return_health', 'return_error', 'usage', 'contract_hash') if key in full}
     result['return_event'] = _return_event(full.get('return_event'))
     result['tasks'] = [_project_task(task) for task in full.get('tasks') or []]
     if 'integration' in full:

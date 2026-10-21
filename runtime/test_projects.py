@@ -525,6 +525,8 @@ class RobustnessTests(ProjectTests):
 class _ProjectViewBridge:
     """In-memory bridge for project-view identity tests; no runtime services."""
 
+    GateError = b.GateError
+
     def __init__(self, root):
         self.STATE = root
         self.couriers = {}
@@ -534,6 +536,9 @@ class _ProjectViewBridge:
 
     def read_json(self, path):
         return self.couriers[Path(path).parent.name]
+
+    def load_session(self, root):
+        return self.couriers[root.name], {}
 
     @staticmethod
     def return_health(state):
@@ -553,6 +558,11 @@ class ProjectEventViewTests(unittest.TestCase):
         self.root = Path(self.tmp.name)
         self.bridge = _ProjectViewBridge(self.root)
         self.projects = Projects(self.bridge)
+        # These projection tests supply courier records only. Child-state
+        # validation and missing-state isolation have separate integration tests.
+        child_lookup = patch.object(self.projects, 'child', return_value=None)
+        child_lookup.start()
+        self.addCleanup(child_lookup.stop)
         self.pid = 'p' * 32
 
     def project(self, **overrides):

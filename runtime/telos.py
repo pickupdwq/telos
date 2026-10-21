@@ -17,6 +17,7 @@ import shutil
 import signal
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import urllib.error
@@ -332,6 +333,9 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
     dependency_paths = validate_dependencies(dependency_paths or [])
     if not isinstance(task, str) or not task.strip() or not isinstance(context, str):
         raise GateError("Nonempty task and string context required")
+    public_contract = {'questions': questions, 'checks': checks}
+    validate_public_material(public_contract, task=task, context=context,
+                             allowed_paths=encoded(_allowed_paths))
     repo = Path(repo).resolve()
     repo = Path(git(repo, "rev-parse", "--show-toplevel")).resolve()
     if git(repo, "status", "--porcelain"):
@@ -349,6 +353,7 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
         audit_runtime.validate_source_scope(bridge_services(), repo, base, audit)
     experience_context, experience_ids = experience_manager().context(str(repo), _allowed_paths,
         enabled=use_experience and config().get('experience_enabled', True))
+    validate_public_material(public_contract, experience_context=experience_context)
     sid = _session_id or uuid.uuid4().hex
     root = run_dir(sid)
     root.mkdir(parents=True, mode=0o700)
@@ -400,10 +405,18 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
 
 
 def load_session(root):
-    state = read_json(root / "state.json")
-    contract = read_json(root / "contract.json")
+    import state_store
+    state = state_store.read(bridge_services(), root)
+    try:
+        contract = read_json(root / "contract.json")
+        if not isinstance(contract, dict):
+            raise ValueError('Invalid contract object')
+    except (OSError, ValueError) as error:
+        raise state_store.quarantine(bridge_services(), root, error) from None
     if digest(contract) != state["contract_hash"]:
-        raise GateError("Frozen contract changed; acceptance is invalid")
+        raise state_store.quarantine(bridge_services(), root,
+            GateError("Frozen contract changed; acceptance is invalid"))
+    (STATE / 'quarantine' / (root.name + '.json')).unlink(missing_ok=True)
     return state, contract
 
 
@@ -933,6 +946,14 @@ def deny_leak(message, contract):
             raise GateError('Do not label private answers in public repair feedback')
 
 
+def validate_public_material(contract, **fields):
+    """Apply the send boundary before initial material can reach a worker."""
+    for name, value in fields.items():
+        if not isinstance(value, str):
+            raise GateError(f'Public {name} must be a string')
+        deny_leak(value, contract)
+
+
 def validate_dependencies(paths):
     if not isinstance(paths, list) or not all(isinstance(p, str) for p in paths):
         raise GateError("dependency_paths must be explicit absolute dependency directories")
@@ -997,6 +1018,10 @@ def _start_job(sid, kind, message="", event_id=None):
             deny_leak(message, contract)
             experience_manager().capture_feedback(state, contract, message)
             state["turns"] += 1
+            # Previous receipts remain durable, but cannot describe a new or
+            # interrupted work turn as if it had delivered a fresh summary.
+            state['delivery'] = None
+            state['last_result'] = None
         elif kind == "evaluate":
             if state.get('infra_failures', 0) >= config()['infra_retry_limit']:
                 raise GateError("Infrastructure retry budget exhausted; code rounds were not consumed. Inspect service/configuration; repairs remain available.")
@@ -1019,6 +1044,8 @@ def _start_job(sid, kind, message="", event_id=None):
         state.pop("acceptance", None)
         write_json(root / f"job-{job}.json", {"kind": kind, "message": message, "reserved_round": state['rounds'] if kind == 'evaluate' else None})
         write_json(root / "state.json", state)
+        import state_store
+        state_store.lease(bridge_services(), root, state)
         try:
             p = subprocess.Popen([sys.executable, str(Path(__file__).resolve()), "_job", sid, job],
                                  stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
@@ -1028,9 +1055,11 @@ def _start_job(sid, kind, message="", event_id=None):
             write_json(root / "state.json", before_start)
             activity.status(bridge_services(), before_start, before_start["last_error"])
             (root / f"job-{job}.json").unlink(missing_ok=True)
+            (root / 'job-lease.json').unlink(missing_ok=True)
             raise GateError(before_start["last_error"])
         state["job_pid"] = p.pid
         state['job_process_start'] = process_start(p.pid)
+        state_store.lease(bridge_services(), root, state)
         reap_background(p)
         result = {"session_id": sid, "job_id": job, "phase": "running",
                   "return": "automatic completion event" if state.get("owner") else "poll telos_status"}
@@ -1274,18 +1303,26 @@ def snapshot(state, number):
 
 
 def executable_checks(contract, target):
-    from check_runtime import dependency_home
-    results = []
     env = minimal_env()
     dependencies = validate_dependencies(contract.get('dependency_paths', []))
     if dependencies != contract.get('dependency_paths', []):
         raise GateError('A frozen dependency path was redirected; restore the declared directory')
-    temp = target / ('.telos-check-tmp-' + secrets.token_hex(6))
-    temp.mkdir()
+    # Source is immutable, including directory replacement and shadow modules.
+    # Builds and temporary files use a separate root outside the submission.
+    with tempfile.TemporaryDirectory(prefix='.telos-check-', dir=target.parent) as scratch:
+        return _executable_checks(contract, target, Path(scratch), dependencies, env)
+
+
+def _executable_checks(contract, target, temp, dependencies, env):
+    from check_runtime import dependency_home
+    results = []
     dependency_roots = dependency_home(dependencies, HOME, temp)
     env["TMPDIR"] = str(temp)
     env['TMPPREFIX'] = str(temp / 'zsh')
     env['HOME'] = str(temp)
+    output = temp / 'output'
+    output.mkdir()
+    env['TELOS_CHECK_OUTPUT'] = str(output)
     env['PYTHONDONTWRITEBYTECODE'] = '1'
     if contract.get('task_type') == 'audit':
         env['TELOS_AUDIT_REPORT'] = str(target / '.telos-audit' / 'report.json')
@@ -1295,8 +1332,8 @@ def executable_checks(contract, target):
     # Never inherit model keys, tmux socket, leader configuration, or bridge credentials.
     for check in contract["checks"]:
         argv = [x.replace("{repo}", str(target)).replace("{python}", sys.executable) for x in check["argv"]]
-        command = ["/usr/bin/sandbox-exec", "-p", sandbox_profile(check.get("network", False), writable=[target],
-                   readable=dependencies, protected=dependency_roots), *argv]
+        command = ["/usr/bin/sandbox-exec", "-p", sandbox_profile(check.get("network", False), writable=[temp],
+                   readable=[target, *dependencies], protected=[target, *dependency_roots]), *argv]
         started = time.time()
         p = subprocess.Popen(command, cwd=target, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         try:
@@ -1308,6 +1345,7 @@ def executable_checks(contract, target):
             out, err = p.communicate()
             status, code = "timeout", None
         results.append({"id": check["id"], "status": status, "returncode": code,
+                        "source_read_only": True,
                         "seconds": round(time.time() - started, 3),
                         "stdout": out.decode(errors="replace")[-6000:], "stderr": err.decode(errors="replace")[-6000:]})
     return results
@@ -1337,7 +1375,11 @@ def background_job(sid, job):
     try:
         if request["kind"] == "send":
             result = peer_turn(state, contract, request["message"])
-            update = {"phase": "responded", "thread_id": result["thread_id"], "last_result": result}
+            import delivery
+            receipt = delivery.capture(bridge_services(), state, result)
+            write_json(root / f'delivery-{job}.json', receipt)
+            update = {"phase": "responded", "thread_id": result["thread_id"], "last_result": result,
+                      "delivery": receipt}
         else:
             activity.status(bridge_services(), state, 'Running private executable checks')
             commit, tree = snapshot(state, job)
@@ -1366,6 +1408,9 @@ def background_job(sid, job):
                 exam = answer_exam({**contract, '_submission': submission})
             packet = {"session_id": sid, "round": state["rounds"], "commit": commit,
                       "contract_hash": state["contract_hash"], "checks": checks, "exam": exam}
+            import delivery
+            packet['delivery'] = delivery.bind(bridge_services(), state, commit)
+            write_json(root / f'delivery-{commit}-{state["rounds"]}.json', packet['delivery'])
             if audit_evidence is not None:
                 packet['audit'] = audit_evidence
             if submission is not None:
@@ -1374,6 +1419,7 @@ def background_job(sid, job):
             packet_id = digest(packet)
             write_json(root / f"attempt-{state['rounds']}.json", packet)
             update = {"phase": "awaiting_review" if checks_passed else "not_accepted", "packet_id": packet_id, "submitted_commit": commit,
+                      "delivery": packet['delivery'],
                       "next_retry_at": 0, "last_failure_kind": None if checks_passed else 'code_checks',
                       "last_result": {"round": state["rounds"], "checks_passed": checks_passed,
                                       "exam_received": checks_passed, "exam_usage": exam.get("usage"),
@@ -1424,6 +1470,8 @@ def background_job(sid, job):
         current, _ = load_session(root)
         if current.get("job_id") == job:
             current.update(update, job_finished=time.time())
+            import state_store
+            state_store.lease(bridge_services(), root, current)
             record_event(current)
             write_json(root / "state.json", current)
             activity.status(bridge_services(), current)
@@ -1434,8 +1482,8 @@ def background_job(sid, job):
                               else 'Evaluation failed; inspect private review through the supervisor.',
                               status=update.get('last_failure_kind'))
     if request['kind'] == 'evaluate' and 'tree' in locals():
-        # A disposable check tree is never reused: checks may mutate it. Immutable
-        # Git refs and private evidence retain the exact input without N full copies.
+        # Immutable Git refs and private evidence retain the exact input without
+        # retaining a full copy for each evaluation.
         shutil.rmtree(tree)
     if current.get("project_id"):
         project_manager().tick(current['project_id'])
@@ -1480,7 +1528,7 @@ def status(sid, detail='full'):
                       "next_action": "inspect_error_before_retry"}
             return compact_views.status(result) if detail == 'summary' else result
         result = {k: state.get(k) for k in ("session_id", "phase", "model", "worktree", "turns", "rounds",
-                                           "job_id", "job_kind", "last_error", "last_result", "acceptance", "project_id",
+                                           "job_id", "job_kind", "last_error", "last_result", "delivery", "acceptance", "project_id",
                                            "infra_failures", "next_retry_at", "last_failure_kind", "archived")}
         result['version'] = VERSION
         result.update(base_commit=state.get('base_commit'), submitted_commit=state.get('submitted_commit'),
@@ -1823,6 +1871,18 @@ TOOLS[3]['description'] = ('Snapshot code and run private executable checks firs
     'all tools, rejects tool outputs, and the exam process cannot read project source. Only question IDs and '
     'prompts are appended to the existing work conversation. The original GPT supervisor reviews and grades. '
     'Historical sessions retain their frozen legacy workflow. Infrastructure retries never imply acceptance.')
+TOOLS[0]['description'] += (' Initial task/context and retrieved experience pass the same private-material leak guard as send. '
+    'Checks read an immutable source snapshot; write build outputs to TELOS_CHECK_OUTPUT and temporary files to TMPDIR.')
+TOOLS[3]['description'] += (' Source is read-only throughout checks, including project final checks; use TELOS_CHECK_OUTPUT '
+    'for build outputs. Each review packet binds the executor delivery summary to its submitted commit.')
+next(t for t in TOOLS if t['name'] == 'telos_status')['description'] += (' Owned sessions require the original thread for '
+    'both summary and full status. The default response retains delivery claims, checks performed and remaining issues.')
+next(t for t in TOOLS if t['name'] == 'telos_review')['description'] += (' The delivery field contains untrusted executor '
+    'claims preserved across evaluation, bound to this commit; verify them against checks and source.')
+next(t for t in TOOLS if t['name'] == 'telos_project_status')['description'] += (' Corrupt children are quarantined in place '
+    'with accepted_commit cleared and usage marked incomplete. Healthy children continue within known/unknown capacity reservations.')
+next(t for t in TOOLS if t['name'] == 'telos_project_review')['description'] += (' The deliveries map retains each child '
+    'summary with its accepted commit and packet identity, including in summary detail.')
 PROJECT_INSTRUCTIONS = (' For project work use telos_project_open with execution_mode=auto. '
     'The original supervisor autonomously chooses single/parallel/phased and explains why, respecting explicit user constraints. '
     'Project start schedules up to three independent executors; project_receive batches callbacks. '
@@ -1859,7 +1919,7 @@ def call_tool(name, args, meta=None):
         if args["notify"] and not caller:
             raise GateError("Automatic return requires trusted MCP threadId metadata; notify=false permits explicit manual operation")
         args["owner_thread_id"] = caller if args["notify"] else None
-    elif name not in ("telos_status",) and args.get("session_id"):
+    elif args.get("session_id"):
         with locked(args["session_id"]) as root:
             state, _ = load_session(root)
             if state.get("owner") and caller != state["owner"]["thread_id"]:
