@@ -154,6 +154,33 @@ class ActivityTests(unittest.TestCase):
         self.assertIn(b'turn.completed', out)
         self.assertLess(self.log.stat().st_size, 3000)
 
+    def test_reader_drops_oversized_line_across_eof_polls(self):
+        with patch.object(activity, 'MAX_LINE', 128):
+            self.log.write_bytes(b'x' * 129)
+            reader = activity.Reader(self.log)
+            self.assertEqual(list(reader.read()), [])
+            self.assertEqual(list(reader.read()), [])
+            with self.log.open('ab') as stream:
+                stream.write(b'x' * 17)
+            self.assertEqual(list(reader.read()), [])
+            with self.log.open('ab') as stream:
+                stream.write(b'{"version":1,"text":"false tail"}\n')
+                stream.write(b'{"version":1,"text":"real record"}\n')
+            self.assertEqual([e['text'] for e in reader.read()], ['real record'])
+
+    def test_reader_resets_drop_state_on_rotation_truncation_and_seek(self):
+        for change in ('rotate', 'truncate', 'seek'):
+            with self.subTest(change=change), patch.object(activity, 'MAX_LINE', 128):
+                self.log.write_bytes(b'x' * 129)
+                reader = activity.Reader(self.log)
+                self.assertEqual(list(reader.read()), [])
+                if change == 'rotate':
+                    self.log.rename(self.root / 'old.jsonl')
+                self.log.write_bytes(b'{"version":1,"text":"new"}\n')
+                if change == 'seek':
+                    reader.seek_tail(1)
+                self.assertEqual([e['text'] for e in reader.read()], ['new'])
+
     def test_missing_git_leaves_a_diagnostic_without_failing_work(self):
         bridge = SimpleNamespace(STATE=self.root, run_dir=lambda sid: self.root)
         with patch('preflight.git_executable', return_value=None):

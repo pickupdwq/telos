@@ -32,6 +32,7 @@ EXPECTED_MODULES = [
     'test_audit',
     'test_local_executor',
     'test_usage',
+    'test_timing',
     'test_preflight',
     'test_compact',
     'test_mcp_contract',

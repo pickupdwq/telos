@@ -1,5 +1,15 @@
 # Changelog / 更新记录
 
+## 3.7.5 — 2026-10-21
+
+- Make full project receipt lookups read-only even before the first acknowledgement; keep child recovery and continuation on the summary path.
+- Preserve oversized observer-line discard state across EOF polls, resetting it on rotation, truncation and explicit seeking.
+- Shorten MCP initialization guidance while retaining tool-specific contracts and the companion supervisor Skill.
+- Expose request latency with measured/missing/in-flight coverage, task lifecycle phase durations and separate project wall time/integration-check metrics. Preserve failures, reassigned executor history and incomplete historical records without changing budgets or acceptance.
+- Return structured MCP errors with stable codes, recovery guidance, backoff delays and budget snapshots; keep unknown exception bodies private.
+
+修复首次详情查询消费项目事件、超长日志跨轮询误识别的问题；压缩 MCP 公共说明，增加请求与任务阶段耗时、项目实际经过时间和结构化错误。保留未知/不完整数据、失败及重分派历史，不改变原有预算和验收标准。
+
 ## 3.7.4 — 2026-10-21
 
 - Run acceptance checks against an immutable submitted source snapshot, with separate writable build and temporary directories. Keep check evidence, delivery receipts, exams and final acceptance bound to the same commit and frozen contract.

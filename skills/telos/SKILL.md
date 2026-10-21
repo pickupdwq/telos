@@ -2,7 +2,7 @@
 name: telos
 description: "Supervise Telos delegated development, scoped system audits (code, APIs, page interactions and visual evidence), and confirmed-bug repairs through MCP. Use for requests to use Telos, coordinate independent executors with evidence-based acceptance, or continue an existing TELOS_EVENT. Ordinary coding, general review and questions about Telos do not by themselves authorize starting an executor."
 metadata:
-  version: "3.7.4"
+  version: "3.7.5"
 ---
 
 # Telos
@@ -47,5 +47,7 @@ Follow the returned state and `next_action`. Receive events before acting, use t
 `telos_status`, `telos_receive`, `telos_review`, `telos_project_status`, `telos_project_receive` and `telos_project_review` return a compact summary by default. Pass `detail="full"` only when you need complete successful logs, raw receipts/attempts or static task prose. Summaries retain action identifiers, pinned commit/worktree/packet identity, all review questions/references/answers, every check outcome and blockers, so grade from the summary; full detail is not required for routine acceptance. Failed log snippets are bounded.
 
 When a task freezes `task_budget`, all work, repair and exam attempts share it. `max_requests` is hard; token limits stop the next request after observed spend reaches them, so an in-flight response can overshoot. If required usage is unknown, stop further paid requests and report the unknown-budget state. Do not retry an exhausted budget as an infrastructure failure, reduce review rigor, or invent a currency estimate.
+
+Use structured MCP errors (`error.code`, `retryable`, `retry_after_seconds`, `next_action`, optional `usage`) to diagnose failures. Retry metadata never overrides event ownership, pause/cancel, budgets or acceptance gates. Timing summaries distinguish cumulative request durations from lifecycle phases and project wall time; preserve incomplete/unknown markers rather than inventing missing history.
 
 Report the inspected version/environment, accepted result or remaining blockers, evidence/worktree locations and unverified boundaries. Link confirmed audit findings to authorized repair tasks. Reuse verified repository experience when relevant. Treat merge, push and deployment as separate actions governed by the user's authorization; acceptance alone grants none.

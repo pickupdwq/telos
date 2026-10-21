@@ -8,6 +8,7 @@ import argparse
 import contextlib
 import fcntl
 import hashlib
+import inspect
 import json
 import os
 from pathlib import Path
@@ -29,6 +30,8 @@ from codex_rpc import CodexRPC, RPCError
 from desktop_rpc import DesktopRPC
 import compact as compact_views
 import activity
+import timing
+import errors
 import watch as watch_runtime
 import providers
 from providers import ProviderError as GateError
@@ -56,10 +59,13 @@ WATCH_EVENTS = ("pending", "sending", "uncertain", "queued", "delivered")
 
 class ExamFormatError(GateError):
     """A model response failed the strict answer schema, not the grading gate."""
+    code = 'exam_format_error'
+    next_action = 'inspect_status_before_retry'
 
 
 class InfrastructureError(GateError):
-    pass
+    code = 'infrastructure_error'
+    next_action = 'inspect_status_before_retry'
 
 
 def config():
@@ -339,7 +345,8 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
     repo = Path(repo).resolve()
     repo = Path(git(repo, "rev-parse", "--show-toplevel")).resolve()
     if git(repo, "status", "--porcelain"):
-        raise GateError("Source repository is dirty. Commit/stash explicitly or choose a clean checkout; nothing was changed.")
+        raise GateError("Source repository is dirty. Commit/stash explicitly or choose a clean checkout; nothing was changed.",
+                        code='source_dirty', next_action='prepare_clean_checkout')
     if repair_of is not None:
         if not _allowed_paths:
             raise GateError('A repair handoff requires explicit allowed_paths')
@@ -394,6 +401,7 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
         state['workflow_version'] = 3
     if task_type == 'audit':
         audit_runtime.initialize(bridge_services(), state, frozen)
+    timing.initialize(state, state['created_at'])
     write_json(root / "state.json", state)
     activity.status(bridge_services(), state)
     return {"session_id": sid, "worktree": str(worktree), "model": model, "phase": "ready",
@@ -480,6 +488,7 @@ def event_message(sid, event):
 
 def record_event(state):
     if not state.get("owner") or not state.get("job_id"):
+        timing.transition(state, timing.waiting_stage(state))
         return
     eid = state["job_id"]
     events = state.setdefault("events", {})
@@ -492,25 +501,29 @@ def record_event(state):
                        "status": "pending", "attempts": 0, "actions": {}, "model": state["model"],
                        "project_id": state.get("project_id") if state.get("notification_only") else None}
     state["last_event_id"] = eid
+    timing.transition(state, timing.waiting_stage(state))
 
 
 def event_action(state, event_id, kind, arguments):
     if state.get("continuation", "active") != "active":
-        raise GateError("Continuation is paused/cancelled; resume explicitly before new work")
+        raise GateError("Continuation is paused/cancelled; resume explicitly before new work",
+                        code='continuation_stopped', next_action='honor_user_control')
     if not state.get("owner"):
         return None
     if not state.get("last_event_id") and event_id is None:
         return None
     event = state.get("events", {}).get(event_id)
     if not event:
-        raise GateError("Use telos_receive and include its event_id for this action")
+        raise GateError("Use telos_receive and include its event_id for this action",
+                        code='event_receipt_required', next_action='telos_receive')
     previous = event.get("actions", {}).get(kind)
     if previous:
         if previous["arguments_hash"] != digest(arguments):
             raise GateError("This event action was already used with different arguments")
         return {"duplicate": True, "previous_result": previous["result"], "next": "telos_status"}
     if event_id != state.get("last_event_id") or event["status"] not in ("received", "processed"):
-        raise GateError("Event is stale or not received; do not repeat work")
+        raise GateError("Event is stale or not received; do not repeat work",
+                        code='event_not_actionable', next_action='telos_status')
     return None
 
 
@@ -546,6 +559,7 @@ def receive_event(sid, event_id, detail='full'):
             event.update(status="received", last_received_at=time.time())
             if reminder:
                 reminder['status'] = 'processed'
+            timing.transition(state, timing.waiting_stage(state))
             write_json(root / "state.json", state)
         phase = state["phase"]
     full = {"proceed": proceed, "event_id": event_id, "session_id": sid,
@@ -605,6 +619,8 @@ def return_control(sid, action):
             if latest and latest.get('reminder'):
                 latest['reminder']['status'] = 'cancelled'
         state["last_control"] = receipt
+        if state['phase'] != 'running':
+            timing.transition(state, timing.waiting_stage(state))
         write_json(root / "state.json", state)
         activity.status(bridge_services(), state)
     if action == "resume":
@@ -993,9 +1009,11 @@ def _start_job(sid, kind, message="", event_id=None):
             raise GateError("Accepted task is terminal; open a new session for new work")
         before_start = json.loads(encoded(state))
         if state["phase"] == "running":
-            raise GateError("A job is already running; poll telos_status")
+            raise GateError("A job is already running; poll telos_status",
+                            code='job_running', next_action='await_completion')
         if state["phase"] == "awaiting_review":
-            raise GateError("Grade the pending exam before sending more work")
+            raise GateError("Grade the pending exam before sending more work",
+                            code='review_required', next_action='telos_review_then_grade')
         from local_executor import assert_active
         assert_active(bridge_services(), backend_bindings(contract)['executor'])
         if state["rounds"] >= contract["max_rounds"]:
@@ -1026,7 +1044,9 @@ def _start_job(sid, kind, message="", event_id=None):
             if state.get('infra_failures', 0) >= config()['infra_retry_limit']:
                 raise GateError("Infrastructure retry budget exhausted; code rounds were not consumed. Inspect service/configuration; repairs remain available.")
             if time.time() < state.get('next_retry_at', 0):
-                raise GateError("Infrastructure backoff active; retry after " + str(state['next_retry_at']))
+                raise GateError("Infrastructure backoff active; retry after " + str(state['next_retry_at']),
+                                code='retry_backoff', retryable=True, next_action='retry_after_backoff',
+                                retry_after_seconds=max(0, state['next_retry_at'] - time.time()))
             retry_exam = state["phase"] == "error" and state.get("job_kind") == "evaluate"
             if not state.get("thread_id") or not (state["phase"] in ("responded", "not_accepted") or retry_exam):
                 raise GateError("Evaluation requires a completed execution-model turn")
@@ -1040,6 +1060,7 @@ def _start_job(sid, kind, message="", event_id=None):
         state.pop('job_process_start', None)
         state.update(phase="running", job_id=job, job_kind=kind, job_started=time.time(), last_error=None,
                      active_provider=backend_bindings(contract)['exam' if kind == 'evaluate' else 'executor']['provider'])
+        timing.transition(state, 'work' if kind == 'send' else 'checks')
         watch_runtime.prepare(bridge_services(), state)
         state.pop("acceptance", None)
         write_json(root / f"job-{job}.json", {"kind": kind, "message": message, "reserved_round": state['rounds'] if kind == 'evaluate' else None})
@@ -1401,12 +1422,18 @@ def background_job(sid, job):
                             'Executable checks passed' if checks_passed else 'Executable checks failed; exam skipped')
             if not checks_passed:
                 exam = {'skipped': 'executable_checks_failed'}
-            elif contract.get('workflow_version') == 3:
-                exam = closed_book_exam(state, contract, commit)
-                if git(state['worktree'], 'rev-parse', 'HEAD') != commit or git(state['worktree'], 'status', '--porcelain'):
-                    raise GateError('Code changed during closed-book examination; re-evaluate the new submission')
             else:
-                exam = answer_exam({**contract, '_submission': submission})
+                with locked(sid) as phase_root:
+                    current, _ = load_session(phase_root)
+                    if current.get('job_id') == job:
+                        timing.transition(current, 'exam')
+                        write_json(phase_root / 'state.json', current)
+                if contract.get('workflow_version') == 3:
+                    exam = closed_book_exam(state, contract, commit)
+                    if git(state['worktree'], 'rev-parse', 'HEAD') != commit or git(state['worktree'], 'status', '--porcelain'):
+                        raise GateError('Code changed during closed-book examination; re-evaluate the new submission')
+                else:
+                    exam = answer_exam({**contract, '_submission': submission})
             packet = {"session_id": sid, "round": state["rounds"], "commit": commit,
                       "contract_hash": state["contract_hash"], "checks": checks, "exam": exam}
             import delivery
@@ -1512,6 +1539,7 @@ def status(sid, detail='full'):
                     raise ProcessLookupError()
             except ProcessLookupError:
                 state.update(phase="error", last_error="Background process exited without a result; no acceptance")
+                timing.transition(state, 'supervisor_wait', interrupted=True)
                 request_path = root / f"job-{state.get('job_id')}.json"
                 request = read_json(request_path) if request_path.exists() else {}
                 if state.get('job_kind') == 'evaluate' and request.get('reserved_round') == state['rounds']:
@@ -1526,6 +1554,7 @@ def status(sid, detail='full'):
             result = {"session_id": sid, "phase": "stale", "accepted": False,
                       "message": "Job exceeded the safety window. Inspect the exact job; do not assume completion.",
                       "budget": contract.get('budget'), "usage": usage_snapshot(state, contract),
+                      "timing": timing.snapshot(state),
                       "next_action": "inspect_error_before_retry"}
             return compact_views.status(result) if detail == 'summary' else result
         result = {k: state.get(k) for k in ("session_id", "phase", "model", "worktree", "turns", "rounds",
@@ -1535,6 +1564,7 @@ def status(sid, detail='full'):
         result.update(base_commit=state.get('base_commit'), submitted_commit=state.get('submitted_commit'),
                       packet_id=state.get('packet_id'), contract_hash=state.get('contract_hash'),
                       budget=contract.get('budget'), usage=usage_snapshot(state, contract),
+                      timing=timing.snapshot(state),
                       next_action=next_action_for(state['phase']))
         result['task_type'] = contract.get('task_type', 'implementation')
         if contract.get('task_type') == 'audit':
@@ -1593,6 +1623,7 @@ def review_packet(sid, detail='full'):
                   "session_id": sid, "worktree": state.get('worktree'), "submitted_commit": packet.get('commit'),
                   "contract_hash": state.get('contract_hash'), "budget": contract.get('budget'),
                   "usage": usage_snapshot(state, contract), "acceptance": verdict,
+                  "timing": timing.snapshot(state),
                   "blockers": verdict.get('blockers', []),
                   "identity": {"session_id": packet.get('session_id'), "packet_id": state["packet_id"],
                                "commit": packet.get('commit'), "contract_hash": packet.get('contract_hash'),
@@ -1685,6 +1716,7 @@ def _grade(sid, packet_id, scores, blockers, event_id=None, public_lessons=None,
             (root / ('audit-report-' + str(state['rounds']) + '.md')).write_text(audit_runtime.summary_markdown(packet['audit'], audit_review))
         write_json(root / f"grade-{state['rounds']}.json", {**verdict, "scores": scores})
         state.update(phase="accepted" if passed else "not_accepted", acceptance=verdict)
+        timing.transition(state, None if passed else 'supervisor_wait')
         if public_lessons is not None:
             state['public_lessons'] = public_lessons
         record_action(state, event_id, "grade", grade_arguments, verdict)
@@ -1884,16 +1916,23 @@ next(t for t in TOOLS if t['name'] == 'telos_project_status')['description'] += 
     'with accepted_commit cleared and usage marked incomplete. Healthy children continue within known/unknown capacity reservations.')
 next(t for t in TOOLS if t['name'] == 'telos_project_review')['description'] += (' The deliveries map retains each child '
     'summary with its accepted commit and packet identity, including in summary detail.')
-PROJECT_INSTRUCTIONS = (' For project work use telos_project_open with execution_mode=auto. '
-    'The original supervisor autonomously chooses single/parallel/phased and explains why, respecting explicit user constraints. '
-    'Project start schedules up to three independent executors; project_receive batches callbacks. '
-    'Review/grade each child, integrate accepted commits, run project_check, inspect project_review and finish. '
-    'Verified experience is accumulated automatically and retrieved for relevant new tasks; use public repair advice in send, never private answers. Only project acceptance completes the overall goal. Never disclose private references or change the original supervisor.')
+next(t for t in TOOLS if t['name'] == 'telos_project_receive')['description'] += (
+    ' A full lookup before the first receipt returns receipt_available=false without acknowledging or recovering state.')
+for tool_name in ('telos_status', 'telos_review', 'telos_project_status', 'telos_project_review'):
+    next(t for t in TOOLS if t['name'] == tool_name)['description'] += (
+        ' Timing separates cumulative request/phase durations from wall time; incomplete data stays marked.')
+SERVER_INSTRUCTIONS = (
+    'Use the telos skill. Only the original supervisor accepts; keep references/checks private. '
+    'Follow proceed, next_action and returned event IDs; await callbacks. Honor pause/cancel. '
+    'Only accepted=true completes work; projects require project acceptance. No automatic merge/deploy.')
 
 from audit_schema import extend as extend_audit_schema
 extend_audit_schema(TOOLS, PROJECT_TASK)
 
 def call_tool(name, args, meta=None):
+    if not isinstance(name, str) or not isinstance(args, dict) or (meta is not None and not isinstance(meta, dict)):
+        raise GateError('Tool name, arguments and metadata have invalid types',
+                        code='invalid_arguments', next_action='correct_arguments')
     name = canonical_tool_name(name)
     args = dict(args)
     if any(key.startswith('_') for key in args):
@@ -1903,7 +1942,13 @@ def call_tool(name, args, meta=None):
     if name in compact_tools:
         detail = args.setdefault('detail', 'summary')
         if detail not in ('summary', 'full'):
-            raise GateError('detail must be summary or full')
+            raise GateError('detail must be summary or full', code='invalid_arguments', next_action='correct_arguments')
+    schema = next((tool['inputSchema'] for tool in TOOLS if tool['name'] == name), None)
+    if schema is None:
+        raise GateError('Unknown tool', code='unknown_tool', next_action='select_supported_tool')
+    if args.keys() - schema['properties'].keys():
+        raise GateError('Missing required or unsupported tool arguments; consult the tool schema',
+                        code='invalid_arguments', next_action='correct_arguments')
     caller = (meta or {}).get("threadId")
     if name == 'telos_cache_manage':
         return storage_manager().manage(**args, caller=caller)
@@ -1924,7 +1969,8 @@ def call_tool(name, args, meta=None):
         with locked(args["session_id"]) as root:
             state, _ = load_session(root)
             if state.get("owner") and caller != state["owner"]["thread_id"]:
-                raise GateError("This event and its private review belong to another Codex thread")
+                raise GateError("This event and its private review belong to another Codex thread",
+                                code='owner_mismatch', next_action='use_original_supervisor')
             if name == 'telos_return_control' and state.get('project_id'):
                 raise GateError('Use telos_project_control for project-owned sessions')
     functions = {"telos_open": create_session, "telos_send": lambda session_id, message, event_id=None: start_job(session_id, "send", message, event_id),
@@ -1938,9 +1984,14 @@ def call_tool(name, args, meta=None):
         from audit_probe import run as audit_probe_run
         return audit_probe_run(bridge_services(), args['session_id'], args['request'])
     if name not in functions:
-        raise GateError("Unknown tool")
+        raise GateError("Unknown tool", code='unknown_tool', next_action='select_supported_tool')
     if name in ("telos_status", "telos_review", "telos_grade", "telos_receive", "telos_return_control"):
         args = {("sid" if k == "session_id" else k): v for k, v in args.items()}
+    try:
+        inspect.signature(functions[name]).bind(**args)
+    except TypeError:
+        raise GateError('Missing required or unsupported tool arguments; consult the tool schema',
+                        code='invalid_arguments', next_action='correct_arguments') from None
     result = functions[name](**args)
     if name == "telos_grade":
         state = read_json(run_dir(args['sid']) / 'state.json')
@@ -1953,6 +2004,8 @@ def serve_messages():
     for line in sys.stdin:
         try:
             request = json.loads(line)
+            if not isinstance(request, dict):
+                raise ValueError('Request must be an object')
             if "id" not in request:
                 continue
             method = request.get("method")
@@ -1960,16 +2013,21 @@ def serve_messages():
                 protocol = request.get("params", {}).get("protocolVersion", "2025-11-25")
                 result = {"protocolVersion": protocol, "capabilities": {"tools": {}},
                           "serverInfo": {"name": "telos", "title": "TELOS", "version": VERSION},
-                          "instructions": "Use for requested telos collaboration. The companion telos skill guides the original supervisor through planning, audits and acceptance; runtime gates remain authoritative. The original GPT flagship supervisor owns one configurable executor per task. Work and closed-book exam resume the same executor thread; only the supervisor grades. No separate reviewer model or native subagent/team executor. open auto-binds the caller thread; send→completion event→receive→evaluate→completion event→receive→review→grade. Include event_id for each follow-on action. With return enabled, yield while waiting; do not repeatedly poll. Only accepted=true completes the task. Pause/cancel requests require return_control immediately. References/checks stay private. Never merge/deploy automatically." + PROJECT_INSTRUCTIONS}
+                          "instructions": SERVER_INSTRUCTIONS}
             elif method == "tools/list":
                 result = {"tools": TOOLS}
             elif method == "tools/call":
                 try:
                     params = request["params"]
+                    if not isinstance(params, dict) or not isinstance(params.get('name'), str):
+                        raise GateError('Tool call requires a name and an arguments object',
+                                        code='invalid_arguments', next_action='correct_arguments')
                     data = call_tool(params["name"], params.get("arguments", {}), params.get("_meta"))
                     result = {"content": [{"type": "text", "text": encoded(data)}], "isError": False}
                 except Exception as error:
-                    result = {"content": [{"type": "text", "text": str(error)[:3000]}], "isError": True}
+                    data = errors.payload(error)
+                    result = {"content": [{"type": "text", "text": encoded(data)}],
+                              "structuredContent": data, "isError": True}
             elif method == "ping":
                 result = {}
             else:

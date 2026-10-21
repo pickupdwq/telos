@@ -10,14 +10,17 @@ from pathlib import Path
 import re
 from urllib.parse import urlsplit
 from identity import credential_path
+from errors import ToolError
 
 
-class ProviderError(Exception):
+class ProviderError(ToolError):
     pass
 
 
 class ExecutionTimeout(ProviderError):
     """The local execution time limit fired, independently of account quota."""
+    code = 'execution_timeout'
+    next_action = 'inspect_status_before_retry'
 
 
 ARK_MODELS = ('glm-5.3', 'glm-5.3-flash', 'deepseek-v4-1-flash-260910', 'deepseek-v4.1-flash')

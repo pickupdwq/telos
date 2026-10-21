@@ -369,6 +369,30 @@ class RobustnessTests(ProjectTests):
         self.assertEqual(sorted(usage['unavailable_tasks']), ['a', 'b', 'c'])
         self.assertTrue(all(type(value) is int for value in usage['unknown_fields'].values()))
 
+    def test_first_full_receive_never_acknowledges_or_recovers_state(self):
+        db = {'thread': {'id': OWNER, 'status': {'type': 'idle'}, 'cwd': str(self.repo)}, 'queue': [], 'calls': []}
+        with patch.object(b, 'CodexRPC', side_effect=lambda *_: FakeRPC(db)), patch.object(b, 'spawn_dispatch'):
+            pid = self.create([self.task('a')], notify=True, caller=OWNER); self.start(pid)
+            child = self.child(pid, 'a'); child.update(phase='responded', thread_id=OTHER)
+            b.record_event(child); b.write_json(b.run_dir(child['session_id']) / 'state.json', child)
+            b.project_manager().tick(pid)
+            eid = b.read_json(b.run_dir(pid) / 'state.json')['last_event_id']
+            paths = [b.project_manager().path(pid), b.run_dir(pid) / 'state.json',
+                     b.run_dir(child['session_id']) / 'state.json']
+            before = [path.read_bytes() for path in paths]
+            for requested_id in (eid, 'missing', None):
+                with patch.object(Projects, 'refresh', side_effect=AssertionError('read-only lookup must not recover')):
+                    lookup = b.call_tool('telos_project_receive',
+                        {'project_id': pid, 'event_id': requested_id, 'detail': 'full'}, {'threadId': OWNER})
+                self.assertFalse(lookup['proceed'])
+                self.assertTrue(lookup['read_only'])
+                self.assertFalse(lookup['receipt_available'])
+                self.assertEqual([path.read_bytes() for path in paths], before)
+            received = b.call_tool('telos_project_receive', {'project_id': pid, 'event_id': eid}, {'threadId': OWNER})
+            self.assertTrue(received['proceed'])
+            self.assertTrue(received['events'][0]['proceed'])
+            self.assertEqual(received['events'][0]['event_id'], child['last_event_id'])
+
     def test_project_receive_full_detail_replays_original_batch_read_only(self):
         db = {'thread': {'id': OWNER, 'status': {'type': 'idle'}, 'cwd': str(self.repo)}, 'queue': [], 'calls': []}
         with patch.object(b, 'CodexRPC', side_effect=lambda *_: FakeRPC(db)), patch.object(b, 'spawn_dispatch'):

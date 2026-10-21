@@ -179,6 +179,25 @@ When available, a bounded `x-request-id` response header is saved as `upstream_r
 
 Project `allowed_paths` are literal relative files/directory prefixes, not globs. Avoid `.` unless the task really needs the whole repository. `.git` and parent traversal are forbidden. Whole-project checks inherit child dependency grants; project-level grants add read access only for final checks.
 
+## Timing and structured errors / 耗时与结构化错误
+
+Status and review summaries expose timing without enabling any additional model calls:
+
+- `usage.request_latency` reports cumulative `observed_seconds`, `measured_requests`, `missing_requests`, `in_flight_requests`, `complete`, and separate `work`/`exam` phases. Failed requests with measured duration are included; repairs count as work. Project usage aggregates the shared task ledgers, including prior executor assignments. `unavailable_sources` and `complete=false` preserve unreadable or incomplete child data. A zero observed total with missing requests does **not** mean zero actual time.
+- Task `timing.phase_seconds` separates `idle`, `work`, `checks`, `exam`, `callback_wait`, `supervisor_wait`, and `paused`. Work/check/exam stages include their local setup. Callback wait ends at acknowledgement; supervisor wait includes review, repair decisions and the wait before the next action. It is elapsed waiting time, not a measurement of the supervisor's model inference. Pausing does not stop an already running job's clock; cancellation ends its clock when that job actually finishes.
+- Project `timing.elapsed_wall_seconds` is time from creation to acceptance/cancellation (or now while active). `child_phase_seconds` sums retained executor assignments and can overlap across children; it must not be presented as project wall time. `integration_checks` separately reports completed final verification runtime, including failures, and identifies an in-flight verification. It does not include worker scheduling delay.
+- These metrics are observational, never budget or acceptance inputs. Lifecycle tracking starts with new tasks or the first observed transition of a historical task; missing history, process-loss intervals and clock regressions remain `complete=false`. Legacy terminal records without a finish timestamp have unknown wall time. Request latency measures relay elapsed time, not pure provider compute or first-token latency.
+
+MCP failures retain `isError=true` and return the same JSON object in `structuredContent` and text content:
+
+```json
+{"error":{"code":"retry_backoff","message":"Infrastructure backoff active","retryable":true,"retry_after_seconds":12,"next_action":"retry_after_backoff"}}
+```
+
+Stable codes include `invalid_arguments`, `unknown_tool`, `owner_mismatch`, `source_dirty`, `continuation_stopped`, `event_receipt_required`, `event_not_actionable`, `job_running`, `review_required`, `retry_backoff`, `budget_exhausted`, `budget_unknown`, `budget_unavailable`, `execution_timeout`, `exam_format_error`, `infrastructure_error`, `gate_rejected`, and `internal_error`. Budget errors include the available usage snapshot, never the raw ledger. Unknown exceptions disclose their type, not arbitrary exception bodies. Retry metadata is guidance only: ownership, event idempotency, user control and frozen budgets remain authoritative; an uncertain failed operation must be reconciled before any retry.
+
+中文：请求累计耗时、任务阶段耗时、项目实际经过时间分开显示，失败请求及保留的重分派历史计入统计。缺失、损坏、执行中和历史未记录的数据明确标记，不把缺失值当作零耗时，也不把并行子任务耗时之和当成项目总时间。错误返回提供稳定错误码、是否可重试、等待秒数、下一步动作与可用预算快照；这些提示不能绕过原有权限、事件、暂停或预算限制。
+
 ## Read-only executor observer
 
 Activity recording is enabled for new execution attempts. `watch.auto_tmux`

@@ -1,5 +1,7 @@
 """MCP-boundary detail defaults, frozen budgets and budget-stop regressions."""
 import copy
+import io
+import json
 import os
 import unittest
 from unittest.mock import Mock, patch
@@ -8,6 +10,61 @@ import test_telos
 from usage import BudgetExceeded
 
 b = test_telos.b
+
+
+class MCPErrorTests(unittest.TestCase):
+    def transport(self, request, error=None):
+        stream = io.StringIO()
+        with patch.object(b.sys, 'stdin', io.StringIO(json.dumps(request) + '\n')), \
+                patch.object(b.sys, 'stdout', stream):
+            if error is None:
+                b.serve_messages()
+            else:
+                with patch.object(b, 'call_tool', side_effect=error):
+                    b.serve_messages()
+        return json.loads(stream.getvalue())['result']
+
+    def test_budget_error_retains_machine_readable_usage_and_never_suggests_retry(self):
+        snapshot = {'totals': {'requests': 2}, 'budget_state': {'state': 'unknown'},
+                    'requests': {'private': 'MUST_NOT_EXPOSE_RAW_LEDGER'}}
+        request = {'id': 1, 'method': 'tools/call', 'params': {'name': 'telos_send'}}
+        response = self.transport(request, BudgetExceeded('Usage is unknown', snapshot))
+        self.assertTrue(response['isError'])
+        data = json.loads(response['content'][0]['text'])
+        self.assertEqual(data, response['structuredContent'])
+        self.assertEqual(data['error']['code'], 'budget_unknown')
+        self.assertFalse(data['error']['retryable'])
+        self.assertEqual(data['error']['usage']['totals']['requests'], 2)
+        self.assertNotIn('MUST_NOT_EXPOSE', json.dumps(data))
+
+    def test_backoff_has_explicit_delay_and_unknown_errors_do_not_leak(self):
+        request = {'id': 1, 'method': 'tools/call', 'params': {'name': 'telos_evaluate'}}
+        error = b.GateError('Backoff', code='retry_backoff', retryable=True,
+                            retry_after_seconds=12, next_action='retry_after_backoff')
+        data = self.transport(request, error)['structuredContent']['error']
+        self.assertEqual((data['code'], data['retryable'], data['retry_after_seconds']),
+                         ('retry_backoff', True, 12))
+        response = self.transport(request, RuntimeError('PRIVATE_PROVIDER_BODY'))
+        self.assertEqual(response['structuredContent']['error']['code'], 'internal_error')
+        self.assertNotIn('PRIVATE_PROVIDER_BODY', json.dumps(response))
+
+    def test_invalid_tool_arguments_return_stable_errors(self):
+        for params, expected in [
+                ({'name': 'telos_status', 'arguments': {}}, 'invalid_arguments'),
+                ({'name': 'telos_status', 'arguments': []}, 'invalid_arguments'),
+                ({'name': 'unknown', 'arguments': {}}, 'unknown_tool')]:
+            data = self.transport({'id': 1, 'method': 'tools/call', 'params': params})
+            self.assertEqual(data['structuredContent']['error']['code'], expected)
+
+    def test_initialize_retains_compact_rules_and_full_tool_contracts(self):
+        response = self.transport({'id': 1, 'method': 'initialize', 'params': {}})
+        instructions = response['instructions']
+        self.assertLess(len(instructions), 400)
+        for rule in ('original supervisor', 'private', 'proceed', 'event IDs',
+                     'pause/cancel', 'accepted=true', 'project acceptance', 'merge/deploy'):
+            self.assertIn(rule, instructions)
+        tools = self.transport({'id': 2, 'method': 'tools/list'})['tools']
+        self.assertEqual(len(tools), 25)
 
 
 class MCPBoundaryTests(unittest.TestCase):
@@ -23,6 +80,21 @@ class MCPBoundaryTests(unittest.TestCase):
         if budget is not None:
             args['budget'] = budget
         return b.call_tool('telos_open', args, None)
+
+    def test_real_budget_gate_reaches_structured_mcp_error_without_starting_job(self):
+        sid = self.open_with_budget({'max_requests': 1})['session_id']
+        state, contract = b.load_session(b.run_dir(sid))
+        ledger = b.usage_ledger(state, contract)
+        ledger.finish(ledger.begin('work'), {'input_tokens': 2, 'output_tokens': 1}, latency_ms=25)
+        with patch.object(b.subprocess, 'Popen') as launch:
+            response = MCPErrorTests().transport({'id': 1, 'method': 'tools/call',
+                'params': {'name': 'telos_send', 'arguments': {'session_id': sid, 'message': 'Continue'}}})
+            launch.assert_not_called()
+        error = response['structuredContent']['error']
+        self.assertEqual(error['code'], 'budget_exhausted')
+        self.assertFalse(error['retryable'])
+        self.assertEqual(error['usage']['totals']['requests'], 1)
+        self.assertEqual(error['usage']['request_latency']['observed_seconds'], .025)
 
     def test_status_and_review_default_to_summary_and_full_preserves_pinned_evidence(self):
         sid = self.create()
