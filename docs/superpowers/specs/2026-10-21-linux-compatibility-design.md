@@ -1,7 +1,7 @@
 # Linux compatibility without changing macOS isolation
 
 Base: `feature/rsi-20-rounds-20261020` at `8e0679a`.
-Development branch: `feature/linux-compat-20261021`.
+Development branch: `telos-linux`.
 
 ## Contract
 

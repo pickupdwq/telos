@@ -63,7 +63,9 @@ jobs:
           retention-days: 7
 
   linux-runtime:
-    runs-on: ubuntu-24.04
+    # Ubuntu 24.04's hosted image denies unprivileged UID/network setup even
+    # for /bin/true. Do not disable its AppArmor/sysctl policy to make tests pass.
+    runs-on: ubuntu-22.04
     timeout-minutes: 20
     env:
       TELOS_REQUIRE_LINUX_SANDBOX: '1'
@@ -76,7 +78,19 @@ jobs:
         with:
           node-version: '24'
       - name: Install Linux isolation dependencies
-        run: sudo apt-get update && sudo apt-get install -y bubblewrap libseccomp2
+        run: sudo apt-get update && sudo apt-get install -y libseccomp2 libcap-dev meson ninja-build
+      - name: Check out pinned Bubblewrap 0.9.0
+        uses: actions/checkout@v4
+        with:
+          repository: containers/bubblewrap
+          ref: 8e51677abd7e3338e4952370bf7d902e37d8cbb6
+          path: .artifacts/bubblewrap-source
+          persist-credentials: false
+      - name: Build unprivileged Bubblewrap
+        run: |
+          meson setup .artifacts/bubblewrap-build .artifacts/bubblewrap-source -Dman=disabled -Dtests=false
+          ninja -C .artifacts/bubblewrap-build
+          echo "$PWD/.artifacts/bubblewrap-build" >> "$GITHUB_PATH"
       - name: Diagnose namespace prerequisites
         run: |
           id
