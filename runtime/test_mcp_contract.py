@@ -1,5 +1,7 @@
 """MCP-boundary detail defaults, frozen budgets and budget-stop regressions."""
 import copy
+import io
+import json
 import os
 import unittest
 from unittest.mock import Mock, patch
@@ -8,6 +10,141 @@ import test_telos
 from usage import BudgetExceeded
 
 b = test_telos.b
+
+
+class MCPErrorTests(unittest.TestCase):
+    def transport(self, request, error=None):
+        stream = io.StringIO()
+        with patch.object(b.sys, 'stdin', io.StringIO(json.dumps(request) + '\n')), \
+                patch.object(b.sys, 'stdout', stream):
+            if error is None:
+                b.serve_messages()
+            else:
+                with patch.object(b, 'call_tool', side_effect=error):
+                    b.serve_messages()
+        return json.loads(stream.getvalue())['result']
+
+    def test_budget_error_retains_machine_readable_usage_and_never_suggests_retry(self):
+        snapshot = {'totals': {'requests': 2}, 'budget_state': {'state': 'unknown'},
+                    'requests': {'private': 'MUST_NOT_EXPOSE_RAW_LEDGER'}}
+        request = {'id': 1, 'method': 'tools/call', 'params': {'name': 'telos_send'}}
+        response = self.transport(request, BudgetExceeded('Usage is unknown', snapshot))
+        self.assertTrue(response['isError'])
+        data = json.loads(response['content'][0]['text'])
+        self.assertEqual(data, response['structuredContent'])
+        self.assertEqual(data['error']['code'], 'budget_unknown')
+        self.assertFalse(data['error']['retryable'])
+        self.assertEqual(data['error']['usage']['totals']['requests'], 2)
+        self.assertNotIn('MUST_NOT_EXPOSE', json.dumps(data))
+
+    def test_backoff_has_explicit_delay_and_unknown_errors_do_not_leak(self):
+        request = {'id': 1, 'method': 'tools/call', 'params': {'name': 'telos_evaluate'}}
+        error = b.GateError('Backoff', code='retry_backoff', retryable=True,
+                            retry_after_seconds=12, next_action='retry_after_backoff')
+        data = self.transport(request, error)['structuredContent']['error']
+        self.assertEqual((data['code'], data['retryable'], data['retry_after_seconds']),
+                         ('retry_backoff', True, 12))
+        response = self.transport(request, RuntimeError('PRIVATE_PROVIDER_BODY'))
+        self.assertEqual(response['structuredContent']['error']['code'], 'internal_error')
+        self.assertNotIn('PRIVATE_PROVIDER_BODY', json.dumps(response))
+
+    def test_invalid_tool_arguments_return_stable_errors(self):
+        for params, expected in [
+                ({'name': 'telos_status', 'arguments': {}}, 'invalid_arguments'),
+                ({'name': 'telos_status', 'arguments': []}, 'invalid_arguments'),
+                ({'name': 'unknown', 'arguments': {}}, 'unknown_tool')]:
+            data = self.transport({'id': 1, 'method': 'tools/call', 'params': params})
+            self.assertEqual(data['structuredContent']['error']['code'], expected)
+
+    def test_initialize_retains_compact_rules_and_full_tool_contracts(self):
+        response = self.transport({'id': 1, 'method': 'initialize', 'params': {}})
+        instructions = response['instructions']
+        self.assertLess(len(instructions), 400)
+        for rule in ('original supervisor', 'private', 'proceed', 'event IDs',
+                     'pause/cancel', 'accepted=true', 'project acceptance', 'merge/deploy'):
+            self.assertIn(rule, instructions)
+        tools = self.transport({'id': 2, 'method': 'tools/list'})['tools']
+        self.assertEqual(len(tools), 25)
+
+    def test_invalid_initialize_keeps_request_loop_alive(self):
+        for params in (None, [], 42, 'PRIVATE_INPUT', {'protocolVersion': None},
+                       {'protocolVersion': []}, {'protocolVersion': 42}):
+            with self.subTest(params=params):
+                requests = [{'id': 1, 'method': 'initialize', 'params': params},
+                            {'method': 'notifications/initialized'},
+                            {'id': 2, 'method': 'ping'},
+                            {'id': 3, 'method': 'tools/list'},
+                            {'id': 4, 'method': 'initialize', 'params': {}}]
+                output = io.StringIO()
+                with patch.object(b.sys, 'stdin', io.StringIO(
+                        ''.join(json.dumps(r) + '\n' for r in requests))), \
+                        patch.object(b.sys, 'stdout', output):
+                    b.serve_messages()
+                replies = [json.loads(line) for line in output.getvalue().splitlines()]
+                self.assertEqual([r['id'] for r in replies], [1, 2, 3, 4])
+                self.assertEqual(replies[0]['error']['code'], -32602)
+                self.assertEqual(replies[1]['result'], {})
+                self.assertEqual(len(replies[2]['result']['tools']), 25)
+                self.assertEqual(replies[3]['result']['serverInfo']['name'], 'telos')
+                self.assertNotIn('PRIVATE_INPUT', output.getvalue())
+
+    def test_missing_tool_call_parameters_are_argument_errors(self):
+        for request in ({'id': 1, 'method': 'tools/call'},
+                        {'id': 1, 'method': 'tools/call', 'params': None}):
+            response = self.transport(request)
+            self.assertEqual(response['structuredContent']['error']['code'], 'invalid_arguments')
+
+    def test_shortcut_handlers_check_required_arguments(self):
+        for name, arguments in (
+                ('telos_experience_search', {}),
+                ('telos_experience_forget', {}),
+                ('telos_audit_probe', {}),
+                ('telos_audit_probe', {'request': {}})):
+            with self.subTest(name=name, arguments=arguments):
+                response = self.transport({'id': 1, 'method': 'tools/call',
+                    'params': {'name': name, 'arguments': arguments}})
+                error = response['structuredContent']['error']
+                self.assertEqual(error['code'], 'invalid_arguments')
+                self.assertEqual(error['next_action'], 'correct_arguments')
+                self.assertFalse(error['retryable'])
+
+    def test_handler_type_error_is_not_misclassified_as_invalid_arguments(self):
+        with patch('experience.Experience.lookup', autospec=True,
+                   side_effect=TypeError('PRIVATE_HANDLER_FAILURE')) as lookup:
+            response = self.transport({'id': 1, 'method': 'tools/call',
+                'params': {'name': 'telos_experience_search', 'arguments': {'repo': '/fixture'}}})
+        lookup.assert_called_once()
+        self.assertEqual(response['structuredContent']['error']['code'], 'internal_error')
+        self.assertNotIn('PRIVATE_HANDLER_FAILURE', json.dumps(response))
+
+    def test_nested_input_errors_identify_fields_before_runtime_calls(self):
+        cases = [
+            ('telos_project_open', {'tasks': [42]}, 'arguments.tasks[0]'),
+            ('telos_project_open', {'tasks': [{'id': 42}]}, 'arguments.tasks[0].id'),
+            ('telos_project_open', {'tasks': None}, 'arguments.tasks'),
+            ('telos_project_update', {'add_tasks': [None]}, 'arguments.add_tasks[0]'),
+            ('telos_open', {'questions': [{'points': True}]}, 'arguments.questions[0].points'),
+            ('telos_open', {'checks': [{'argv': [42]}]}, 'arguments.checks[0].argv[0]'),
+            ('telos_open', {'budget': {'max_requests': 'PRIVATE_VALUE'}}, 'arguments.budget.max_requests'),
+            ('telos_grade', {'scores': [42]}, 'arguments.scores[0]'),
+            ('telos_send', {'message': {'secret': 'PRIVATE_VALUE'}}, 'arguments.message'),
+            ('telos_project_open', {'execution_mode': 'PRIVATE_VALUE'}, 'arguments.execution_mode'),
+            ('telos_audit_probe', {'request': {'headers': {'PRIVATE_KEY': 42}}}, 'arguments.request.headers.<key>'),
+        ]
+        for name, arguments, field in cases:
+            with self.subTest(name=name, field=field), \
+                    patch.object(b, 'project_manager') as manager, \
+                    patch.object(b, 'load_session') as load, \
+                    patch.object(b, 'create_session') as create:
+                result = self.transport({'id': 1, 'method': 'tools/call',
+                    'params': {'name': name, 'arguments': arguments}})
+                error = result['structuredContent']['error']
+                self.assertEqual(error['code'], 'invalid_arguments')
+                self.assertEqual(error['next_action'], 'correct_arguments')
+                self.assertFalse(error['retryable'])
+                self.assertIn(field, error['message'])
+                self.assertNotIn('PRIVATE_', json.dumps(result))
+                manager.assert_not_called(); load.assert_not_called(); create.assert_not_called()
 
 
 class MCPBoundaryTests(unittest.TestCase):
@@ -23,6 +160,36 @@ class MCPBoundaryTests(unittest.TestCase):
         if budget is not None:
             args['budget'] = budget
         return b.call_tool('telos_open', args, None)
+
+    def test_null_options_and_default_project_strategy_remain_compatible(self):
+        self.assertEqual(b.call_tool('telos_cache_manage', {})['tasks'], [])
+        result = b.call_tool('telos_open', {'repo': str(self.repo), 'task': 'Implement addition.',
+            'questions': self.q, 'checks': self.checks, 'notify': False,
+            'budget': None, 'executor_profile': None, 'dependency_paths': None})
+        _, contract = b.load_session(b.run_dir(result['session_id']))
+        self.assertIsNone(contract.get('budget'))
+        project = b.call_tool('telos_project_open', {'repo': str(self.repo), 'task': 'Example project',
+            'tasks': [{'id': 'a', 'task': 'Implement a', 'message': 'Complete the assigned change',
+                       'allowed_paths': ['a.py'], 'questions': self.q, 'checks': self.checks, 'budget': None}],
+            'questions': self.q, 'checks': self.checks, 'decision_reason': 'One independent task', 'notify': False})
+        self.assertEqual(project['strategy'], 'single')
+        self.assertEqual(project['jobs_started'], 0)
+        self.assertIsNone(project['usage'])
+
+    def test_real_budget_gate_reaches_structured_mcp_error_without_starting_job(self):
+        sid = self.open_with_budget({'max_requests': 1})['session_id']
+        state, contract = b.load_session(b.run_dir(sid))
+        ledger = b.usage_ledger(state, contract)
+        ledger.finish(ledger.begin('work'), {'input_tokens': 2, 'output_tokens': 1}, latency_ms=25)
+        with patch.object(b.subprocess, 'Popen') as launch:
+            response = MCPErrorTests().transport({'id': 1, 'method': 'tools/call',
+                'params': {'name': 'telos_send', 'arguments': {'session_id': sid, 'message': 'Continue'}}})
+            launch.assert_not_called()
+        error = response['structuredContent']['error']
+        self.assertEqual(error['code'], 'budget_exhausted')
+        self.assertFalse(error['retryable'])
+        self.assertEqual(error['usage']['totals']['requests'], 1)
+        self.assertEqual(error['usage']['request_latency']['observed_seconds'], .025)
 
     def test_status_and_review_default_to_summary_and_full_preserves_pinned_evidence(self):
         sid = self.create()

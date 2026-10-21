@@ -140,7 +140,7 @@ def status(full):
         'session_id', 'phase', 'accepted', 'model', 'worktree', 'base_commit',
         'submitted_commit', 'packet_id', 'contract_hash', 'turns', 'rounds',
         'job_id', 'job_kind', 'infra_failures', 'next_retry_at', 'last_failure_kind',
-        'project_id', 'task_type', 'version', 'workflow', 'executor', 'budget', 'usage',
+        'project_id', 'task_type', 'version', 'workflow', 'executor', 'budget', 'usage', 'timing',
         'next_action', 'archived', 'audit_artifacts', 'audit_report', 'message') if key in full}
     if 'last_error' in full:
         result['last_error'] = _text(full.get('last_error'), 1200)
@@ -172,7 +172,7 @@ def status(full):
 def review(full):
     result = {key: full.get(key) for key in (
         'packet_id', 'questions', 'instruction', 'session_id', 'worktree', 'submitted_commit',
-        'contract_hash', 'identity', 'blockers', 'acceptance', 'budget', 'usage') if key in full}
+        'contract_hash', 'identity', 'blockers', 'acceptance', 'budget', 'usage', 'timing') if key in full}
     result['evidence'] = _evidence(full.get('evidence'))
     result['detail'] = 'summary'
     result['detail_hint'] = ('Call telos_review with detail="full" for complete successful logs, '
@@ -208,7 +208,8 @@ def _project_task(task):
     result = {key: task.get(key) for key in (
         'id', 'phase', 'depends_on', 'allowed_paths', 'provider', 'model', 'executor_profile',
         'workflow_version', 'reasoning_effort', 'session_id', 'event_id', 'accepted_commit',
-        'base_commit', 'budget', 'usage', 'revision', 'delivery') if key in task}
+        'base_commit', 'budget', 'usage', 'timing', 'revision', 'delivery',
+        'start_error', 'next_action') if key in task}
     if 'error' in task:
         result['error'] = _text(task.get('error'), 1200)
     return result
@@ -224,7 +225,7 @@ def project(full):
     result = {key: full.get(key) for key in (
         'project_id', 'phase', 'accepted', 'continuation', 'execution_mode', 'strategy',
         'effective_parallel', 'max_parallel', 'max_jobs', 'jobs_started', 'base_commit',
-        'decision_reason', 'return_health', 'return_error', 'usage', 'contract_hash') if key in full}
+        'decision_reason', 'return_health', 'return_error', 'usage', 'timing', 'contract_hash') if key in full}
     result['return_event'] = _return_event(full.get('return_event'))
     result['tasks'] = [_project_task(task) for task in full.get('tasks') or []]
     if 'integration' in full:
@@ -239,7 +240,7 @@ def project(full):
 def project_review(full):
     result = {key: full.get(key) for key in (
         'packet_id', 'questions', 'instruction', 'project_id', 'worktree', 'commit', 'pins',
-        'contract_hash', 'blockers', 'final_review', 'identity', 'usage') if key in full}
+        'contract_hash', 'blockers', 'final_review', 'identity', 'usage', 'timing') if key in full}
     result['evidence'] = _evidence(full.get('evidence'))
     result['detail'] = 'summary'
     result['detail_hint'] = ('Call telos_project_review with detail="full" for complete successful logs, '

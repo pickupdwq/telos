@@ -7,8 +7,8 @@ inside it, never the reverse. No model is called while holding a session lock.
 from __future__ import annotations
 import copy
 import contextlib
+import errors
 import fcntl
-import json
 from pathlib import Path, PurePosixPath
 import re
 import shutil
@@ -48,7 +48,8 @@ class Projects:
 
     def authorize(self, p, caller):
         if p.get('owner') and p['owner']['thread_id'] != caller:
-            raise self.b.GateError('Project belongs to another supervisor thread')
+            raise self.b.GateError('Project belongs to another supervisor thread',
+                                   code='owner_mismatch', next_action='use_original_supervisor')
 
     def active(self, p):
         if p['continuation'] != 'active':
@@ -192,7 +193,8 @@ class Projects:
              'owner': owner, 'execution_mode': execution_mode, 'strategy': strategy,
              'decision_reason': decision_reason, 'max_parallel': max_parallel, 'max_jobs': max_jobs,
              'jobs_started': 0, 'phase': 'planned', 'continuation': 'active', 'tasks': tasks, 'use_experience': use_experience,
-             'contract': contract, 'contract_hash': b.digest(contract), 'history': [], 'created_at': time.time()}
+             'contract': contract, 'contract_hash': b.digest(contract), 'history': [], 'created_at': time.time(),
+             'check_timing': {'observed_seconds': 0.0, 'completed_runs': 0, 'complete': True}}
         for t in tasks:
             t.update(session_id=uuid.uuid4().hex, phase='pending', revision=1)
         with self.lock():
@@ -206,13 +208,18 @@ class Projects:
             self.save(p)
         return self.status(pid)
 
-    def child(self, t):
+    def _child_session(self, t):
         path = self.b.run_dir(t['session_id']) / 'state.json'
         if not path.exists() and t.get('phase') in ('pending', 'starting', 'setup_error'):
             return None
-        return self.b.load_session(path.parent)[0]
+        return self.b.load_session(path.parent)
+
+    def child(self, t):
+        session = self._child_session(t)
+        return session[0] if session else None
 
     def isolate(self, t, error):
+        t.pop('start_error', None)
         t.update(phase='quarantined', error=str(error)[:500], accepted_commit=None, event_id=None)
 
     def refresh(self, p):
@@ -225,7 +232,13 @@ class Projects:
                 continue
             if s:
                 t['phase'] = stat['phase']
+                if t['phase'] != 'ready':
+                    t.pop('start_error', None)
+                # A rejected start never reaches the child's execution state.
+                # Retain its diagnostic until that child actually advances.
                 t['error'] = stat.get('last_error')
+                if t['error'] is None and t.get('start_error'):
+                    t['error'] = t['start_error']['message']
                 t['accepted_commit'] = stat.get('acceptance', {}).get('commit') if stat.get('accepted') else None
                 t['event_id'] = stat.get('return_channel', {}).get('event', {}).get('id') if stat.get('return_channel', {}).get('event') else None
                 if s.get('base_commit'):
@@ -234,7 +247,8 @@ class Projects:
                 t.update(phase='setup_error', error='Interrupted task setup; inspect workspace, then replace this unstarted task')
         return p
 
-    def _usage(self, p):
+    def _usage(self, p, snapshots=None):
+        import timing
         totals = {'requests': 0, 'failed_requests': 0, 'unknown_usage_requests': 0,
                   'in_flight_requests': 0, 'input_tokens': 0, 'cached_input_tokens': 0,
                   'uncached_input_tokens': 0, 'output_tokens': 0, 'reasoning_output_tokens': 0,
@@ -243,32 +257,63 @@ class Projects:
         started = 0
         incomplete = False
         unavailable = []
+        latencies = []
         for t in p['tasks']:
-            try:
-                state = self.child(t)
-            except Exception:
-                # A corrupt child state after setup is a started but unavailable
-                # ledger; never silently omit it from the aggregate.
-                if t.get('phase') != 'pending':
-                    started += 1
+            if snapshots is not None and t['session_id'] in snapshots:
+                started += 1
+                snapshot = snapshots[t['session_id']]
+            else:
+                try:
+                    session = self._child_session(t)
+                except Exception:
+                    # A corrupt child state after setup is a started but unavailable
+                    # ledger; never silently omit it from the aggregate.
+                    if t.get('phase') != 'pending':
+                        started += 1
+                        incomplete = True
+                        unavailable.append(t['id'])
+                        latencies.append(None)
+                    continue
+                prior_usage = not session and t.get('usage_id')
+                if not session and not prior_usage:
+                    continue
+                if (prior_usage and t.get('phase') == 'pending' and t.get('revision') == 1
+                        and not self.b.usage_path(prior_usage).exists()
+                        and not self.b.run_dir(t['session_id']).exists()
+                        and not any(h.get('task_id') == t['id'] for h in p.get('history', []))):
+                    # A newly allocated accounting ID is not evidence of spend.
+                    # Existing artifacts or prior assignments remain unknown if
+                    # their ledger is missing; never hide that history as zero.
+                    continue
+                started += 1
+                try:
+                    if prior_usage:
+                        # A replacement may still be queued. Its original ledger
+                        # already contains spend and must not disappear until start.
+                        if not self.b.usage_path(prior_usage).is_file():
+                            raise ValueError('Prior assignment usage ledger unavailable')
+                        state = {'session_id': t['session_id'], 'usage_id': prior_usage}
+                        contract = {'budget': t.get('budget')}
+                    else:
+                        state, contract = session
+                    snapshot = self.b.usage_snapshot(state, contract)
+                except Exception:
                     incomplete = True
                     unavailable.append(t['id'])
-                continue
-            if not state:
-                continue
-            started += 1
-            try:
-                _, contract = self.b.load_session(self.b.run_dir(t['session_id']))
-                snapshot = self.b.usage_snapshot(state, contract)
-            except Exception:
-                incomplete = True
-                unavailable.append(t['id'])
-                continue
+                    latencies.append(None)
+                    continue
             snapshot_totals = snapshot.get('totals') if isinstance(snapshot, dict) else None
             if not isinstance(snapshot_totals, dict):
                 incomplete = True
                 unavailable.append(t['id'])
+                latencies.append(None)
                 continue
+            latency = snapshot.get('request_latency')
+            if snapshot.get('incomplete') is True:
+                incomplete = True
+                if isinstance(latency, dict):
+                    latency = {**latency, 'complete': False}
+            latencies.append(latency)
             for key in totals:
                 value = snapshot_totals.get(key)
                 if type(value) is int:
@@ -284,33 +329,45 @@ class Projects:
         totals['unknown_fields'] = unknown_fields
         totals['incomplete'] = incomplete
         totals['unavailable_tasks'] = unavailable
+        totals['request_latency'] = timing.merge_latency(latencies)
         return totals
 
     def view(self, p, detail='full'):
+        import timing
         result = {k: p[k] for k in ('project_id', 'phase', 'continuation', 'execution_mode', 'strategy',
                                    'decision_reason', 'max_parallel', 'max_jobs', 'jobs_started', 'base_commit')}
         result['contract_hash'] = p.get('contract_hash')
         result['effective_parallel'] = self.limit(p)
         tasks = []
+        # Reuse only this view's observations. New views and acceptance paths
+        # still load and validate current records; no cache survives this call.
+        snapshots = {}
         for t in p['tasks']:
             item = {k: t.get(k) for k in ('id', 'task', 'depends_on', 'allowed_paths', 'provider', 'model',
                                            'executor_profile', 'workflow_version', 'reasoning_effort',
                                            'session_id', 'phase', 'accepted_commit', 'event_id', 'error',
                                            'budget', 'revision')}
             try:
-                child = self.child(t)
-                if child:
-                    _, contract = self.b.load_session(self.b.run_dir(t['session_id']))
+                session = self._child_session(t)
+                if session:
+                    child, contract = session
                     item['budget'] = contract.get('budget')
                     item['usage'] = self.b.usage_snapshot(child, contract)
+                    snapshots[t['session_id']] = item['usage']
+                    item['timing'] = timing.snapshot(child)
                     if child.get('delivery'):
                         from delivery import summary
                         item['delivery'] = summary(child['delivery'])
             except (self.b.GateError, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
                 self.isolate(item, error)
+            if t.get('start_error') and item['phase'] in ('pending', 'ready', 'starting', 'setup_error'):
+                item['start_error'] = t['start_error']
+                item['next_action'] = (t['start_error']['next_action']
+                                       if p['continuation'] == 'active' else None)
             tasks.append(item)
         result['tasks'] = tasks
-        result['usage'] = self._usage(p)
+        result['usage'] = self._usage(p, snapshots)
+        result['timing'] = self._timing(p, tasks)
         result['integration'] = p.get('integration')
         if 'final_review' in p:
             result['final_review'] = p['final_review']
@@ -333,6 +390,29 @@ class Projects:
             return project_view(result)
         result['detail'] = 'full'
         return result
+
+    def _timing(self, p, tasks=None):
+        import timing
+        # Reuse status's child summaries; reviews only read state, not another
+        # complete status/usage/return-channel projection.
+        items = list(tasks) if tasks is not None else []
+        seen = {task['session_id'] for task in items}
+        sources = [] if tasks is not None else [(t['id'], t['session_id'], t['phase']) for t in p['tasks']]
+        sources.extend((h['task_id'] + '@' + h['previous_session_id'][:8], h['previous_session_id'], 'retired')
+                       for h in p.get('history', []) if h.get('previous_session_id'))
+        for ident, sid, phase in sources:
+            if sid in seen:
+                continue
+            seen.add(sid)
+            item = {'id': ident, 'phase': phase}
+            if phase != 'pending':
+                try:
+                    state, _ = self.b.load_session(self.b.run_dir(sid))
+                    item['timing'] = timing.snapshot(state)
+                except (self.b.GateError, OSError, ValueError, KeyError, TypeError, AttributeError):
+                    pass  # Preserve unavailable assignments as incomplete.
+            items.append(item)
+        return timing.project_snapshot(p, items)
 
     def status(self, pid, detail='full'):
         if detail not in ('summary', 'full'):
@@ -492,8 +572,13 @@ class Projects:
                         self.save(p)
                     self.launch(p, t['session_id'], 'send', t['message'])
                     t['phase'] = 'running'
+                    t.pop('start_error', None)
                 except Exception as e:
-                    t['error'] = str(e)[:500]
+                    diagnostic = errors.payload(e)['error']
+                    diagnostic.pop('usage', None)  # Current usage is already in the task view.
+                    diagnostic['message'] = diagnostic['message'][:500]
+                    t['start_error'] = diagnostic
+                    t['error'] = diagnostic['message']
                     if t['phase'] == 'starting':
                         t['phase'] = 'setup_error'
                 self.save(p)
@@ -556,18 +641,28 @@ class Projects:
         p['notice_signature'] = signature
         b.spawn_dispatch(p['project_id'])
 
-    def receive(self, pid, event_id=None, detail='full'):
+    def receive(self, pid, event_id=None, detail='summary'):
         if detail not in ('summary', 'full'):
             raise self.b.GateError('detail must be summary or full')
         b = self.b
         with self.lock():
-            p = self.refresh(self.load(pid))
+            p = self.load(pid)
             stored = (p.get('receipts') or {}).get(event_id) if event_id else None
             # detail=full is a historical read-only lookup. The default summary
             # path is the MCP callback continuation: it may still recover a
             # pending progress reminder for unhandled work.
-            if isinstance(stored, dict) and detail == 'full':
-                return self._receive_result(self._replay_receipt(stored, event_id, pid), detail)
+            if detail == 'full':
+                if isinstance(stored, dict):
+                    return self._receive_result(self._replay_receipt(stored, event_id, pid), detail)
+                # Do not refresh children here: status recovery can itself write
+                # state. Only the continuation path may acknowledge events.
+                return self._receive_result({
+                    'proceed': False, 'read_only': True, 'replayed': False,
+                    'receipt_available': False, 'event_id': event_id,
+                    'project_id': pid, 'events': [],
+                    'next_action': 'telos_project_receive',
+                    'instruction': 'No stored receipt. Receive with detail="summary" to acknowledge this event.'}, detail)
+            p = self.refresh(p)
             if p['continuation'] != 'active' or p['phase'] == 'accepted':
                 return self._receive_result({'proceed': False, 'event_id': event_id, 'events': [], 'project': self.view(p), 'project_id': pid}, detail)
             if p.get('owner'):
@@ -701,7 +796,7 @@ class Projects:
                 # Legacy task: its prior ledger is keyed by the old session ID.
                 new['usage_id'] = t['session_id']
             new.update(session_id=uuid.uuid4().hex, phase='pending', revision=t['revision'] + 1)
-            for key in ('accepted_commit', 'event_id', 'error', 'base_commit'):
+            for key in ('accepted_commit', 'event_id', 'error', 'start_error', 'base_commit'):
                 new.pop(key, None)
             p['tasks'][p['tasks'].index(t)] = new
             p.pop('integration', None); p['phase'] = 'running'
@@ -716,6 +811,8 @@ class Projects:
             if p['continuation'] == 'cancelled' and action != 'cancel':
                 raise self.b.GateError('Cancelled project cannot be resumed')
             p['continuation'] = {'pause': 'paused', 'resume': 'active', 'cancel': 'cancelled'}[action]
+            if action == 'cancel':
+                p.setdefault('finished_at', time.time())
             self.save(p)  # persisted before touching children or callbacks
             receipts = []
             for sid in [pid] + [t['session_id'] for t in p['tasks'] if self.b.run_dir(t['session_id']).exists()]:
@@ -833,6 +930,7 @@ class Projects:
             p = self.load(pid)
             if p.get('verification_id') != ident or p['phase'] != 'verifying':
                 return
+        started = time.monotonic()
         try:
             check_contract, dependency_contracts = self.verification_contract(p)
             state = {'session_id': pid, 'worktree': p['integration']['worktree']}
@@ -874,6 +972,8 @@ class Projects:
             if current.get('verification_id') != ident:
                 return
             current['phase'] = phase
+            import timing
+            timing.finish_checks(current, time.monotonic() - started)
             current['integration'].update(update)
             if current['continuation'] == 'active':
                 self.publish(current)
@@ -895,6 +995,7 @@ class Projects:
                     'pins': p['integration'].get('pins'), 'contract_hash': p.get('contract_hash'),
                     'blockers': (p.get('final_review') or {}).get('blockers', []),
                     'final_review': p.get('final_review'), 'usage': self._usage(p),
+                    'timing': self._timing(p),
                     'identity': {'project_id': pid, 'packet_id': p['integration']['packet_id'],
                                  'commit': packet.get('commit'), 'pins': p['integration'].get('pins'),
                                  'contract_hash': p.get('contract_hash')}}
@@ -933,6 +1034,8 @@ class Projects:
                     raise b.GateError('Invalid final criterion score')
             passed = not blockers and all(x['status'] == 'passed' for x in packet['checks']) and sum(x['points'] for x in scores) >= p['contract']['threshold'] and all(by_id[q['id']]['points'] >= q.get('minimum', 0) for q in questions)
             p['phase'] = 'accepted' if passed else 'integration_failed'
+            if passed:
+                p['finished_at'] = time.time()
             p['final_review'] = {'packet_id': packet_id, 'scores': scores, 'blockers': blockers, 'rationale': rationale, 'accepted': passed}
             self.save(p)
             if passed:
@@ -959,6 +1062,9 @@ class Projects:
                             current = self.load(path.parent.name)
                             if current['phase'] == 'verifying' and current.get('verification_id') == p.get('verification_id'):
                                 current['phase'] = 'integration_failed'
+                                import timing
+                                current['check_timing'] = timing.check_timing(current)
+                                current['check_timing']['complete'] = False
                                 current['integration']['error'] = 'Verification process exited without a result; rerun checks'
                                 self.publish(current); self.save(current)
                             p = current
@@ -968,13 +1074,27 @@ class Projects:
                 self.b.recovery_error(path.parent / 'recovery-error.json', e)
 
     def call(self, name, args, caller):
+        import inspect
         name = canonical_tool_name(name)
         if name == 'telos_project_open':
+            try:
+                inspect.signature(self.create).bind(**args, caller=caller)
+            except TypeError:
+                raise self.b.GateError('Missing required or unsupported tool arguments; consult the tool schema',
+                                       code='invalid_arguments', next_action='correct_arguments') from None
             return self.create(**args, caller=caller)
+        if 'project_id' not in args:
+            raise self.b.GateError('project_id is required', code='invalid_arguments', next_action='correct_arguments')
         pid = args['project_id']
         self.authorize(self.load(pid), caller)
         rest = {k: v for k, v in args.items() if k != 'project_id'}
         mapping = {'start': self.tick, 'status': self.status, 'receive': self.receive, 'update': self.update,
                    'control': self.control, 'integrate': self.integrate, 'check': self.check, 'review': self.review,
                    'finish': self.finish, 'resolve': self.resolve, 'reassign': self.reassign}
-        return mapping[name.removeprefix('telos_project_')](pid, **rest)
+        method = mapping[name.removeprefix('telos_project_')]
+        try:
+            inspect.signature(method).bind(pid, **rest)
+        except TypeError:
+            raise self.b.GateError('Missing required or unsupported tool arguments; consult the tool schema',
+                                   code='invalid_arguments', next_action='correct_arguments') from None
+        return method(pid, **rest)

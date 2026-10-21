@@ -32,6 +32,7 @@ EXPECTED_MODULES = [
     'test_audit',
     'test_local_executor',
     'test_usage',
+    'test_timing',
     'test_preflight',
     'test_compact',
     'test_mcp_contract',
@@ -1101,6 +1102,7 @@ class ParallelRunnerTests(unittest.TestCase):
                         pass
 
                     def test_fail(self):
+                        print('failure stdout context')
                         self.assertEqual(1, 2)
 
                     def test_error(self):
@@ -1132,6 +1134,15 @@ class ParallelRunnerTests(unittest.TestCase):
 
         self.assertEqual(report['execution']['worker_errors'], [])
         self.assertEqual(report['tests'], 7)
+        detail, = report['execution']['failure_details']
+        self.assertEqual(detail['module'], module_name)
+        self.assertEqual(detail['stdout'], 'failure stdout context\n')
+        for message in ('Traceback (most recent call last)', 'RuntimeError: boom',
+                        'AssertionError: 1 != 2', 'AssertionError: 2 != 1',
+                        'UNEXPECTED SUCCESS: test_unexpected_success'):
+            self.assertIn(message, detail['stderr'])
+            self.assertIn(message, completed.stderr)
+        self.assertIn('failure stdout context', completed.stderr)
         self.assertFalse(report['passed'])
         self.assertEqual(
             (report['failures'], report['errors'], report['skipped']),
@@ -1204,6 +1215,42 @@ class ParallelRunnerTests(unittest.TestCase):
         self.assertEqual(
             [row['outcome'] for row in report['test_results']],
             ['passed', 'passed'])
+        details = report['execution']['failure_details']
+        self.assertEqual([detail['module'] for detail in details],
+                         [setup_name, teardown_name])
+        for detail, message in zip(details, ('class setup failed',
+                                             'class teardown failed')):
+            self.assertIn('RuntimeError: ' + message, detail['stderr'])
+            self.assertIn('RuntimeError: ' + message, completed.stderr)
+
+    def test_failure_output_preserves_logs_with_non_utf8_bytes(self):
+        module_name = f'{_prefix()}_binary_output'
+        sources = {
+            module_name: r'''
+                import os
+                from unittest import TestCase
+
+                class OutputCase(TestCase):
+                    def test_failure(self):
+                        os.write(1, b'stdout context: \xff\n')
+                        os.write(2, b'stderr context: \xff\n')
+                        self.fail('failure after binary output')
+            ''',
+        }
+        with _CopiedRunner(sources) as root:
+            report_path = root / 'report.json'
+            completed = _run_copied_runner(
+                root, [str(report_path), '--jobs', '2'])
+            self.assertEqual(completed.returncode, 1)
+            report = json.loads(report_path.read_text(encoding='utf-8'))
+        self.assertEqual(report['execution']['worker_errors'], [])
+        self.assertEqual((report['tests'], report['failures'], report['errors']),
+                         (1, 1, 0))
+        detail, = report['execution']['failure_details']
+        self.assertEqual(detail['stdout'], 'stdout context: \ufffd\n')
+        self.assertIn('stderr context: \ufffd', detail['stderr'])
+        self.assertIn('AssertionError: failure after binary output', detail['stderr'])
+        self.assertIn('AssertionError: failure after binary output', completed.stderr)
 
     def test_invalid_jobs_are_rejected_before_import_test_or_report(self):
         prefix = _prefix()

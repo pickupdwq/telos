@@ -1,5 +1,38 @@
 # Changelog / 更新记录
 
+## 3.7.8 — 2026-10-21
+
+- Retain structured project child start errors across status refreshes, including exhausted reassignment budgets. Expose the reason and next action in full and summary views; clear stale start diagnostics when execution advances or the assignment changes. Preserve scheduling eligibility, capacity, budget accounting and acceptance gates.
+- Reject malformed MCP initialization parameters without terminating the request loop. Bind arguments before invoking experience, audit and cache handlers as well as ordinary session handlers; preserve established defaults and distinguish handler failures from invalid arguments.
+- Measure each cache path once per inventory call and derive the total from those same observations. New calls read current sizes; archive, cleanup and safety checks are unchanged.
+
+启动被拦截的原因不再被状态刷新清空，完整与精简结果均保留错误和处理提示；异常 MCP 初始化请求不会中断连接，补齐快捷工具的缺参校验；磁盘盘点复用单次路径统计，减少重复遍历。保留原有默认值、执行、预算、并发、依赖和验收规则。
+
+## 3.7.7 — 2026-10-21
+
+- Exclude first-assignment pending tasks with no session artifacts, prior assignments or ledger from project usage aggregation. Keep historical usage and missing-data warnings for reassigned or partially initialized tasks; budgets and scheduling are unchanged.
+- Validate supplied MCP argument types and enum values before dispatch, including nested fields. Return `invalid_arguments` with a field path without echoing private values; preserve existing defaults, optional null values and domain validation.
+- Retain failed parallel test modules' complete stdout/stderr in the JSON report and print their diagnostics, including fixture errors and unexpected successes. Preserve test selection, counts, exit status and child-report integrity checks.
+
+修正尚未启动的首次任务误报用量缺失，保留重分派与不完整初始化的历史警告；嵌套参数格式错误返回明确字段路径，不回显敏感值；并行测试失败时保留完整输出与堆栈。执行、预算、调度、验收规则及测试通过/失败判定保持不变。
+
+## 3.7.6 — 2026-10-21
+
+- Reuse each child session/contract pair and displayed usage snapshot within a project view. Keep status recovery, integrity checks and acceptance paths unchanged; every new view reads current records, including queued reassignment usage and incomplete data.
+- Remove an unused budget-error helper and import; construct project, experience and storage service bridges through the existing shared factory.
+
+复用单次项目展示中的子任务记录和用量快照，减少重复读取；每次新查询仍读取最新数据，保留状态恢复、合同校验、验收、重分派历史和不完整标记。删除未使用的辅助函数与导入，统一三个管理器的桥接对象构造。
+
+## 3.7.5 — 2026-10-21
+
+- Make full project receipt lookups read-only even before the first acknowledgement; keep child recovery and continuation on the summary path.
+- Preserve oversized observer-line discard state across EOF polls, resetting it on rotation, truncation and explicit seeking.
+- Shorten MCP initialization guidance while retaining tool-specific contracts and the companion supervisor Skill.
+- Expose request latency with measured/missing/in-flight coverage, task lifecycle phase durations and separate project wall time/integration-check metrics. Preserve failures, reassigned executor history and incomplete historical records without changing budgets or acceptance.
+- Return structured MCP errors with stable codes, recovery guidance, backoff delays and budget snapshots; keep unknown exception bodies private.
+
+修复首次详情查询消费项目事件、超长日志跨轮询误识别的问题；压缩 MCP 公共说明，增加请求与任务阶段耗时、项目实际经过时间和结构化错误。保留未知/不完整数据、失败及重分派历史，不改变原有预算和验收标准。
+
 ## 3.7.4 — 2026-10-21
 
 - Run acceptance checks against an immutable submitted source snapshot, with separate writable build and temporary directories. Keep check evidence, delivery receipts, exams and final acceptance bound to the same commit and frozen contract.

@@ -76,8 +76,9 @@ class Storage:
             return {'tasks': [self.inventory(i) for i in sorted(ids)], 'cache_root': str(b.CACHE)}
         project, sessions = self.scope(ident)
         paths = self.targets(ident, project, sessions)
+        items = [{'path': str(p), 'bytes': size(p)} for p in paths]
         return {'target_id': ident, 'phase': (project or sessions[0])['phase'],
-                'bytes': sum(size(p) for p in paths), 'paths': [{'path': str(p), 'bytes': size(p)} for p in paths],
+                'bytes': sum(item['bytes'] for item in items), 'paths': items,
                 'archive': str(b.STATE / 'archives' / ident),
                 'note': 'Read-only inventory. Cleanup requires a clean terminal task and verified archive.'}
 

@@ -1,6 +1,7 @@
 """Behavior tests: real Git worktrees/snapshots/checks, deterministic model boundary."""
 import copy
 import contextlib
+from collections import Counter
 import io
 import json
 import os
@@ -369,6 +370,30 @@ class RobustnessTests(ProjectTests):
         self.assertEqual(sorted(usage['unavailable_tasks']), ['a', 'b', 'c'])
         self.assertTrue(all(type(value) is int for value in usage['unknown_fields'].values()))
 
+    def test_first_full_receive_never_acknowledges_or_recovers_state(self):
+        db = {'thread': {'id': OWNER, 'status': {'type': 'idle'}, 'cwd': str(self.repo)}, 'queue': [], 'calls': []}
+        with patch.object(b, 'CodexRPC', side_effect=lambda *_: FakeRPC(db)), patch.object(b, 'spawn_dispatch'):
+            pid = self.create([self.task('a')], notify=True, caller=OWNER); self.start(pid)
+            child = self.child(pid, 'a'); child.update(phase='responded', thread_id=OTHER)
+            b.record_event(child); b.write_json(b.run_dir(child['session_id']) / 'state.json', child)
+            b.project_manager().tick(pid)
+            eid = b.read_json(b.run_dir(pid) / 'state.json')['last_event_id']
+            paths = [b.project_manager().path(pid), b.run_dir(pid) / 'state.json',
+                     b.run_dir(child['session_id']) / 'state.json']
+            before = [path.read_bytes() for path in paths]
+            for requested_id in (eid, 'missing', None):
+                with patch.object(Projects, 'refresh', side_effect=AssertionError('read-only lookup must not recover')):
+                    lookup = b.call_tool('telos_project_receive',
+                        {'project_id': pid, 'event_id': requested_id, 'detail': 'full'}, {'threadId': OWNER})
+                self.assertFalse(lookup['proceed'])
+                self.assertTrue(lookup['read_only'])
+                self.assertFalse(lookup['receipt_available'])
+                self.assertEqual([path.read_bytes() for path in paths], before)
+            received = b.call_tool('telos_project_receive', {'project_id': pid, 'event_id': eid}, {'threadId': OWNER})
+            self.assertTrue(received['proceed'])
+            self.assertTrue(received['events'][0]['proceed'])
+            self.assertEqual(received['events'][0]['event_id'], child['last_event_id'])
+
     def test_project_receive_full_detail_replays_original_batch_read_only(self):
         db = {'thread': {'id': OWNER, 'status': {'type': 'idle'}, 'cwd': str(self.repo)}, 'queue': [], 'calls': []}
         with patch.object(b, 'CodexRPC', side_effect=lambda *_: FakeRPC(db)), patch.object(b, 'spawn_dispatch'):
@@ -522,6 +547,184 @@ class RobustnessTests(ProjectTests):
             self.assertEqual(courier['events'][courier['last_event_id']]['status'], 'pending')
 
 
+class ProjectReadTests(ProjectTests):
+    def test_exhausted_reassignment_retains_start_error_without_spending(self):
+        pid = self.create([self.task('a', budget={'max_requests': 1})]); self.start(pid)
+        old = self.child(pid, 'a')
+        _, contract = b.load_session(b.run_dir(old['session_id']))
+        ledger = b.usage_ledger(old, contract)
+        ledger.finish(ledger.begin('work'), {'input_tokens': 10, 'output_tokens': 5})
+        old['phase'] = 'error'
+        b.write_json(b.run_dir(old['session_id']) / 'state.json', old)
+        original = b._start_job
+        def guarded_start(*args, **kwargs):
+            with patch.object(b.subprocess, 'Popen') as launch:
+                try:
+                    return original(*args, **kwargs)
+                finally:
+                    launch.assert_not_called()
+        with patch.object(b, '_start_job', guarded_start):
+            b.project_manager().reassign(pid, 'a', 'Retry the configured executor')
+            b.project_manager().tick(pid)
+        current = self.child(pid, 'a')
+        self.assertEqual(current['usage_id'], old['usage_id'])
+        self.assertEqual(current['contract_hash'], old['contract_hash'])
+        self.assertEqual(current['turns'], 0)
+        for detail in ('full', 'summary'):
+            result = b.project_manager().status(pid, detail=detail)
+            task = result['tasks'][0]
+            self.assertEqual((result['phase'], result['jobs_started'], task['phase']),
+                             ('running', 1, 'ready'))
+            self.assertEqual(task['start_error']['code'], 'budget_exhausted')
+            self.assertFalse(task['start_error']['retryable'])
+            self.assertEqual(task['next_action'], 'inspect_usage')
+            self.assertIn('budget exhausted', task['error'])
+            self.assertEqual(task['usage']['totals']['requests'], 1)
+        b.project_manager().control(pid, 'pause')
+        paused = b.project_manager().status(pid)['tasks'][0]
+        self.assertIsNone(paused['next_action'])
+        self.assertEqual(paused['start_error']['code'], 'budget_exhausted')
+
+    def test_successful_start_clears_old_diagnostic_through_both_launch_paths(self):
+        for direct in (False, True):
+            with self.subTest(direct=direct):
+                pid = self.create([self.task('a')])
+                with patch.object(b, '_start_job', side_effect=RuntimeError('PRIVATE_PROVIDER_BODY')):
+                    blocked = b.project_manager().tick(pid)
+                self.assertEqual(blocked['jobs_started'], 0)
+                self.assertEqual(blocked['tasks'][0]['phase'], 'ready')
+                self.assertEqual(blocked['tasks'][0]['start_error']['code'], 'internal_error')
+                self.assertNotIn('PRIVATE_PROVIDER_BODY', json.dumps(blocked))
+                if direct:
+                    with patch.object(b.subprocess, 'Popen', return_value=Mock(pid=os.getpid())):
+                        b.start_job(blocked['tasks'][0]['session_id'], 'send', 'Continue implementation')
+                else:
+                    self.start(pid)
+                result = b.project_manager().status(pid, detail='summary')
+                self.assertEqual(result['jobs_started'], 1)
+                self.assertEqual(result['tasks'][0]['phase'], 'running')
+                self.assertNotIn('start_error', result['tasks'][0])
+                self.assertNotIn('next_action', result['tasks'][0])
+                self.assertIsNone(result['tasks'][0]['error'])
+
+    def test_reassignment_does_not_inherit_a_previous_start_error(self):
+        pid = self.create([self.task('a')])
+        with patch.object(b, '_start_job', side_effect=b.GateError('Executor unavailable')):
+            b.project_manager().tick(pid)
+        self.assertIn('start_error', self.state(pid)['tasks'][0])
+        with patch.object(Projects, 'tick', return_value={}):
+            b.project_manager().reassign(pid, 'a', 'Use a fresh executor session')
+        result = b.project_manager().status(pid)
+        self.assertEqual(result['tasks'][0]['phase'], 'pending')
+        self.assertNotIn('start_error', result['tasks'][0])
+        self.assertIsNone(result['tasks'][0]['error'])
+
+    def test_unstarted_children_do_not_report_missing_usage(self):
+        pid = self.create([self.task('a'), self.task('b', ['a'])])
+        manager = b.project_manager()
+        for detail in ('full', 'summary'):
+            initial = manager.status(pid, detail=detail)
+            self.assertEqual(initial['jobs_started'], 0)
+            self.assertIsNone(initial['usage'])
+            self.assertEqual([t['phase'] for t in initial['tasks']], ['pending', 'pending'])
+        self.start(pid)
+        state = self.child(pid, 'a')
+        _, contract = b.load_session(b.run_dir(state['session_id']))
+        ledger = b.usage_ledger(state, contract)
+        ledger.finish(ledger.begin('work'), {'input_tokens': 7, 'output_tokens': 3}, latency_ms=1250)
+        for detail in ('full', 'summary'):
+            running = manager.status(pid, detail=detail)
+            self.assertEqual(running['usage']['total_tokens'], 10)
+            self.assertFalse(running['usage']['incomplete'])
+            self.assertEqual(running['usage']['unavailable_tasks'], [])
+            self.assertTrue(running['usage']['request_latency']['complete'])
+            self.assertEqual(running['tasks'][1]['phase'], 'pending')
+
+    def test_pending_reassignment_keeps_missing_ledger_unknown(self):
+        pid = self.create([self.task('a')]); self.start(pid)
+        state = self.child(pid, 'a')
+        _, contract = b.load_session(b.run_dir(state['session_id']))
+        ledger = b.usage_ledger(state, contract)
+        ledger.finish(ledger.begin('work'), {'input_tokens': 7, 'output_tokens': 3})
+        state['phase'] = 'error'
+        b.write_json(b.run_dir(state['session_id']) / 'state.json', state)
+        with patch.object(Projects, 'tick', return_value={}):
+            b.project_manager().reassign(pid, 'a', 'Retry the configured executor')
+        self.assertEqual(b.project_manager().status(pid)['usage']['total_tokens'], 10)
+        b.usage_path(state['usage_id']).unlink()
+        result = b.project_manager().status(pid)
+        self.assertEqual(result['tasks'][0]['phase'], 'pending')
+        self.assertTrue(result['usage']['incomplete'])
+        self.assertEqual(result['usage']['unavailable_tasks'], ['a'])
+
+    def test_pending_task_with_existing_artifacts_is_not_assumed_unstarted(self):
+        pid = self.create([self.task('a')])
+        task = self.state(pid)['tasks'][0]
+        b.write_json(b.run_dir(task['session_id']) / 'contract.json', {'interrupted': True})
+        result = b.project_manager().status(pid)
+        self.assertTrue(result['usage']['incomplete'])
+        self.assertEqual(result['usage']['unavailable_tasks'], ['a'])
+
+    def test_status_reuses_reads_but_observes_changes_on_each_query(self):
+        pid = self.create([self.task('a')]); self.start(pid)
+        manager = b.project_manager()
+        state = self.child(pid, 'a')
+        root = b.run_dir(state['session_id'])
+        _, contract = b.load_session(root)
+        ledger = b.usage_ledger(state, contract)
+        for count, detail in enumerate(('full', 'summary'), 1):
+            ledger.finish(ledger.begin('work'), {'input_tokens': 7, 'output_tokens': 3}, latency_ms=1250)
+            with patch.object(b, 'read_json', wraps=b.read_json) as reads, \
+                    patch.object(b, 'usage_snapshot', wraps=b.usage_snapshot) as usage, \
+                    patch.object(manager.b, 'usage_snapshot', usage):
+                result = manager.status(pid, detail=detail)
+            child_reads = Counter(Path(call.args[0]).name for call in reads.call_args_list
+                                  if Path(call.args[0]).parent == root)
+            self.assertLessEqual(child_reads['state.json'], 3)
+            self.assertLessEqual(child_reads['contract.json'], 3)
+            self.assertLessEqual(usage.call_count, 2)
+            self.assertEqual(result['usage']['requests'], count)
+            self.assertEqual(result['usage']['total_tokens'], count * 10)
+            self.assertEqual(result['tasks'][0]['usage']['totals']['requests'], count)
+        # The same manager must not reuse a previously valid contract on a
+        # subsequent query, or retain a quarantine after the record is restored.
+        original = (root / 'contract.json').read_bytes()
+        b.write_json(root / 'contract.json', {**contract, 'task': 'Changed frozen contract'})
+        damaged = manager.status(pid)
+        self.assertEqual(damaged['tasks'][0]['phase'], 'quarantined')
+        self.assertFalse(damaged['accepted'])
+        self.assertTrue(damaged['usage']['incomplete'])
+        self.assertIn('a', damaged['usage']['unavailable_tasks'])
+        (root / 'contract.json').write_bytes(original)
+        restored = manager.status(pid)
+        self.assertEqual(restored['tasks'][0]['phase'], 'running')
+        self.assertEqual(restored['usage']['total_tokens'], 20)
+
+    def test_view_aggregate_uses_the_displayed_child_usage_snapshot(self):
+        pid = self.create([self.task('a')]); self.start(pid)
+        manager = b.project_manager(); project = manager.load(pid)
+        state = self.child(pid, 'a')
+        _, contract = b.load_session(b.run_dir(state['session_id']))
+        ledger = b.usage_ledger(state, contract)
+        ledger.finish(ledger.begin('work'), {'input_tokens': 7, 'output_tokens': 3}, latency_ms=1250)
+        real_snapshot = b.usage_snapshot
+
+        def finish_another_request(*args):
+            snapshot = real_snapshot(*args)
+            ledger.finish(ledger.begin('work'), {'input_tokens': 2, 'output_tokens': 1}, latency_ms=500)
+            return snapshot
+
+        with patch.object(manager.b, 'usage_snapshot', side_effect=finish_another_request):
+            result = manager.view(project)
+        self.assertEqual(result['tasks'][0]['usage']['totals']['total_tokens'], 10)
+        self.assertEqual(result['usage']['total_tokens'], 10)
+        self.assertEqual(result['usage']['request_latency']['observed_seconds'], 1.25)
+        fresh = manager.view(project)
+        self.assertEqual(fresh['tasks'][0]['usage']['totals']['total_tokens'], 13)
+        self.assertEqual(fresh['usage']['total_tokens'], 13)
+        self.assertEqual(fresh['usage']['request_latency']['observed_seconds'], 1.75)
+
+
 class _ProjectViewBridge:
     """In-memory bridge for project-view identity tests; no runtime services."""
 
@@ -560,7 +763,7 @@ class ProjectEventViewTests(unittest.TestCase):
         self.projects = Projects(self.bridge)
         # These projection tests supply courier records only. Child-state
         # validation and missing-state isolation have separate integration tests.
-        child_lookup = patch.object(self.projects, 'child', return_value=None)
+        child_lookup = patch.object(self.projects, '_child_session', return_value=None)
         child_lookup.start()
         self.addCleanup(child_lookup.stop)
         self.pid = 'p' * 32

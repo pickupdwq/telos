@@ -15,6 +15,8 @@ import re
 import threading
 import time
 import uuid
+import timing
+from errors import ToolError
 
 BUDGET_FIELDS = ('max_requests', 'max_input_tokens', 'max_uncached_input_tokens',
                  'max_output_tokens', 'max_total_tokens')
@@ -27,9 +29,15 @@ _LOCKS = {}
 _LOCKS_GUARD = threading.Lock()
 
 
-class BudgetExceeded(Exception):
+class BudgetExceeded(ToolError):
+    next_action = 'inspect_usage'
+
     def __init__(self, message, snapshot=None):
-        super().__init__(message)
+        budget_state = snapshot.get('budget_state') if isinstance(snapshot, dict) else None
+        state = budget_state.get('state') if isinstance(budget_state, dict) else None
+        code = ('budget_unknown' if state == 'unknown' else
+                'budget_unavailable' if snapshot is None else 'budget_exhausted')
+        super().__init__(message, code=code)
         self.snapshot = snapshot
 
 
@@ -223,7 +231,8 @@ class UsageLedger:
         budget_state = self._budget_state(totals, unknown_fields, budget)
         result = {'version': data.get('version', 1), 'budget': budget,
                   'totals': totals, 'phases': phases, 'unknown_fields': unknown_fields,
-                  'budget_state': budget_state}
+                  'budget_state': budget_state,
+                  'request_latency': timing.request_latency(data['requests'].values())}
         work_limits = {limit: budget[limit] - budget[reserve]
                        for reserve, limit in EXAM_RESERVES.items() if budget and reserve in budget}
         if work_limits:
@@ -311,7 +320,7 @@ class UsageLedger:
             if entry.get('status') != 'reserved':
                 return self._snapshot(data)
             entry.update(status=status, finished_at=time.time(), usage=normalize_usage(raw_usage))
-            if type(latency_ms) in (int, float) and latency_ms >= 0:
+            if timing.number(latency_ms):
                 entry['latency_ms'] = round(latency_ms, 3)
             if error_kind is not None:
                 entry['error_kind'] = _bounded_error(error_kind)

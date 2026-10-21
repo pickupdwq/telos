@@ -265,9 +265,11 @@ class Reader:
         self.path = Path(path)
         self.offset = 0
         self.identity = None
+        self.dropping = False
 
     def seek_tail(self, count):
         """Find recent complete lines without scanning a long history forward."""
+        self.dropping = False
         try:
             with self.path.open('rb') as stream:
                 st = os.fstat(stream.fileno())
@@ -298,18 +300,25 @@ class Reader:
                 identity = (st.st_dev, st.st_ino)
                 if self.identity != identity or st.st_size < self.offset:
                     self.offset = 0
+                    self.dropping = False
                 self.identity = identity
                 stream.seek(self.offset)
                 while raw := stream.readline(MAX_LINE + 1):
+                    if self.dropping:
+                        self.offset = stream.tell()
+                        self.dropping = not raw.endswith(b'\n')
+                        continue
                     if not raw.endswith(b'\n'):
                         if len(raw) <= MAX_LINE:
                             break
-                        # Skip an invalid oversized record, bounded in memory.
-                        while raw and not raw.endswith(b'\n'):
-                            raw = stream.readline(MAX_LINE + 1)
+                        # Keep this state across EOF polls until the same line
+                        # ends. Its appended tail is never a separate record.
+                        self.dropping = True
                         self.offset = stream.tell()
                         continue
                     self.offset = stream.tell()
+                    if len(raw) > MAX_LINE:
+                        continue
                     try:
                         value = json.loads(raw)
                     except (ValueError, UnicodeError):
