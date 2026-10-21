@@ -39,7 +39,11 @@ python3 runtime/verify_all.py --list \
 
 Reports retain selected IDs, per-test outcomes and timings; parallel reports also record worker failures. Compare IDs and outcomes as well as elapsed time. At the final accepted RSI commit `20c68f6`, the same 527 native tests passed in 162.63 s serial and 50.04 s with `--jobs 4` on one host (3.25×), with no failures, errors or skips and all 395 original tests retained. All 21 installer tests passed separately. This was one final confirmation pair, with both execution orders previously measured in round 15. It measures local verification only; see the [RSI results](../README.md#20-round-rsi-campaign) and [final summary](rsi-results-20261021.json) for the real-task comparison and its limits.
 
+Unsuccessful parallel modules also retain complete decoded `stdout` and `stderr` in `execution.failure_details`, in selected module order, and print both streams to the parent runner's stderr. This includes assertion tracebacks, class/module fixture errors and unexpected successes; invalid UTF-8 bytes use replacement characters. These diagnostics survive temporary worker cleanup and do not change test counts, outcomes or `worker_errors`. Successful runs keep the existing report shape.
+
 `--list` 只列出范围和测试 ID；`--module` / `--test` 缩小测试范围，不能用局部通过代替全量验收。`--jobs 4` 按模块启动独立进程，默认仍串行。3.25 倍是同一提交、本机相同测试的验证提速，不表示百炼响应或整个任务交付提速。
+
+并行测试失败时，报告的 `execution.failure_details` 保存失败模块完整的标准输出、错误输出与堆栈，同时在终端打印；临时目录清理后仍可查看，不改变原有计数和通过/失败判定。
 
 Observer coverage (`test_watch`) uses actual subprocess pipes, a real isolated
 Codex CLI with a local model fixture, and a separate tmux server when available.

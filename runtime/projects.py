@@ -269,6 +269,14 @@ class Projects:
                 prior_usage = not session and t.get('usage_id')
                 if not session and not prior_usage:
                     continue
+                if (prior_usage and t.get('phase') == 'pending' and t.get('revision') == 1
+                        and not self.b.usage_path(prior_usage).exists()
+                        and not self.b.run_dir(t['session_id']).exists()
+                        and not any(h.get('task_id') == t['id'] for h in p.get('history', []))):
+                    # A newly allocated accounting ID is not evidence of spend.
+                    # Existing artifacts or prior assignments remain unknown if
+                    # their ledger is missing; never hide that history as zero.
+                    continue
                 started += 1
                 try:
                     if prior_usage:

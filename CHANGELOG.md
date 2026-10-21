@@ -1,5 +1,13 @@
 # Changelog / 更新记录
 
+## 3.7.7 — 2026-10-21
+
+- Exclude first-assignment pending tasks with no session artifacts, prior assignments or ledger from project usage aggregation. Keep historical usage and missing-data warnings for reassigned or partially initialized tasks; budgets and scheduling are unchanged.
+- Validate supplied MCP argument types and enum values before dispatch, including nested fields. Return `invalid_arguments` with a field path without echoing private values; preserve existing defaults, optional null values and domain validation.
+- Retain failed parallel test modules' complete stdout/stderr in the JSON report and print their diagnostics, including fixture errors and unexpected successes. Preserve test selection, counts, exit status and child-report integrity checks.
+
+修正尚未启动的首次任务误报用量缺失，保留重分派与不完整初始化的历史警告；嵌套参数格式错误返回明确字段路径，不回显敏感值；并行测试失败时保留完整输出与堆栈。执行、预算、调度、验收规则及测试通过/失败判定保持不变。
+
 ## 3.7.6 — 2026-10-21
 
 - Reuse each child session/contract pair and displayed usage snapshot within a project view. Keep status recovery, integrity checks and acceptance paths unchanged; every new view reads current records, including queued reassignment usage and incomplete data.

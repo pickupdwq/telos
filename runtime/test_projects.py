@@ -548,6 +548,52 @@ class RobustnessTests(ProjectTests):
 
 
 class ProjectReadTests(ProjectTests):
+    def test_unstarted_children_do_not_report_missing_usage(self):
+        pid = self.create([self.task('a'), self.task('b', ['a'])])
+        manager = b.project_manager()
+        for detail in ('full', 'summary'):
+            initial = manager.status(pid, detail=detail)
+            self.assertEqual(initial['jobs_started'], 0)
+            self.assertIsNone(initial['usage'])
+            self.assertEqual([t['phase'] for t in initial['tasks']], ['pending', 'pending'])
+        self.start(pid)
+        state = self.child(pid, 'a')
+        _, contract = b.load_session(b.run_dir(state['session_id']))
+        ledger = b.usage_ledger(state, contract)
+        ledger.finish(ledger.begin('work'), {'input_tokens': 7, 'output_tokens': 3}, latency_ms=1250)
+        for detail in ('full', 'summary'):
+            running = manager.status(pid, detail=detail)
+            self.assertEqual(running['usage']['total_tokens'], 10)
+            self.assertFalse(running['usage']['incomplete'])
+            self.assertEqual(running['usage']['unavailable_tasks'], [])
+            self.assertTrue(running['usage']['request_latency']['complete'])
+            self.assertEqual(running['tasks'][1]['phase'], 'pending')
+
+    def test_pending_reassignment_keeps_missing_ledger_unknown(self):
+        pid = self.create([self.task('a')]); self.start(pid)
+        state = self.child(pid, 'a')
+        _, contract = b.load_session(b.run_dir(state['session_id']))
+        ledger = b.usage_ledger(state, contract)
+        ledger.finish(ledger.begin('work'), {'input_tokens': 7, 'output_tokens': 3})
+        state['phase'] = 'error'
+        b.write_json(b.run_dir(state['session_id']) / 'state.json', state)
+        with patch.object(Projects, 'tick', return_value={}):
+            b.project_manager().reassign(pid, 'a', 'Retry the configured executor')
+        self.assertEqual(b.project_manager().status(pid)['usage']['total_tokens'], 10)
+        b.usage_path(state['usage_id']).unlink()
+        result = b.project_manager().status(pid)
+        self.assertEqual(result['tasks'][0]['phase'], 'pending')
+        self.assertTrue(result['usage']['incomplete'])
+        self.assertEqual(result['usage']['unavailable_tasks'], ['a'])
+
+    def test_pending_task_with_existing_artifacts_is_not_assumed_unstarted(self):
+        pid = self.create([self.task('a')])
+        task = self.state(pid)['tasks'][0]
+        b.write_json(b.run_dir(task['session_id']) / 'contract.json', {'interrupted': True})
+        result = b.project_manager().status(pid)
+        self.assertTrue(result['usage']['incomplete'])
+        self.assertEqual(result['usage']['unavailable_tasks'], ['a'])
+
     def test_status_reuses_reads_but_observes_changes_on_each_query(self):
         pid = self.create([self.task('a')]); self.start(pid)
         manager = b.project_manager()

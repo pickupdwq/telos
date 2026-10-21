@@ -494,6 +494,15 @@ def _read_text(path):
         return ''
 
 
+def _failure_output(path):
+    # Keep complete failure logs after the temporary worker directory is gone.
+    # A non-UTF-8 byte from a subprocess must not discard its traceback.
+    try:
+        return Path(path).read_text(encoding='utf-8', errors='replace')
+    except OSError as exc:
+        return f'[could not read worker output: {exc}]\n'
+
+
 def _parallel_groups(tests):
     groups = {}
     order = []
@@ -523,6 +532,7 @@ def _combine_parallel(tasks, mode, modules, seconds, selectors, test_ids,
     tests = failures = errors = skipped = 0
     passed = True
     worker_errors = []
+    failure_details = []
 
     for task in tasks:
         module = task['module']
@@ -570,6 +580,11 @@ def _combine_parallel(tasks, mode, modules, seconds, selectors, test_ids,
         skipped += trusted['skipped']
         if not trusted['passed']:
             passed = False
+            failure_details.append({
+                'module': module,
+                'stdout': _failure_output(task['stdout_path']),
+                'stderr': _failure_output(task['stderr_path']),
+            })
 
     if worker_errors:
         passed = False
@@ -578,6 +593,8 @@ def _combine_parallel(tasks, mode, modules, seconds, selectors, test_ids,
         'jobs': jobs,
         'worker_errors': worker_errors,
     }
+    if failure_details:
+        execution['failure_details'] = failure_details
     return _build_report(
         tests, passed, failures, errors, skipped, mode, modules, seconds,
         selectors, test_ids, test_results, execution)
@@ -750,6 +767,13 @@ def main(argv=None):
             tests, mode, modules, selectors or None, test_ids, args.jobs)
         for error in report['execution']['worker_errors']:
             print('verify_all: ' + error, file=sys.stderr)
+        for detail in report['execution'].get('failure_details', []):
+            for stream in ('stdout', 'stderr'):
+                output = detail[stream]
+                if output:
+                    print(f'verify_all: {detail["module"]}: {stream}\n{output}',
+                          end='' if output.endswith('\n') else '\n',
+                          file=sys.stderr)
     if args.report is not None:
         try:
             Path(args.report).write_text(json.dumps(report, indent=2) + '\n')

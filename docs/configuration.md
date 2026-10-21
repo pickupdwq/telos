@@ -188,6 +188,8 @@ Status and review summaries expose timing without enabling any additional model 
 - Project `timing.elapsed_wall_seconds` is time from creation to acceptance/cancellation (or now while active). `child_phase_seconds` sums retained executor assignments and can overlap across children; it must not be presented as project wall time. `integration_checks` separately reports completed final verification runtime, including failures, and identifies an in-flight verification. It does not include worker scheduling delay.
 - These metrics are observational, never budget or acceptance inputs. Lifecycle tracking starts with new tasks or the first observed transition of a historical task; missing history, process-loss intervals and clock regressions remain `complete=false`. Legacy terminal records without a finish timestamp have unknown wall time. Request latency measures relay elapsed time, not pure provider compute or first-token latency.
 
+Project `usage` remains `null` when all children are on their first pending assignment with no session artifacts or ledger. Such children do not make a partially started project's aggregate incomplete. Missing ledgers for prior assignments or partially initialized tasks remain unknown rather than being reported as zero usage.
+
 MCP failures retain `isError=true` and return the same JSON object in `structuredContent` and text content:
 
 ```json
@@ -196,7 +198,11 @@ MCP failures retain `isError=true` and return the same JSON object in `structure
 
 Stable codes include `invalid_arguments`, `unknown_tool`, `owner_mismatch`, `source_dirty`, `continuation_stopped`, `event_receipt_required`, `event_not_actionable`, `job_running`, `review_required`, `retry_backoff`, `budget_exhausted`, `budget_unknown`, `budget_unavailable`, `execution_timeout`, `exam_format_error`, `infrastructure_error`, `gate_rejected`, and `internal_error`. Budget errors include the available usage snapshot, never the raw ledger. Unknown exceptions disclose their type, not arbitrary exception bodies. Retry metadata is guidance only: ownership, event idempotency, user control and frozen budgets remain authoritative; an uncertain failed operation must be reconciled before any retry.
 
+Supplied argument types and enum values are checked before tool dispatch, including nested fields. An `invalid_arguments` message identifies paths such as `arguments.tasks[0].id`, without echoing submitted values or arbitrary map keys. Existing defaults, optional null handling and domain validation remain authoritative.
+
 中文：请求累计耗时、任务阶段耗时、项目实际经过时间分开显示，失败请求及保留的重分派历史计入统计。缺失、损坏、执行中和历史未记录的数据明确标记，不把缺失值当作零耗时，也不把并行子任务耗时之和当成项目总时间。错误返回提供稳定错误码、是否可重试、等待秒数、下一步动作与可用预算快照；这些提示不能绕过原有权限、事件、暂停或预算限制。
+
+尚未首次启动且没有执行记录的子任务不再误报用量缺失，重分派和不完整初始化的缺失账本仍保留警告。参数类型错误会给出具体字段路径，不回显提交的值或任意映射键。
 
 ## Read-only executor observer
 

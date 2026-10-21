@@ -66,6 +66,35 @@ class MCPErrorTests(unittest.TestCase):
         tools = self.transport({'id': 2, 'method': 'tools/list'})['tools']
         self.assertEqual(len(tools), 25)
 
+    def test_nested_input_errors_identify_fields_before_runtime_calls(self):
+        cases = [
+            ('telos_project_open', {'tasks': [42]}, 'arguments.tasks[0]'),
+            ('telos_project_open', {'tasks': [{'id': 42}]}, 'arguments.tasks[0].id'),
+            ('telos_project_open', {'tasks': None}, 'arguments.tasks'),
+            ('telos_project_update', {'add_tasks': [None]}, 'arguments.add_tasks[0]'),
+            ('telos_open', {'questions': [{'points': True}]}, 'arguments.questions[0].points'),
+            ('telos_open', {'checks': [{'argv': [42]}]}, 'arguments.checks[0].argv[0]'),
+            ('telos_open', {'budget': {'max_requests': 'PRIVATE_VALUE'}}, 'arguments.budget.max_requests'),
+            ('telos_grade', {'scores': [42]}, 'arguments.scores[0]'),
+            ('telos_send', {'message': {'secret': 'PRIVATE_VALUE'}}, 'arguments.message'),
+            ('telos_project_open', {'execution_mode': 'PRIVATE_VALUE'}, 'arguments.execution_mode'),
+            ('telos_audit_probe', {'request': {'headers': {'PRIVATE_KEY': 42}}}, 'arguments.request.headers.<key>'),
+        ]
+        for name, arguments, field in cases:
+            with self.subTest(name=name, field=field), \
+                    patch.object(b, 'project_manager') as manager, \
+                    patch.object(b, 'load_session') as load, \
+                    patch.object(b, 'create_session') as create:
+                result = self.transport({'id': 1, 'method': 'tools/call',
+                    'params': {'name': name, 'arguments': arguments}})
+                error = result['structuredContent']['error']
+                self.assertEqual(error['code'], 'invalid_arguments')
+                self.assertEqual(error['next_action'], 'correct_arguments')
+                self.assertFalse(error['retryable'])
+                self.assertIn(field, error['message'])
+                self.assertNotIn('PRIVATE_', json.dumps(result))
+                manager.assert_not_called(); load.assert_not_called(); create.assert_not_called()
+
 
 class MCPBoundaryTests(unittest.TestCase):
     setUp = test_telos.BridgeTests.setUp
@@ -80,6 +109,20 @@ class MCPBoundaryTests(unittest.TestCase):
         if budget is not None:
             args['budget'] = budget
         return b.call_tool('telos_open', args, None)
+
+    def test_null_options_and_default_project_strategy_remain_compatible(self):
+        result = b.call_tool('telos_open', {'repo': str(self.repo), 'task': 'Implement addition.',
+            'questions': self.q, 'checks': self.checks, 'notify': False,
+            'budget': None, 'executor_profile': None, 'dependency_paths': None})
+        _, contract = b.load_session(b.run_dir(result['session_id']))
+        self.assertIsNone(contract.get('budget'))
+        project = b.call_tool('telos_project_open', {'repo': str(self.repo), 'task': 'Example project',
+            'tasks': [{'id': 'a', 'task': 'Implement a', 'message': 'Complete the assigned change',
+                       'allowed_paths': ['a.py'], 'questions': self.q, 'checks': self.checks, 'budget': None}],
+            'questions': self.q, 'checks': self.checks, 'decision_reason': 'One independent task', 'notify': False})
+        self.assertEqual(project['strategy'], 'single')
+        self.assertEqual(project['jobs_started'], 0)
+        self.assertIsNone(project['usage'])
 
     def test_real_budget_gate_reaches_structured_mcp_error_without_starting_job(self):
         sid = self.open_with_budget({'max_requests': 1})['session_id']

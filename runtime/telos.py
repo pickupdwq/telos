@@ -1922,6 +1922,37 @@ SERVER_INSTRUCTIONS = (
 from audit_schema import extend as extend_audit_schema
 extend_audit_schema(TOOLS, PROJECT_TASK)
 
+
+def validate_argument_shapes(value, schema, path='arguments'):
+    """Check supplied values without replacing default or business-rule validation."""
+    expected = schema.get('type')
+    types = expected if isinstance(expected, list) else [expected] if expected else []
+    matches = {'object': isinstance(value, dict), 'array': isinstance(value, list),
+               'string': isinstance(value, str), 'integer': type(value) is int,
+               'boolean': type(value) is bool, 'null': value is None}
+    if types and not any(matches.get(kind, False) for kind in types):
+        raise GateError(path + ' must have type ' + ' or '.join(types),
+                        code='invalid_arguments', next_action='correct_arguments')
+    if 'enum' in schema and value not in schema['enum']:
+        raise GateError(path + ' must be one of the values listed in the tool schema',
+                        code='invalid_arguments', next_action='correct_arguments')
+    if isinstance(value, dict):
+        properties = schema.get('properties', {})
+        for key, item in value.items():
+            if key in properties:
+                # Several established callers explicitly pass null for omitted
+                # options. Their defaults and domain checks remain authoritative.
+                if item is None and key not in schema.get('required', []):
+                    continue
+                validate_argument_shapes(item, properties[key], path + '.' + key)
+            elif isinstance(schema.get('additionalProperties'), dict):
+                # Arbitrary header/map keys may themselves contain private data.
+                validate_argument_shapes(item, schema['additionalProperties'], path + '.<key>')
+    elif isinstance(value, list) and isinstance(schema.get('items'), dict):
+        for index, item in enumerate(value):
+            validate_argument_shapes(item, schema['items'], f'{path}[{index}]')
+
+
 def call_tool(name, args, meta=None):
     if not isinstance(name, str) or not isinstance(args, dict) or (meta is not None and not isinstance(meta, dict)):
         raise GateError('Tool name, arguments and metadata have invalid types',
@@ -1942,6 +1973,7 @@ def call_tool(name, args, meta=None):
     if args.keys() - schema['properties'].keys():
         raise GateError('Missing required or unsupported tool arguments; consult the tool schema',
                         code='invalid_arguments', next_action='correct_arguments')
+    validate_argument_shapes(args, schema)
     caller = (meta or {}).get("threadId")
     if name == 'telos_cache_manage':
         return storage_manager().manage(**args, caller=caller)
