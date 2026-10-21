@@ -4,6 +4,7 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import shlex
+import socket
 from pathlib import Path
 import subprocess
 import sys
@@ -191,15 +192,26 @@ class AuditTests(unittest.TestCase):
         b.git(self.repo, 'add', '.'); b.git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=t@localhost', 'commit', '-qm', 'second module')
         sid = self.create(); state, contract = self.data(sid)
         root = audit.artifacts(b, state); source = Path(state['worktree']) / 'calc.py'
+        listener = socket.socket()
+        self.addCleanup(listener.close)
+        listener.bind(('127.0.0.1', 0)); listener.listen()
+        # A live host destination makes an accidentally unisolated worker fail
+        # this test; ECONNREFUSED at an unused port would not prove isolation.
+        with socket.create_connection(listener.getsockname(), timeout=2):
+            pass
         code = ('from pathlib import Path\nimport socket\n'
                 f'assert "def add" in Path({str(source)!r}).read_text()\n'
                 f'for p in [{str(source)!r},{str(Path(state["worktree"]) / "new.py")!r}]:\n'
-                ' try: Path(p).write_text("forbidden")\n except OSError as e: assert e.errno in (1,2,13,30), e\n else: raise AssertionError("source writable")\n'
+                ' try: Path(p).write_text("forbidden")\n'
+                f' except OSError as e: assert e.errno in {(1,2,13,30) if sys.platform == "linux" else (1,13)!r}, e\n'
+                ' else: raise AssertionError("source writable")\n'
                 f'try: Path({str(Path(state["worktree"]) / "private-module.py")!r}).read_text()\n'
-                'except OSError as e: assert e.errno in (1,2,13), e\nelse: raise AssertionError("outside source readable")\n'
+                f'except OSError as e: assert e.errno in {(1,2,13) if sys.platform == "linux" else (1,13)!r}, e\n'
+                'else: raise AssertionError("outside source readable")\n'
                 f'Path({str(root / "result.txt")!r}).write_text("allowed")\n'
-                'try: socket.create_connection(("127.0.0.1", 9),timeout=1)\n'
-                'except OSError as e: assert e.errno in (1,13,101,111), e\nelse: raise AssertionError("network allowed")\n')
+                f'try: socket.create_connection({listener.getsockname()!r},timeout=1)\n'
+                f'except OSError as e: assert e.errno in {(1,13,101,111) if sys.platform == "linux" else (1,13)!r}, e\n'
+                'else: raise AssertionError("network allowed")\n')
         profile = b.sandbox_profile(writable=[root], protected=[state['worktree']],
                                      readable_cache=[root, *audit.source_paths(state, contract['audit'])])
         result = subprocess.run(b.sandbox_command(profile, [sys.executable, '-c', code]), cwd=root, capture_output=True, text=True)
@@ -410,13 +422,13 @@ class AuditExecutorTests(unittest.TestCase):
         sid = self.create(); state, contract = self.data(sid)
         state.update(phase='running', job_kind='send', job_id='a' * 32)
         b.write_json(b.run_dir(sid) / 'state.json', state)
-        code = '''import json,os,urllib.request,urllib.error
+        code = '''import json,os,sys,urllib.request,urllib.error
 from pathlib import Path
 root=Path(os.environ['TELOS_AUDIT_ARTIFACTS'])
 source=Path(os.environ['TELOS_AUDIT_SOURCE'])/'calc.py'
 content=source.read_text()
 try: source.write_text('forbidden')
-except OSError as e: assert e.errno in (1,13,30), e
+except OSError as e: assert e.errno in ((1,13,30) if sys.platform == 'linux' else (1,13)), e
 else: raise AssertionError('audit source was writable')
 request=urllib.request.Request(os.environ['TELOS_AUDIT_URL'],data=b'{}',headers={'Authorization':'Bearer '+os.environ['TELOS_AUDIT_TOKEN'],'Content-Type':'application/json'})
 try: urllib.request.urlopen(request)

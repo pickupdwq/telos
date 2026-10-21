@@ -194,6 +194,38 @@ class LinuxNamespaceTests(unittest.TestCase):
                 raise AssertionError(result['reason'])
             self.skipTest('Host cannot run Linux isolation: ' + result['reason'])
 
+    def test_network_forwards_only_authorized_live_loopback_ports(self):
+        sandbox = backend(self)
+        import linux_sandbox as linux
+        import socketserver
+        import telos
+        class Handler(socketserver.BaseRequestHandler):
+            def handle(self):
+                self.request.sendall(b'live')
+        with tempfile.TemporaryDirectory() as folder, \
+                linux.running(linux.TCPServer(('127.0.0.1', 0), Handler)) as allowed, \
+                linux.running(linux.TCPServer(('127.0.0.1', 0), Handler)) as blocked:
+            for server in (allowed, blocked):
+                with socket.create_connection(server.server_address, timeout=2) as connection:
+                    self.assertEqual(connection.recv(4), b'live')
+            code = ('import socket\n'
+                    f'with socket.create_connection({allowed.server_address!r}, timeout=3) as s:\n'
+                    ' assert s.recv(4)==b"live"\n'
+                    f'try: socket.create_connection({blocked.server_address!r}, timeout=2)\n'
+                    'except OSError as e: assert e.errno in (1,13,101,111), e\n'
+                    'else: raise AssertionError("unauthorized live port reachable")\n')
+            policy = telos.sandbox_profile(writable=[folder], relay_port=allowed.server_address[1])
+            result = subprocess.run(sandbox.command(policy, [sys.executable, '-I', '-c', code]),
+                                    cwd=folder, capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+            # Sharing the host network is a distinct, explicit contract option.
+            policy = telos.sandbox_profile(writable=[folder], network=True)
+            code = (f'import socket; s=socket.create_connection({blocked.server_address!r}, timeout=3); '
+                    'assert s.recv(4)==b"live"; s.close()')
+            result = subprocess.run(sandbox.command(policy, [sys.executable, '-I', '-c', code]),
+                                    cwd=folder, capture_output=True, text=True, timeout=20)
+            self.assertEqual(result.returncode, 0, result.stderr)
+
     def test_private_source_and_readonly_dependency_are_enforced(self):
         sandbox = backend(self)
         import telos

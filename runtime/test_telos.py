@@ -184,7 +184,10 @@ class BridgeTests(unittest.TestCase):
         with patch.dict(os.environ, {"ARK_API_KEY": "not-for-checks"}):
             result = b.executable_checks({"checks": [{"id": "blocked", "argv": ["{python}", "-c", code]}]}, tree)
         self.assertEqual(result[0]["status"], "failed")
-        self.assertRegex(result[0]["stderr"], 'Operation not permitted|Permission denied|No such file')
+        if sys.platform == 'linux':
+            self.assertRegex(result[0]["stderr"], 'Operation not permitted|Permission denied|No such file')
+        else:
+            self.assertIn('Operation not permitted', result[0]["stderr"])
 
     def test_mcp_dispatch_and_error(self):
         sid = self.create()
@@ -249,15 +252,20 @@ class BridgeTests(unittest.TestCase):
         worktree = Path(s["worktree"])
         gitdir = self.repo / ".git"
         profile = b.sandbox_profile(writable=[worktree], protected=[gitdir, worktree / ".git"])
+        control = subprocess.run(b.sandbox_command(profile, [sys.executable, '-c', 'print("ready")']),
+                                 cwd=worktree, capture_output=True)
+        self.assertEqual(control.returncode, 0, control.stderr)
         p = subprocess.run(b.sandbox_command(profile, [sys.executable,'-c',
-                            f"from pathlib import Path; Path({str(gitdir / 'config')!r}).write_text('bad')"]),capture_output=True)
+                            f"from pathlib import Path; Path({str(gitdir / 'config')!r}).write_text('bad')"]),
+                           cwd=worktree, capture_output=True)
         self.assertNotEqual(p.returncode, 0)
         import socket
         socket_path = self.base / 'socket'
         with socket.socket(socket.AF_UNIX) as server:
             server.bind(str(socket_path)); server.listen()
             p = subprocess.run(b.sandbox_command(profile, [sys.executable,'-c',
-                                f"import socket; s=socket.socket(socket.AF_UNIX); s.connect({str(socket_path)!r})"]),capture_output=True)
+                                f"import socket; s=socket.socket(socket.AF_UNIX); s.connect({str(socket_path)!r})"]),
+                               cwd=worktree, capture_output=True)
         self.assertNotEqual(p.returncode, 0)
 
     def test_timeout_check_is_not_pass(self):

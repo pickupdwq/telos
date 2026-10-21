@@ -340,7 +340,7 @@ python3 runtime/verify_all.py .artifacts/regression.json
 python3 runtime/verify_all.py .artifacts/regression-parallel.json --jobs 4
 ```
 
-运行时验证在 macOS 上使用本地模型替身，不调用付费模型。用 `--list` 可只查看测试 ID 而不执行，`--module` 选择模块，`--test` 精确选择类/方法；聚焦运行只覆盖所选测试。参见[贡献指南](CONTRIBUTING.md)、[测试与选择示例](docs/testing.md)、[安全说明](SECURITY.md)和[更新记录](CHANGELOG.md)。架构图以 PNG/SVG 提供，由 [scripts/render_architecture.py](scripts/render_architecture.py) 生成。
+运行时验证在 macOS/Linux 上使用本地模型替身，不调用付费模型。用 `--list` 可只查看测试 ID 而不执行，`--module` 选择模块，`--test` 精确选择类/方法；聚焦运行只覆盖所选测试。参见[贡献指南](CONTRIBUTING.md)、[测试与选择示例](docs/testing.md)、[安全说明](SECURITY.md)和[更新记录](CHANGELOG.md)。架构图以 PNG/SVG 提供，由 [scripts/render_architecture.py](scripts/render_architecture.py) 生成。
 
 ## 开源许可
 

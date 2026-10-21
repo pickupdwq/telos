@@ -5,7 +5,7 @@ Use an issue to describe a reproducible bug or discuss a substantial design chan
 ## Development
 
 1. Fork/clone the repository and create a branch.
-2. Use Python 3.12+; macOS is required for runtime isolation tests. Install the dedicated Codex CLI as described in the README for installation probes.
+2. Use Python 3.12+ and either macOS or a Linux host meeting the [isolation prerequisites](docs/linux.md). Install the dedicated Codex CLI as described in the README for installation probes. Runtime changes must retain the macOS regression coverage.
 3. Make the smallest coherent change and add regression coverage when behavior changes.
 4. Run installer tests and relevant runtime tests; run `runtime/verify_all.py` before submitting runtime changes. Do not run paid provider tests without intentionally opting in.
 5. Explain the problem, resulting behavior, validation and remaining limitations in the PR.

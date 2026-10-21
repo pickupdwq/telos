@@ -1,6 +1,6 @@
 # Testing / 测试
 
-The default checks below use deterministic local model stubs. They require no provider keys and do not consume model quota. Git, subprocesses and macOS sandbox behavior are exercised for real where applicable.
+The default checks below use deterministic local model stubs. They require no provider keys and do not consume model quota. Git, subprocesses and the host's macOS or Linux sandbox are exercised for real where applicable.
 
 ## Source regression
 
@@ -10,7 +10,7 @@ mkdir -p .artifacts
 python3 runtime/verify_all.py .artifacts/regression.json
 ```
 
-The installer tests use temporary directories and mocked prerequisites. They cover runtime/Skill packaging, legacy upgrades, exact configuration preservation, conflicts, active-task locks and publication rollback. The runtime suite requires macOS and runs each locally declared test once; avoid broad `unittest discover` over `runtime/`, which can repeat inherited tests. Coverage includes task gates, callbacks, project orchestration, isolation, providers, closed-book exams, experience, storage, audits and local endpoints. Use the generated report for the current test count.
+The installer tests use temporary directories and mocked prerequisites. They cover runtime/Skill packaging, legacy upgrades, exact configuration preservation, conflicts, active-task locks and publication rollback. The runtime suite requires macOS or a [supported Linux host](linux.md) and runs each locally declared test once; avoid broad `unittest discover` over `runtime/`, which can repeat inherited tests. Coverage includes task gates, callbacks, project orchestration, isolation, providers, closed-book exams, experience, storage, audits and local endpoints. Use the generated report for the current test count.
 
 ### Selection and parallel verification
 
@@ -45,7 +45,7 @@ history and private-exam boundaries. See [observer behavior](watch.md).
 
 Local endpoint regressions exercise both Responses and Chat against real HTTP servers and the real Codex CLI, including namespaced tools, work-history recall, zero-tool exams, supervisor grading, key/port isolation and selection locks. These are deterministic model fixtures; a real local gateway needs a separate small work → exam → supervisor acceptance run. See [local executor configuration](local-executors.md).
 
-Usage/preflight regressions cover Chat and Responses JSON/SSE accounting, malformed and partial usage, duplicate terminal events, concurrent reservations, frozen budgets shared by work/exam/repair, exhaustion and unknown-usage stops. `test_preflight.py` also checks the no-model probe order and, when nested Seatbelt is available, runs the selected Python and Git inside the real profile while confirming the private path remains denied. A container or outer sandbox that denies `sandbox-exec` or loopback listeners can run the pure accounting/preflight/compact tests but must report those integration tests as blocked, not passed; run the full command on the supervisor host.
+Usage/preflight regressions cover Chat and Responses JSON/SSE accounting, malformed and partial usage, duplicate terminal events, concurrent reservations, frozen budgets shared by work/exam/repair, exhaustion and unknown-usage stops. `test_preflight.py` also checks the no-model probe order and, when the platform sandbox is available, runs the selected Python and Git inside the real profile while confirming the private path remains denied. A container or outer sandbox that denies Seatbelt, Linux namespaces or loopback listeners can run the pure accounting/preflight/compact tests but must report those integration tests as blocked, not passed; run the full command on the supervisor host. Linux release verification sets `TELOS_REQUIRE_LINUX_SANDBOX=1` so missing isolation cannot be counted as success.
 
 ## Fresh-install smoke test
 
