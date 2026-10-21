@@ -1,5 +1,13 @@
 # Changelog / 更新记录
 
+## 3.7.8 — 2026-10-21
+
+- Retain structured project child start errors across status refreshes, including exhausted reassignment budgets. Expose the reason and next action in full and summary views; clear stale start diagnostics when execution advances or the assignment changes. Preserve scheduling eligibility, capacity, budget accounting and acceptance gates.
+- Reject malformed MCP initialization parameters without terminating the request loop. Bind arguments before invoking experience, audit and cache handlers as well as ordinary session handlers; preserve established defaults and distinguish handler failures from invalid arguments.
+- Measure each cache path once per inventory call and derive the total from those same observations. New calls read current sizes; archive, cleanup and safety checks are unchanged.
+
+启动被拦截的原因不再被状态刷新清空，完整与精简结果均保留错误和处理提示；异常 MCP 初始化请求不会中断连接，补齐快捷工具的缺参校验；磁盘盘点复用单次路径统计，减少重复遍历。保留原有默认值、执行、预算、并发、依赖和验收规则。
+
 ## 3.7.7 — 2026-10-21
 
 - Exclude first-assignment pending tasks with no session artifacts, prior assignments or ledger from project usage aggregation. Keep historical usage and missing-data warnings for reassigned or partially initialized tasks; budgets and scheduling are unchanged.

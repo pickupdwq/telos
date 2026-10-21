@@ -7,6 +7,7 @@ inside it, never the reverse. No model is called while holding a session lock.
 from __future__ import annotations
 import copy
 import contextlib
+import errors
 import fcntl
 from pathlib import Path, PurePosixPath
 import re
@@ -218,6 +219,7 @@ class Projects:
         return session[0] if session else None
 
     def isolate(self, t, error):
+        t.pop('start_error', None)
         t.update(phase='quarantined', error=str(error)[:500], accepted_commit=None, event_id=None)
 
     def refresh(self, p):
@@ -230,7 +232,13 @@ class Projects:
                 continue
             if s:
                 t['phase'] = stat['phase']
+                if t['phase'] != 'ready':
+                    t.pop('start_error', None)
+                # A rejected start never reaches the child's execution state.
+                # Retain its diagnostic until that child actually advances.
                 t['error'] = stat.get('last_error')
+                if t['error'] is None and t.get('start_error'):
+                    t['error'] = t['start_error']['message']
                 t['accepted_commit'] = stat.get('acceptance', {}).get('commit') if stat.get('accepted') else None
                 t['event_id'] = stat.get('return_channel', {}).get('event', {}).get('id') if stat.get('return_channel', {}).get('event') else None
                 if s.get('base_commit'):
@@ -352,6 +360,10 @@ class Projects:
                         item['delivery'] = summary(child['delivery'])
             except (self.b.GateError, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
                 self.isolate(item, error)
+            if t.get('start_error') and item['phase'] in ('pending', 'ready', 'starting', 'setup_error'):
+                item['start_error'] = t['start_error']
+                item['next_action'] = (t['start_error']['next_action']
+                                       if p['continuation'] == 'active' else None)
             tasks.append(item)
         result['tasks'] = tasks
         result['usage'] = self._usage(p, snapshots)
@@ -560,8 +572,13 @@ class Projects:
                         self.save(p)
                     self.launch(p, t['session_id'], 'send', t['message'])
                     t['phase'] = 'running'
+                    t.pop('start_error', None)
                 except Exception as e:
-                    t['error'] = str(e)[:500]
+                    diagnostic = errors.payload(e)['error']
+                    diagnostic.pop('usage', None)  # Current usage is already in the task view.
+                    diagnostic['message'] = diagnostic['message'][:500]
+                    t['start_error'] = diagnostic
+                    t['error'] = diagnostic['message']
                     if t['phase'] == 'starting':
                         t['phase'] = 'setup_error'
                 self.save(p)
@@ -779,7 +796,7 @@ class Projects:
                 # Legacy task: its prior ledger is keyed by the old session ID.
                 new['usage_id'] = t['session_id']
             new.update(session_id=uuid.uuid4().hex, phase='pending', revision=t['revision'] + 1)
-            for key in ('accepted_commit', 'event_id', 'error', 'base_commit'):
+            for key in ('accepted_commit', 'event_id', 'error', 'start_error', 'base_commit'):
                 new.pop(key, None)
             p['tasks'][p['tasks'].index(t)] = new
             p.pop('integration', None); p['phase'] = 'running'

@@ -30,6 +30,8 @@ Owned sessions require the original trusted thread metadata for status as well a
 
 If the task reserves exam capacity, inspect `usage.work_budget_state` as well as the shared total. Exhausted work capacity is not an exhausted provider account. An execution timeout is also not evidence of insufficient credit. Report the original failure and any missing receipt separately; do not turn an interrupted work phase into completed work just because some budget was reserved for an exam.
 
+For a project child that remains `pending` or `ready`, inspect `start_error`, `error` and `next_action` for a failed automatic start. These diagnostics survive refresh and are distinct from an executor's `last_error`; they clear when execution advances or the assignment changes. Follow the existing control and budget gates. Reassignment retains cumulative usage and cannot make an exhausted task budget available again.
+
 Only standalone `accepted=true` completes a standalone task. Projects additionally require integrated checks and `telos_project_finish` returning project `accepted=true`; see [planning](planning.md).
 
 ## Deliver the result

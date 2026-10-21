@@ -200,9 +200,15 @@ Stable codes include `invalid_arguments`, `unknown_tool`, `owner_mismatch`, `sou
 
 Supplied argument types and enum values are checked before tool dispatch, including nested fields. An `invalid_arguments` message identifies paths such as `arguments.tasks[0].id`, without echoing submitted values or arbitrary map keys. Existing defaults, optional null handling and domain validation remain authoritative.
 
+Project task views retain a `start_error` when automatic setup or dispatch fails before the child records an execution error. It includes the stable error code and recovery guidance; the task's `error` and `next_action` expose the reason directly. The diagnostic survives refresh, clears when execution advances or the task is reassigned, and cannot change eligibility or budgets. Paused/cancelled projects expose no task continuation action. A `ready` child can therefore have a blocked start; it does not establish that an executor is running.
+
+Malformed initialization parameters return a JSON-RPC invalid-params response (`-32602`) while the MCP request loop stays available. Missing required arguments in experience/audit handlers return `invalid_arguments`; internal handler exceptions remain `internal_error`. Omitted project strategy, omitted cache inventory action and supported null options retain their defaults.
+
 中文：请求累计耗时、任务阶段耗时、项目实际经过时间分开显示，失败请求及保留的重分派历史计入统计。缺失、损坏、执行中和历史未记录的数据明确标记，不把缺失值当作零耗时，也不把并行子任务耗时之和当成项目总时间。错误返回提供稳定错误码、是否可重试、等待秒数、下一步动作与可用预算快照；这些提示不能绕过原有权限、事件、暂停或预算限制。
 
 尚未首次启动且没有执行记录的子任务不再误报用量缺失，重分派和不完整初始化的缺失账本仍保留警告。参数类型错误会给出具体字段路径，不回显提交的值或任意映射键。
+
+项目子任务的 `start_error` 保留启动拦截原因和处理提示，状态刷新不会清空；执行推进或重分派后清除旧提示，暂停/取消时不提供继续动作。错误初始化请求会收到参数错误响应，不会终止 MCP；缺参错误与处理函数内部异常保持区分。
 
 ## Read-only executor observer
 

@@ -66,6 +66,57 @@ class MCPErrorTests(unittest.TestCase):
         tools = self.transport({'id': 2, 'method': 'tools/list'})['tools']
         self.assertEqual(len(tools), 25)
 
+    def test_invalid_initialize_keeps_request_loop_alive(self):
+        for params in (None, [], 42, 'PRIVATE_INPUT', {'protocolVersion': None},
+                       {'protocolVersion': []}, {'protocolVersion': 42}):
+            with self.subTest(params=params):
+                requests = [{'id': 1, 'method': 'initialize', 'params': params},
+                            {'method': 'notifications/initialized'},
+                            {'id': 2, 'method': 'ping'},
+                            {'id': 3, 'method': 'tools/list'},
+                            {'id': 4, 'method': 'initialize', 'params': {}}]
+                output = io.StringIO()
+                with patch.object(b.sys, 'stdin', io.StringIO(
+                        ''.join(json.dumps(r) + '\n' for r in requests))), \
+                        patch.object(b.sys, 'stdout', output):
+                    b.serve_messages()
+                replies = [json.loads(line) for line in output.getvalue().splitlines()]
+                self.assertEqual([r['id'] for r in replies], [1, 2, 3, 4])
+                self.assertEqual(replies[0]['error']['code'], -32602)
+                self.assertEqual(replies[1]['result'], {})
+                self.assertEqual(len(replies[2]['result']['tools']), 25)
+                self.assertEqual(replies[3]['result']['serverInfo']['name'], 'telos')
+                self.assertNotIn('PRIVATE_INPUT', output.getvalue())
+
+    def test_missing_tool_call_parameters_are_argument_errors(self):
+        for request in ({'id': 1, 'method': 'tools/call'},
+                        {'id': 1, 'method': 'tools/call', 'params': None}):
+            response = self.transport(request)
+            self.assertEqual(response['structuredContent']['error']['code'], 'invalid_arguments')
+
+    def test_shortcut_handlers_check_required_arguments(self):
+        for name, arguments in (
+                ('telos_experience_search', {}),
+                ('telos_experience_forget', {}),
+                ('telos_audit_probe', {}),
+                ('telos_audit_probe', {'request': {}})):
+            with self.subTest(name=name, arguments=arguments):
+                response = self.transport({'id': 1, 'method': 'tools/call',
+                    'params': {'name': name, 'arguments': arguments}})
+                error = response['structuredContent']['error']
+                self.assertEqual(error['code'], 'invalid_arguments')
+                self.assertEqual(error['next_action'], 'correct_arguments')
+                self.assertFalse(error['retryable'])
+
+    def test_handler_type_error_is_not_misclassified_as_invalid_arguments(self):
+        with patch('experience.Experience.lookup', autospec=True,
+                   side_effect=TypeError('PRIVATE_HANDLER_FAILURE')) as lookup:
+            response = self.transport({'id': 1, 'method': 'tools/call',
+                'params': {'name': 'telos_experience_search', 'arguments': {'repo': '/fixture'}}})
+        lookup.assert_called_once()
+        self.assertEqual(response['structuredContent']['error']['code'], 'internal_error')
+        self.assertNotIn('PRIVATE_HANDLER_FAILURE', json.dumps(response))
+
     def test_nested_input_errors_identify_fields_before_runtime_calls(self):
         cases = [
             ('telos_project_open', {'tasks': [42]}, 'arguments.tasks[0]'),
@@ -111,6 +162,7 @@ class MCPBoundaryTests(unittest.TestCase):
         return b.call_tool('telos_open', args, None)
 
     def test_null_options_and_default_project_strategy_remain_compatible(self):
+        self.assertEqual(b.call_tool('telos_cache_manage', {})['tasks'], [])
         result = b.call_tool('telos_open', {'repo': str(self.repo), 'task': 'Implement addition.',
             'questions': self.q, 'checks': self.checks, 'notify': False,
             'budget': None, 'executor_profile': None, 'dependency_paths': None})

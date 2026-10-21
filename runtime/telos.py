@@ -1953,6 +1953,17 @@ def validate_argument_shapes(value, schema, path='arguments'):
             validate_argument_shapes(item, schema['items'], f'{path}[{index}]')
 
 
+def invoke_tool(function, args, **internal):
+    # Bind before entering the handler; a TypeError raised inside it remains an
+    # internal failure, not a misleading request to change valid arguments.
+    try:
+        inspect.signature(function).bind(**args, **internal)
+    except TypeError:
+        raise GateError('Missing required or unsupported tool arguments; consult the tool schema',
+                        code='invalid_arguments', next_action='correct_arguments') from None
+    return function(**args, **internal)
+
+
 def call_tool(name, args, meta=None):
     if not isinstance(name, str) or not isinstance(args, dict) or (meta is not None and not isinstance(meta, dict)):
         raise GateError('Tool name, arguments and metadata have invalid types',
@@ -1976,11 +1987,11 @@ def call_tool(name, args, meta=None):
     validate_argument_shapes(args, schema)
     caller = (meta or {}).get("threadId")
     if name == 'telos_cache_manage':
-        return storage_manager().manage(**args, caller=caller)
+        return invoke_tool(storage_manager().manage, args, caller=caller)
     if name == 'telos_experience_search':
-        return {'experiences': experience_manager().lookup(**args)}
+        return {'experiences': invoke_tool(experience_manager().lookup, args)}
     if name == 'telos_experience_forget':
-        return experience_manager().forget(**args)
+        return invoke_tool(experience_manager().forget, args)
     if name.startswith('telos_project_'):
         return project_manager().call(name, args, caller)
     if name == "telos_open":
@@ -2007,17 +2018,13 @@ def call_tool(name, args, meta=None):
                  "telos_return_control": return_control}
     if name == 'telos_audit_probe':
         from audit_probe import run as audit_probe_run
-        return audit_probe_run(bridge_services(), args['session_id'], args['request'])
+        return invoke_tool(lambda session_id, request:
+                           audit_probe_run(bridge_services(), session_id, request), args)
     if name not in functions:
         raise GateError("Unknown tool", code='unknown_tool', next_action='select_supported_tool')
     if name in ("telos_status", "telos_review", "telos_grade", "telos_receive", "telos_return_control"):
         args = {("sid" if k == "session_id" else k): v for k, v in args.items()}
-    try:
-        inspect.signature(functions[name]).bind(**args)
-    except TypeError:
-        raise GateError('Missing required or unsupported tool arguments; consult the tool schema',
-                        code='invalid_arguments', next_action='correct_arguments') from None
-    result = functions[name](**args)
+    result = invoke_tool(functions[name], args)
     if name == "telos_grade":
         state = read_json(run_dir(args['sid']) / 'state.json')
         if state.get('project_id'):
@@ -2035,7 +2042,14 @@ def serve_messages():
                 continue
             method = request.get("method")
             if method == "initialize":
-                protocol = request.get("params", {}).get("protocolVersion", "2025-11-25")
+                params = request.get("params", {})
+                if (not isinstance(params, dict)
+                        or not isinstance(params.get('protocolVersion', '2025-11-25'), str)):
+                    print(encoded({"jsonrpc": "2.0", "id": request["id"], "error": {
+                        "code": -32602,
+                        "message": "initialize params must be an object; protocolVersion must be a string"}}), flush=True)
+                    continue
+                protocol = params.get("protocolVersion", "2025-11-25")
                 result = {"protocolVersion": protocol, "capabilities": {"tools": {}},
                           "serverInfo": {"name": "telos", "title": "TELOS", "version": VERSION},
                           "instructions": SERVER_INSTRUCTIONS}
@@ -2043,7 +2057,7 @@ def serve_messages():
                 result = {"tools": TOOLS}
             elif method == "tools/call":
                 try:
-                    params = request["params"]
+                    params = request.get("params")
                     if not isinstance(params, dict) or not isinstance(params.get('name'), str):
                         raise GateError('Tool call requires a name and an arguments object',
                                         code='invalid_arguments', next_action='correct_arguments')

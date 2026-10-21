@@ -208,7 +208,8 @@ def _project_task(task):
     result = {key: task.get(key) for key in (
         'id', 'phase', 'depends_on', 'allowed_paths', 'provider', 'model', 'executor_profile',
         'workflow_version', 'reasoning_effort', 'session_id', 'event_id', 'accepted_commit',
-        'base_commit', 'budget', 'usage', 'timing', 'revision', 'delivery') if key in task}
+        'base_commit', 'budget', 'usage', 'timing', 'revision', 'delivery',
+        'start_error', 'next_action') if key in task}
     if 'error' in task:
         result['error'] = _text(task.get('error'), 1200)
     return result

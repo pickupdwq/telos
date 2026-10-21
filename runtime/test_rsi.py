@@ -234,6 +234,28 @@ class ProjectProgressTests(ProjectTests):
 
 
 class ArchiveTests(BridgeTests):
+    def test_inventory_reuses_observations_and_refreshes_on_the_next_query(self):
+        import storage
+        sid = self.create(notify=False)
+        state = b.read_json(b.run_dir(sid) / 'state.json')
+        tree = Path(state['worktree'])
+        growth = b'created during inventory\n'
+        original = storage.size
+        observed = []
+        def measure(path):
+            value = original(path)
+            observed.append(str(path))
+            if path == tree:
+                (tree / 'new-output.txt').write_bytes(growth)
+            return value
+        with patch.object(storage, 'size', side_effect=measure):
+            first = b.storage_manager().manage('inventory', sid)
+        self.assertEqual(first['bytes'], sum(item['bytes'] for item in first['paths']))
+        self.assertEqual(observed, [item['path'] for item in first['paths']])
+        second = b.storage_manager().manage('inventory', sid)
+        self.assertEqual(second['bytes'], first['bytes'] + len(growth))
+        self.assertEqual((tree / 'new-output.txt').read_bytes(), growth)
+
     def accepted(self):
         sid = self.create(); state = self.ready_review(sid)
         b.grade(sid, state['packet_id'], self.scores(), [])

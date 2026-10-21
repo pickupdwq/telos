@@ -548,6 +548,77 @@ class RobustnessTests(ProjectTests):
 
 
 class ProjectReadTests(ProjectTests):
+    def test_exhausted_reassignment_retains_start_error_without_spending(self):
+        pid = self.create([self.task('a', budget={'max_requests': 1})]); self.start(pid)
+        old = self.child(pid, 'a')
+        _, contract = b.load_session(b.run_dir(old['session_id']))
+        ledger = b.usage_ledger(old, contract)
+        ledger.finish(ledger.begin('work'), {'input_tokens': 10, 'output_tokens': 5})
+        old['phase'] = 'error'
+        b.write_json(b.run_dir(old['session_id']) / 'state.json', old)
+        original = b._start_job
+        def guarded_start(*args, **kwargs):
+            with patch.object(b.subprocess, 'Popen') as launch:
+                try:
+                    return original(*args, **kwargs)
+                finally:
+                    launch.assert_not_called()
+        with patch.object(b, '_start_job', guarded_start):
+            b.project_manager().reassign(pid, 'a', 'Retry the configured executor')
+            b.project_manager().tick(pid)
+        current = self.child(pid, 'a')
+        self.assertEqual(current['usage_id'], old['usage_id'])
+        self.assertEqual(current['contract_hash'], old['contract_hash'])
+        self.assertEqual(current['turns'], 0)
+        for detail in ('full', 'summary'):
+            result = b.project_manager().status(pid, detail=detail)
+            task = result['tasks'][0]
+            self.assertEqual((result['phase'], result['jobs_started'], task['phase']),
+                             ('running', 1, 'ready'))
+            self.assertEqual(task['start_error']['code'], 'budget_exhausted')
+            self.assertFalse(task['start_error']['retryable'])
+            self.assertEqual(task['next_action'], 'inspect_usage')
+            self.assertIn('budget exhausted', task['error'])
+            self.assertEqual(task['usage']['totals']['requests'], 1)
+        b.project_manager().control(pid, 'pause')
+        paused = b.project_manager().status(pid)['tasks'][0]
+        self.assertIsNone(paused['next_action'])
+        self.assertEqual(paused['start_error']['code'], 'budget_exhausted')
+
+    def test_successful_start_clears_old_diagnostic_through_both_launch_paths(self):
+        for direct in (False, True):
+            with self.subTest(direct=direct):
+                pid = self.create([self.task('a')])
+                with patch.object(b, '_start_job', side_effect=RuntimeError('PRIVATE_PROVIDER_BODY')):
+                    blocked = b.project_manager().tick(pid)
+                self.assertEqual(blocked['jobs_started'], 0)
+                self.assertEqual(blocked['tasks'][0]['phase'], 'ready')
+                self.assertEqual(blocked['tasks'][0]['start_error']['code'], 'internal_error')
+                self.assertNotIn('PRIVATE_PROVIDER_BODY', json.dumps(blocked))
+                if direct:
+                    with patch.object(b.subprocess, 'Popen', return_value=Mock(pid=os.getpid())):
+                        b.start_job(blocked['tasks'][0]['session_id'], 'send', 'Continue implementation')
+                else:
+                    self.start(pid)
+                result = b.project_manager().status(pid, detail='summary')
+                self.assertEqual(result['jobs_started'], 1)
+                self.assertEqual(result['tasks'][0]['phase'], 'running')
+                self.assertNotIn('start_error', result['tasks'][0])
+                self.assertNotIn('next_action', result['tasks'][0])
+                self.assertIsNone(result['tasks'][0]['error'])
+
+    def test_reassignment_does_not_inherit_a_previous_start_error(self):
+        pid = self.create([self.task('a')])
+        with patch.object(b, '_start_job', side_effect=b.GateError('Executor unavailable')):
+            b.project_manager().tick(pid)
+        self.assertIn('start_error', self.state(pid)['tasks'][0])
+        with patch.object(Projects, 'tick', return_value={}):
+            b.project_manager().reassign(pid, 'a', 'Use a fresh executor session')
+        result = b.project_manager().status(pid)
+        self.assertEqual(result['tasks'][0]['phase'], 'pending')
+        self.assertNotIn('start_error', result['tasks'][0])
+        self.assertIsNone(result['tasks'][0]['error'])
+
     def test_unstarted_children_do_not_report_missing_usage(self):
         pid = self.create([self.task('a'), self.task('b', ['a'])])
         manager = b.project_manager()
