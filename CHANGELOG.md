@@ -1,5 +1,14 @@
 # Changelog / 更新记录
 
+## 3.7.4 — 2026-10-21
+
+- Run acceptance checks against an immutable submitted source snapshot, with separate writable build and temporary directories. Keep check evidence, delivery receipts, exams and final acceptance bound to the same commit and frozen contract.
+- Retain structured executor delivery summaries, claimed checks and remaining issues in private commit-bound receipts and review packets, including project child deliveries. Preserve free-text replies without an extra formatting request.
+- Enforce original-supervisor ownership on status reads, check initial public materials for private-reference leakage, and quarantine corrupt session/project records while preserving evidence, usage gaps and live-job capacity accounting.
+- Stream provider-exposed reasoning during work and repair into the read-only observer. Bound and redact asynchronous recording, merge growing text blocks, and preserve response forwarding, usage accounting and the private-exam boundary. Closing the observer does not interrupt execution.
+
+验收检查使用不可修改的提交快照，交付摘要、检查、闭卷考试与最终验收绑定同一提交和冻结合同。默认保留结构化交付及原文回退，补齐 owner 校验、初始公开材料防泄漏和损坏状态隔离。观察窗格实时显示服务商在工作及修复阶段返回的思考文本，保留脱敏、用量统计与考试隔离；关闭观察窗格不影响执行。项目默认 jobs 预算保持不变。
+
 ## 3.7.3 — 2026-10-21
 
 - Merge the accepted RSI campaign improvements into main: faster bounded SSE scanning and observer log tailing, lazy experience lookup with stronger provenance checks, and isolation of malformed experience records.
