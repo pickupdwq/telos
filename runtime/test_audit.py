@@ -194,15 +194,15 @@ class AuditTests(unittest.TestCase):
         code = ('from pathlib import Path\nimport socket\n'
                 f'assert "def add" in Path({str(source)!r}).read_text()\n'
                 f'for p in [{str(source)!r},{str(Path(state["worktree"]) / "new.py")!r}]:\n'
-                ' try: Path(p).write_text("forbidden")\n except PermissionError: pass\n else: raise AssertionError("source writable")\n'
+                ' try: Path(p).write_text("forbidden")\n except OSError as e: assert e.errno in (1,2,13,30), e\n else: raise AssertionError("source writable")\n'
                 f'try: Path({str(Path(state["worktree"]) / "private-module.py")!r}).read_text()\n'
-                'except PermissionError: pass\nelse: raise AssertionError("outside source readable")\n'
+                'except OSError as e: assert e.errno in (1,2,13), e\nelse: raise AssertionError("outside source readable")\n'
                 f'Path({str(root / "result.txt")!r}).write_text("allowed")\n'
                 'try: socket.create_connection(("127.0.0.1", 9),timeout=1)\n'
-                'except PermissionError: pass\nelse: raise AssertionError("network allowed")\n')
+                'except OSError as e: assert e.errno in (1,13,101,111), e\nelse: raise AssertionError("network allowed")\n')
         profile = b.sandbox_profile(writable=[root], protected=[state['worktree']],
                                      readable_cache=[root, *audit.source_paths(state, contract['audit'])])
-        result = subprocess.run(['/usr/bin/sandbox-exec', '-p', profile, sys.executable, '-c', code], cwd=root, capture_output=True, text=True)
+        result = subprocess.run(b.sandbox_command(profile, [sys.executable, '-c', code]), cwd=root, capture_output=True, text=True)
         self.assertEqual(result.returncode, 0, result.stderr)
 
     def test_links_and_budget_overflow_rejected(self):
@@ -416,7 +416,7 @@ root=Path(os.environ['TELOS_AUDIT_ARTIFACTS'])
 source=Path(os.environ['TELOS_AUDIT_SOURCE'])/'calc.py'
 content=source.read_text()
 try: source.write_text('forbidden')
-except PermissionError: pass
+except OSError as e: assert e.errno in (1,13,30), e
 else: raise AssertionError('audit source was writable')
 request=urllib.request.Request(os.environ['TELOS_AUDIT_URL'],data=b'{}',headers={'Authorization':'Bearer '+os.environ['TELOS_AUDIT_TOKEN'],'Content-Type':'application/json'})
 try: urllib.request.urlopen(request)

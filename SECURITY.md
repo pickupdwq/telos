@@ -1,6 +1,6 @@
 # Security / 安全说明
 
-Telos runs model-generated code on a local Mac. Its macOS Seatbelt profiles separate worktrees, private grading material, credentials and executor caches. This is not a VM boundary or protection against a compromised host. Review task scope and provider data handling before using sensitive repositories.
+Telos runs model-generated code on macOS or a supported Linux host. The original macOS Seatbelt profiles and the separate Linux Bubblewrap/Landlock/seccomp backend separate worktrees, private grading material, credentials and executor caches. Neither is a VM boundary or protection against a compromised host. Linux requires working namespace isolation; missing capabilities are never replaced by unrestricted execution. See [Linux boundaries](docs/linux.md).
 
 ## Reporting a vulnerability
 

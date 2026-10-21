@@ -184,6 +184,12 @@ def private_paths():
 
 
 def sandbox_profile(network=False, writable=(), protected=(), readable_cache=None, readable=(), relay_port=None, service_ports=()):
+    if sys.platform == 'linux':
+        from isolation import runtime_paths
+        from sandbox import linux_profile
+        return linux_profile(readable=[*runtime_paths(INSTALL, HOME), *readable, *(readable_cache or [])],
+                             writable=writable, protected=[*protected, INSTALL], private=private_paths(),
+                             network=network, ports=[*service_ports, *([relay_port] if relay_port is not None else [])])
     if sys.platform != "darwin" or not Path("/usr/bin/sandbox-exec").exists():
         raise GateError("This deployment requires macOS sandbox-exec; isolation cannot be silently disabled")
     clauses = ["(version 1)", "(allow default)"]
@@ -221,6 +227,11 @@ def sandbox_profile(network=False, writable=(), protected=(), readable_cache=Non
         for port in service_ports:
             clauses.append(f'(allow network-outbound (remote ip "localhost:{int(port)}"))')
     return "\n".join(clauses)
+
+
+def sandbox_command(profile, argv):
+    from sandbox import command
+    return command(profile, argv)
 
 
 def validate_exam(questions, checks, threshold, max_rounds):
@@ -1295,8 +1306,8 @@ def executable_checks(contract, target):
     # Never inherit model keys, tmux socket, leader configuration, or bridge credentials.
     for check in contract["checks"]:
         argv = [x.replace("{repo}", str(target)).replace("{python}", sys.executable) for x in check["argv"]]
-        command = ["/usr/bin/sandbox-exec", "-p", sandbox_profile(check.get("network", False), writable=[target],
-                   readable=dependencies, protected=dependency_roots), *argv]
+        command = sandbox_command(sandbox_profile(check.get("network", False), writable=[target],
+                   readable=dependencies, protected=dependency_roots), argv)
         started = time.time()
         p = subprocess.Popen(command, cwd=target, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         try:
@@ -1645,6 +1656,8 @@ def _grade(sid, packet_id, scores, blockers, event_id=None, public_lessons=None,
 
 
 def doctor():
+    from sandbox import capability
+    isolation = capability()
     defaults = {'executor': providers.resolve_executor(config())}
     configured = {}
     for name, binding in defaults.items():
@@ -1664,10 +1677,12 @@ def doctor():
             "executor": configured['executor'], "ark_credential": auth,
             "supervisor": config().get('supervisor'),
             "codex": shutil.which("codex"), "omx": shutil.which("omx"),
-            "sandbox": Path("/usr/bin/sandbox-exec").exists(), "state_root": str(STATE),
+            "sandbox": isolation['available'], "sandbox_details": isolation,
+            "host_platform": sys.platform, "state_root": str(STATE),
             "threshold": config()["threshold"], "max_rounds": config()["max_rounds"],
             "return_channel": "CLI native queue or Desktop IPC; original MCP threadId binding; persistent event receipts",
             "desktop_socket_available": Path(config().get("desktop_socket", HOME / ".codex/ipc/ipc.sock")).exists(),
+            "cli_control_socket_available": Path(config().get("codex_socket", HOME / ".codex/app-server-control/app-server-control.sock")).is_socket(),
             "exam_format_attempts": config()["exam_format_attempts"],
             "project_default_mode": "auto", "project_max_parallel": 3,
             "experience_enabled": config().get('experience_enabled', True),

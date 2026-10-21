@@ -24,8 +24,12 @@ def main():
     parser.add_argument("--report", type=Path, default=Path("telos-verification.json"))
     args = parser.parse_args()
     install = args.install_dir.expanduser().resolve()
-    if sys.version_info < (3, 12) or sys.platform != "darwin":
-        raise SystemExit("需要 macOS 与 Python 3.12+。")
+    if sys.version_info < (3, 12) or sys.platform not in ('darwin', 'linux'):
+        raise SystemExit("需要 macOS 或 Linux 与 Python 3.12+。")
+    from sandbox import capability
+    isolation = capability()
+    if not isolation['available']:
+        raise SystemExit(isolation['reason'])
     manifest = json.loads((install / "install-manifest.json").read_text())
     python = manifest.get("python", sys.executable)
     codex = manifest.get("codex_executable") or shutil.which("codex")
@@ -74,7 +78,8 @@ def main():
                   "native": json.loads((temp / "native.json").read_text()),
                   "worker_environment": json.loads((temp / "environment.json").read_text()),
                   "external_model_calls": False, "real_credential_validation": False,
-                  "scope": "Local macOS CLI/MCP/native queue only; real credentials and Desktop automatic return are not verified."}
+                  "platform": sys.platform, "isolation": isolation,
+                  "scope": "Local CLI/MCP/native queue only; real credentials and Desktop automatic return are not verified."}
         args.report.write_text(json.dumps(report, ensure_ascii=False, indent=2) + "\n")
     print("本机离线验证通过；真实服务商需另行运行 verify_live_providers.py --live。报告：" + str(args.report))
 

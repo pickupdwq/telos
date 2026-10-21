@@ -14,6 +14,22 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import install
 
 
+class PlatformPrerequisiteTests(unittest.TestCase):
+    def test_linux_rejects_unavailable_isolation_before_installing_anything(self):
+        self.assertTrue(hasattr(install, 'isolation_capability'), 'Installer needs a platform isolation probe')
+        with patch.object(install.sys, 'platform', 'linux'), patch.object(
+                install, 'isolation_capability', return_value={'available': False, 'reason': 'mount namespace denied'}):
+            with self.assertRaisesRegex(RuntimeError, 'mount namespace denied'):
+                install.preflight(Path('/nonexistent/telos-test'))
+
+    def test_supported_linux_reaches_dedicated_cli_prerequisite(self):
+        self.assertTrue(hasattr(install, 'isolation_capability'), 'Installer needs a platform isolation probe')
+        with tempfile.TemporaryDirectory() as folder, patch.object(install.sys, 'platform', 'linux'), \
+                patch.object(install, 'isolation_capability', return_value={'available': True}):
+            with self.assertRaisesRegex(RuntimeError, 'dedicated CLI'):
+                install.preflight(Path(folder))
+
+
 class InstallerTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory(prefix="telos installer ")

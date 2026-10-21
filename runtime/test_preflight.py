@@ -502,8 +502,7 @@ class PatchFormatGuidanceTests(ExecutorPreflightOrderTests):
         self.assertLessEqual(len(block), 1200)
 
 
-@unittest.skipUnless(sys.platform == 'darwin' and Path('/usr/bin/sandbox-exec').exists(),
-                     'requires macOS sandbox-exec')
+@unittest.skipUnless(sys.platform in ('darwin', 'linux'), 'requires macOS or Linux isolation')
 class RealSandboxPreflightTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
@@ -519,11 +518,19 @@ class RealSandboxPreflightTests(unittest.TestCase):
         self.temp.cleanup()
 
     def test_real_sandbox_can_run_python_and_git_and_still_denies_private_paths(self):
-        probe = subprocess.run(['/usr/bin/sandbox-exec', '-p', '(version 1)(allow default)',
-                                sys.executable, '-c', 'print(1)'], capture_output=True, timeout=20)
-        if probe.returncode:
-            self.skipTest('nested Seatbelt unavailable in this outer sandbox: '
-                          + probe.stderr.decode(errors='replace')[-200:])
+        if sys.platform == 'darwin':
+            probe = subprocess.run(['/usr/bin/sandbox-exec', '-p', '(version 1)(allow default)',
+                                    sys.executable, '-c', 'print(1)'], capture_output=True, timeout=20)
+            if probe.returncode:
+                self.skipTest('nested Seatbelt unavailable in this outer sandbox: '
+                              + probe.stderr.decode(errors='replace')[-200:])
+        else:
+            from sandbox import capability
+            supported = capability()
+            if not supported['available']:
+                if os.environ.get('TELOS_REQUIRE_LINUX_SANDBOX') == '1':
+                    self.fail(supported['reason'])
+                self.skipTest(supported['reason'])
         with patch.object(telos, 'HOME', self.home), patch.object(telos, 'CACHE', self.cache), \
                 patch.object(telos, 'INSTALL', self.install):
             profile = telos.sandbox_profile(writable=[self.work], readable_cache=[self.work],
@@ -534,8 +541,8 @@ class RealSandboxPreflightTests(unittest.TestCase):
             private = self.home / '.codex' / 'secret'
             private.parent.mkdir(parents=True)
             private.write_text('private')
-            denied = subprocess.run(['/usr/bin/sandbox-exec', '-p', profile, sys.executable, '-c',
-                                     'open(' + repr(str(private)) + ').read()'],
+            denied = subprocess.run(telos.sandbox_command(profile, [sys.executable, '-c',
+                                     'open(' + repr(str(private)) + ').read()']),
                                     cwd=self.work, env={'PATH': '/usr/bin:/bin'},
                                     capture_output=True, timeout=20)
             self.assertNotEqual(denied.returncode, 0)

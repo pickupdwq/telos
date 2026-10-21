@@ -460,10 +460,10 @@ class RobustnessTests(ProjectTests):
         own = Path(a['worktree']) / 'calc.py'; sibling = Path(other['worktree']) / 'calc.py'
         code = f"from pathlib import Path; assert Path({str(own)!r}).resolve().read_text(); Path({str(sibling)!r}).read_text()"
         profile = b.sandbox_profile(writable=[a['worktree']], readable_cache=[a['worktree']])
-        result = subprocess.run(['/usr/bin/sandbox-exec', '-p', profile, __import__('sys').executable, '-c', code], cwd=a['worktree'], capture_output=True, text=True)
+        result = subprocess.run(b.sandbox_command(profile, [__import__('sys').executable, '-c', code]), cwd=a['worktree'], capture_output=True, text=True)
         self.assertNotEqual(result.returncode, 0)
         self.assertIn(str(sibling), result.stderr)
-        self.assertIn('Operation not permitted', result.stderr)
+        self.assertRegex(result.stderr, 'Operation not permitted|Permission denied|No such file')
 
     def test_concurrent_start_calls_do_not_duplicate_dispatch(self):
         pid = self.create()

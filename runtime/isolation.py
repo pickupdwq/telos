@@ -19,6 +19,9 @@ from identity import data_path
 
 def runtime_paths(install, home):
     from preflight import git_runtime_paths
+    if sys.platform == 'linux':
+        from sandbox import linux_runtime_paths
+        return linux_runtime_paths(install, home) + git_runtime_paths()
     # No entire user home, /tmp, /var, source repository or sibling project.
     return [Path(x) for x in ('/System', '/usr', '/bin', '/sbin', '/opt/homebrew',
             '/Library/Apple', '/Library/Frameworks', '/private/var/db/dyld',

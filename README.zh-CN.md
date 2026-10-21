@@ -6,7 +6,7 @@
 
 [![CI](https://github.com/pickupdwq/telos/actions/workflows/ci.yml/badge.svg)](https://github.com/pickupdwq/telos/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-![Platform: macOS](https://img.shields.io/badge/platform-macOS-111827)
+![Platform: macOS / Linux](https://img.shields.io/badge/platform-macOS%20%2F%20Linux-111827)
 ![Python: 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB)
 
 Telos 是运行在本机的 Codex MCP 桥接程序。原来的 GPT 旗舰对话担任**大总管**，负责理解需求、冻结验收标准、审核源码和最终评分；可切换的**执行者**负责实现功能，然后在同一个会话中闭卷回答问卷。
@@ -142,7 +142,7 @@ Telos 在隔离工作区中产出已验收的提交。合并、推送和部署�
 
 | 组件 | 要求 |
 | --- | --- |
-| 操作系统 | 带 `/usr/bin/sandbox-exec` 的 macOS；暂不支持在 Linux、Windows 上执行任务 |
+| 操作系统 | 带 `/usr/bin/sandbox-exec` 的 macOS，或具备 Bubblewrap、Landlock、libseccomp 的 Linux；[Linux 条件与限制](docs/linux.md)。暂不支持 Windows |
 | Python | 3.12+；运行时代码只依赖标准库 |
 | Git | 已安装并配置；目标仓库至少有一个提交，工作区必须干净 |
 | Codex CLI | **已验证基线为 0.163.0**；安装器允许更高版本，但升级后需重新验证 |
@@ -151,6 +151,8 @@ Telos 在隔离工作区中产出已验收的提交。合并、推送和部署�
 | 执行者 | 所选服务商的有效凭据/套餐，以及对应模型的使用权限 |
 
 本地已在 Apple Silicon、macOS 27.0.1、Python 3.13、Codex CLI 0.163.0 上验证，不代表所有 Mac 或后续 CLI 版本均已实测。桌面端自动回传适配依赖内部 IPC 协议，推荐先使用下方专用 CLI 路径；升级后重新验证。
+
+本分支新增独立 Linux 后端和 CI 验证。Linux 主机必须允许用户、挂载、PID 和网络命名空间；受限容器即使安装了依赖，也可能无法执行。安装器会真实探测，不会静默关闭隔离。云端工作坊是否提供原始 Codex 会话回传接口属于另一项条件，详见 [Linux 接入说明](docs/linux.md)。
 
 ## 快速开始
 
@@ -163,7 +165,7 @@ Telos 在隔离工作区中产出已验收的提交。合并、推送和部署�
 > 请按照 https://github.com/pickupdwq/telos 的中文 README 安装 Telos 和用户全局 Skill。检查依赖，使用已验证的专用 Codex CLI 0.163.0，注册 MCP，并运行离线安装验证。已有安装先复用，除非我要求升级；保留现有配置和凭据。缺少的服务商 Key 由我在本地终端隐藏输入。完成后汇报验证结果，并提醒我在注册后重新打开 Codex。
 
 - **同一台 Mac、同一份 Codex 配置下的另一个 CLI 会话**：复用已有安装即可。重新打开 Codex，用 `/mcp` 检查 Telos 是否加载。
-- **另一台机器**：需要能够访问本仓库，并满足上面的 macOS、Python 3.12+ 和专用 CLI 要求。配置自己的模型凭据，并在该机器上运行安装验证。
+- **另一台机器**：需要能够访问本仓库，并满足上面的 macOS/Linux、Python 3.12+ 和专用 CLI 要求。配置自己的模型凭据，并在该机器上运行安装验证。
 
 安装器回归覆盖全新安装、受管理升级、配置保留、冲突检查和失败回滚。离线运行时检查使用本地模型替身；真实 API Key、其他 CLI 版本及真实桌面会话自动回传仍需单独验证。复现命令见[测试指南](docs/testing.md)。
 
@@ -320,7 +322,7 @@ cd /你的/干净Git项目/绝对路径
 
 ## 已知边界
 
-- 当前执行隔离依赖 macOS Seatbelt，不是虚拟机，也不能防御已被控制的宿主机。
+- macOS 保留 Seatbelt；Linux 使用独立的 Bubblewrap、Landlock 和 seccomp 后端。二者均不等于虚拟机，也不能防御已被控制的宿主机。
 - 命令默认不能访问网络；`dependency_paths` 只授予指定依赖目录的读取权限，需要时显式开启命令/检查网络权限。
 - 含 `.codex/config.toml`、符号链接等特殊快照条目或特殊依赖布局的仓库可能需要兼容处理，程序不会自动绕过检查。
 - 任务上下文与源码会发送给选定的模型服务商。私有评估资料不提供给执行者，但大总管可以读取；本地证据和日志也可能包含敏感信息。

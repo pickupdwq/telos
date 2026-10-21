@@ -110,10 +110,10 @@ class ProjectDependencyTests(ProjectTests):
                 f'p=Path({str(dep / "tsc.js")!r})\n'
                 'assert p.read_text()=="declared TypeScript runtime"\n'
                 'try: p.write_text("overwrite")\n'
-                'except PermissionError: pass\n'
+                'except OSError as e: assert e.errno in (1,13,30), e\n'
                 'else: raise AssertionError("dependency was writable")\n'
                 f'try: Path({str(sibling)!r}).read_text()\n'
-                'except PermissionError: pass\n'
+                'except OSError as e: assert e.errno in (1,2,13), e\n'
                 'else: raise AssertionError("undeclared sibling was readable")\n')
         pid = self.create([self.task('a', dependency_paths=[str(dep)])],
                           checks=[{'id': 'dependency-access', 'argv': ['{python}', '-c', code]}])
@@ -205,10 +205,10 @@ class ProjectDependencyTests(ProjectTests):
                 'assert not (Path.home()/".npm/unrelated").exists()\n'
                 'for file in (p, p.with_name("created.js")):\n'
                 ' try: file.write_text("tamper")\n'
-                ' except PermissionError: pass\n'
+                ' except OSError as e: assert e.errno in (1,13,30), e\n'
                 ' else: raise AssertionError("dependency view was writable")\n'
                 'try: p.with_name("secret-link").read_text()\n'
-                'except PermissionError: pass\n'
+                'except OSError as e: assert e.errno in (1,2,13), e\n'
                 'else: raise AssertionError("private symlink was followed")\n')
         with patch.object(b, 'HOME', self.base):
             results = b.executable_checks({'dependency_paths': [str(dep)],

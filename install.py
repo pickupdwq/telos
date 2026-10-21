@@ -17,6 +17,7 @@ import sys
 import tempfile
 import tomllib
 import uuid
+from runtime.sandbox import capability as isolation_capability
 
 ROOT = Path(__file__).resolve().parent
 MIN_CODEX = (0, 163, 0)
@@ -109,10 +110,11 @@ def watch_environment(config_file: Path, launcher: Path) -> dict:
 
 
 def preflight(home: Path) -> tuple[Path, str]:
-    if sys.platform != "darwin" or sys.version_info < (3, 12):
-        raise RuntimeError("Telos requires macOS and Python 3.12+ (Seatbelt isolation).")
-    if not Path("/usr/bin/sandbox-exec").is_file():
-        raise RuntimeError("macOS sandbox-exec is required; isolation cannot be disabled.")
+    if sys.platform not in ("darwin", "linux") or sys.version_info < (3, 12):
+        raise RuntimeError("Telos requires macOS or Linux and Python 3.12+.")
+    isolation = isolation_capability()
+    if not isolation['available']:
+        raise RuntimeError(isolation['reason'])
     for command in ("git", "node"):
         if not shutil.which(command):
             raise RuntimeError(f"Missing dependency: {command}")

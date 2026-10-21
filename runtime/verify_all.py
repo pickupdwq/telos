@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Run every locally declared regression once, with real Git/macOS sandboxes.
+"""Run every locally declared regression once, with real Git/platform sandboxes.
 
 The module is import-safe: tests run only through ``main``.  ``--list`` and the
 JSON report make selection and timing evidence reusable by later RSI rounds.
@@ -39,6 +39,7 @@ MODULES = [
     'test_comparison',
     'test_watch',
     'test_verify_all',
+    'test_linux_sandbox',
 ]
 
 MODEL_BOUNDARY = 'deterministic mocks; separate live report required'

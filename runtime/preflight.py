@@ -100,7 +100,11 @@ def run(b, cli, cwd, env, profile, *, check_repo=False, secrets=(), timeout=20,
     evidence = {'status': 'passed', 'cwd': str(cwd),
                 'interpreter': str(sys.executable), 'checks': []}
     for label, argv in probes:
-        command = [sandbox_exec, '-p', profile, *argv]
+        if isinstance(profile, dict):
+            from sandbox import command as sandbox_command
+            command = sandbox_command(profile, argv)
+        else:
+            command = [sandbox_exec, '-p', profile, *argv]
         try:
             p = runner(command, cwd=str(cwd), env=env, capture_output=True, timeout=timeout)
         except subprocess.TimeoutExpired:

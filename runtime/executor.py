@@ -257,7 +257,8 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
         guidance = _work_guidance(evidence, contract, state, artifact_root=artifact_root if probe else None)
         guidance += _execution_guidance(b, state, contract, binding)
     prompt = (initial if not state.get("thread_id") else "") + guidance + "Codex message:\n" + message
-    command = ["/usr/bin/sandbox-exec", "-p", profile, *args]
+    from sandbox import command as sandbox_command
+    command = sandbox_command(profile, args)
     if closeout is not None:
         closeout.start(cfg["job_timeout"])
     recorder = activity.for_state(b, state, phase, secrets=(key, probe['token'] if probe else ''))

@@ -134,8 +134,8 @@ def browser_probe(b, policy, request, folder):
     dependencies = [module.parent.parent, app, driver, Path(node).resolve()]
     env = b.minimal_env()
     env.update(HOME=str(folder), TMPDIR=str(folder), TMPPREFIX=str(folder / 'tmp'))
-    command = ['/usr/bin/sandbox-exec', '-p', b.sandbox_profile(network=True, writable=[folder],
-               readable=dependencies), node, str(driver)]
+    command = b.sandbox_command(b.sandbox_profile(network=True, writable=[folder],
+               readable=dependencies), [node, str(driver)])
     payload = {'policy': policy, 'request': request, 'folder': str(folder)}
     p = subprocess.Popen(command, stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE,
                          env=env, cwd=folder, start_new_session=True)

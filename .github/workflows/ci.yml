@@ -61,3 +61,40 @@ jobs:
             .artifacts/installation.json
           if-no-files-found: ignore
           retention-days: 7
+
+  linux-runtime:
+    runs-on: ubuntu-24.04
+    timeout-minutes: 20
+    env:
+      TELOS_REQUIRE_LINUX_SANDBOX: '1'
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.13'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+      - name: Install Linux isolation dependencies
+        run: sudo apt-get update && sudo apt-get install -y bubblewrap libseccomp2
+      - name: Install dedicated CLI
+        run: npm install --prefix "$HOME/.local/share/telos-cli" @openai/codex@0.163.0
+      - name: Require working isolation before testing
+        run: python3 install.py --dry-run
+      - name: Runtime regression (same suite, local models only)
+        run: |
+          mkdir -p .artifacts
+          python3 runtime/verify_all.py .artifacts/linux-regression.json --jobs 4
+      - name: Fresh-install and native callback smoke test
+        run: |
+          python3 install.py --prefix "$PWD/.artifacts/installed" --bin-dir "$PWD/.artifacts/bin" --skills-dir "$PWD/.artifacts/skills"
+          python3 runtime/verify.py --install-dir "$PWD/.artifacts/installed" --report .artifacts/linux-installation.json
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: linux-local-verification
+          path: |
+            .artifacts/linux-regression.json
+            .artifacts/linux-installation.json
+          if-no-files-found: ignore
+          retention-days: 7

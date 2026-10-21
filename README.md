@@ -8,7 +8,7 @@
 
 [![CI](https://github.com/pickupdwq/telos/actions/workflows/ci.yml/badge.svg)](https://github.com/pickupdwq/telos/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
-![Platform: macOS](https://img.shields.io/badge/platform-macOS-111827)
+![Platform: macOS / Linux](https://img.shields.io/badge/platform-macOS%20%2F%20Linux-111827)
 ![Python: 3.12+](https://img.shields.io/badge/python-3.12%2B-3776AB)
 
 Telos is a local MCP bridge for Codex. Your original GPT flagship conversation acts as the **supervisor**: it defines the task, freezes acceptance criteria, reviews code and decides whether the result passes. A configurable **executor** implements the change, then answers a closed-book questionnaire in the same conversation.
@@ -144,7 +144,7 @@ The per-round report was frozen before the final delivery checks; the final summ
 
 | Component | Requirement |
 | --- | --- |
-| OS | macOS with `/usr/bin/sandbox-exec`; Linux and Windows execution are not supported |
+| OS | macOS with `/usr/bin/sandbox-exec`, or Linux with Bubblewrap, Landlock and libseccomp; [Linux prerequisites](docs/linux.md). Windows execution is not supported |
 | Python | 3.12+; runtime uses the standard library only |
 | Git | Installed and configured; target repository must have a commit and a clean working tree |
 | Codex CLI | **0.163.0 is the tested baseline**; installer accepts newer versions, which need revalidation |
@@ -152,7 +152,7 @@ The per-round report was frozen before the final delivery checks; the final summ
 | Supervisor | Authenticated Codex session using an allowed OpenAI GPT flagship model |
 | Executor | A valid key/subscription for the selected provider and access to the chosen model |
 
-Local verification has been run on Apple Silicon, macOS 27.0.1, Python 3.13 and Codex CLI 0.163.0. This does not establish compatibility with every Mac or later CLI release. The Desktop callback adapter depends on a versioned internal IPC protocol; use the dedicated CLI for the documented path and revalidate after upgrades.
+Historical verification used Apple Silicon, macOS 27.0.1, Python 3.13 and Codex CLI 0.163.0. This branch adds a separate Linux backend and CI job; use their actual reports for current evidence. Restricted containers may reject the required namespaces. The Desktop callback adapter depends on a versioned internal IPC protocol; use the dedicated CLI for the documented path and revalidate after upgrades. [Linux host and callback boundaries](docs/linux.md).
 
 ## Quick start
 
@@ -322,7 +322,7 @@ Pause/cancel prevents follow-on stages; an already-running provider request may 
 
 ## Boundaries
 
-- Execution isolation currently requires macOS. It is a Seatbelt boundary, not a VM or protection against a compromised host.
+- Execution isolation uses macOS Seatbelt or the separate Linux Bubblewrap/Landlock/seccomp backend. Neither is a VM or protection against a compromised host. Unsupported Linux host policies fail before execution.
 - Command network access is off by default. Explicit `dependency_paths` grant read access; command/check network access must be deliberately enabled when needed.
 - Repositories with `.codex/config.toml`, symlinked/special snapshot entries or unusual dependency layouts may need compatibility work. Telos does not silently bypass these checks.
 - Source and task context are sent to your selected model providers. Private grading materials stay out of the executor conversation but are available to the supervisor. Treat local evidence and logs as potentially sensitive.

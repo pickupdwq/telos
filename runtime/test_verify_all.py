@@ -38,6 +38,7 @@ EXPECTED_MODULES = [
     'test_comparison',
     'test_watch',
     'test_verify_all',
+    'test_linux_sandbox',
 ]
 
 
