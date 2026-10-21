@@ -3,6 +3,8 @@ import contextlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import hmac
 import json
+import math
+import re
 import secrets
 import shutil
 import socket
@@ -68,6 +70,15 @@ class RelayCloseout:
                 self.reason = reason
             self.condition.notify_all()
 
+    def admission_remaining(self):
+        """Seconds that can still be admitted, or None before the deadline is armed."""
+        with self.condition:
+            if self.closing_at is not None:
+                return 0
+            if self.deadline is None:
+                return None
+            return max(0, self.deadline - self.request_window - time.monotonic())
+
     @staticmethod
     def response_socket(response):
         # CPython urllib HTTP(S)Response owns this socket. Other response types
@@ -114,6 +125,109 @@ class RelayCloseout:
             interrupt()
 
 
+WORK_BUDGET_PREFIX = 'TELOS_WORK_BUDGET '
+_WORK_INSTRUCTION = (
+    'Advisory only; this is not acceptance and does not change tools, policy or permission. '
+    'Reserve enough remaining time and requests to stop starting new work and send one brief '
+    'factual final reply covering changed files, checks run and remaining issues.'
+)
+_SHORT_WORK_INSTRUCTION = 'Advisory only; not acceptance. Reserve budget for a factual final reply.'
+
+
+def _budget_seconds(value):
+    if type(value) is int:
+        return value if value >= 0 else None
+    if type(value) is float:
+        if not math.isfinite(value) or value < 0:
+            return None
+        return math.floor(value)
+    return None
+
+
+def _budget_requests(value):
+    if type(value) is int and value >= 0:
+        return value
+    return None
+
+
+def _work_budget_content(seconds, requests):
+    fields = {}
+    if seconds is not None:
+        fields['admission_seconds_remaining'] = seconds
+    if requests is not None:
+        fields['further_work_requests_remaining'] = requests
+    if not fields:
+        return None
+    for instruction in (_WORK_INSTRUCTION, _SHORT_WORK_INSTRUCTION):
+        payload = dict(fields, instruction=instruction)
+        content = WORK_BUDGET_PREFIX + json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
+        if len(content) <= 1000:
+            return content
+    return None
+
+
+def prepare_work_request(raw, *, seconds_remaining=None, requests_remaining=None):
+    """Append one advisory developer message while preserving the request body."""
+    seconds = _budget_seconds(seconds_remaining)
+    requests = _budget_requests(requests_remaining)
+    content = _work_budget_content(seconds, requests)
+    if content is None:
+        return raw
+    try:
+        request = json.loads(raw)
+    except (TypeError, ValueError):
+        return raw
+    if not isinstance(request, dict):
+        return raw
+    history = request.get('input')
+    if isinstance(history, str):
+        history = [{'role': 'user', 'content': history}]
+    elif isinstance(history, list):
+        history = list(history)
+    else:
+        return raw
+    history.append({'role': 'developer', 'content': content})
+    updated = dict(request)
+    updated['input'] = history
+    return json.dumps(updated, ensure_ascii=False, separators=(',', ':')).encode()
+
+
+def _work_request_supported(raw):
+    try:
+        request = json.loads(raw)
+    except (TypeError, ValueError):
+        return False
+    return isinstance(request, dict) and isinstance(request.get('input'), (list, str))
+
+
+def _apply_work_guidance(raw, *, usage_ledger, request_id, closeout):
+    """Add advisory values only when the request can accept a developer message."""
+    if not _work_request_supported(raw):
+        return raw
+    requests_remaining = None
+    if usage_ledger is not None and request_id is not None:
+        requests_remaining = _work_requests_remaining(usage_ledger.snapshot())
+    return prepare_work_request(raw, seconds_remaining=closeout.admission_remaining(),
+                                requests_remaining=requests_remaining)
+
+
+def _work_requests_remaining(snapshot):
+    """Further work requests after the current reservation, respecting exam reserves."""
+    if not isinstance(snapshot, dict):
+        return None
+    state = snapshot.get('budget_state')
+    remaining = state.get('remaining') if isinstance(state, dict) else None
+    value = remaining.get('max_requests') if isinstance(remaining, dict) else None
+    if type(value) is not int or value < 0:
+        return None
+    work_state = snapshot.get('work_budget_state')
+    work_remaining = work_state.get('remaining') if isinstance(work_state, dict) else None
+    work_value = work_remaining.get('max_requests') if isinstance(work_remaining, dict) else None
+    if type(work_value) is int and work_value >= 0:
+        value = min(value, work_value)
+    return value
+
+
 # Only the current SSE event is retained. The cap matches the largest response
 # body the relay accepts elsewhere; an oversized event is discarded rather than
 # buffered without bound. If the discarded event was the terminal event, the
@@ -123,6 +237,7 @@ SSE_MAX_EVENT_BYTES = 16 * 1024 * 1024
 _TERMINAL_EVENTS = {'response.completed': 'completed', 'response.incomplete': 'incomplete',
                     'response.failed': 'failed', 'response.cancelled': 'cancelled',
                     'response.canceled': 'canceled'}
+_SSE_LINE_BREAK = re.compile(rb'[\r\n]')
 
 
 class SSEUsageTracker:
@@ -210,23 +325,80 @@ class SSEUsageTracker:
         self.data_lines.append(value)
 
     def feed(self, chunk):
-        for byte in chunk:
+        # Scan newline-free spans in bulk instead of looping over every byte.
+        # A delimiter-presence pre-scan selects one forward search strategy, so
+        # an absent CR or LF is never rescanned for every line in the chunk.
+        # The cap accounting still charges one separator byte per data line and
+        # treats a byte that would exceed the retained line budget exactly like
+        # the old per-byte loop: the current event is discarded, then the rest
+        # of the oversized line is skipped until a blank line recovers.
+        if not chunk:
+            return
+        if isinstance(chunk, memoryview):
+            chunk = chunk.tobytes()
+        elif not isinstance(chunk, (bytes, bytearray)):
+            chunk = bytes(chunk)
+        end = len(chunk)
+        cr = chunk.find(0x0D)
+        lf = chunk.find(0x0A)
+        if cr < 0 and lf < 0:
+            # A pending CR skip is consumed by the first content byte, exactly
+            # as the per-byte loop did, without searching for an absent LF.
+            self.skip_lf = False
+            self._append_line_span(chunk, 0, end)
+            return
+        if cr >= 0 and lf >= 0:
+            search = _SSE_LINE_BREAK.search
+
+            def next_stop(start):
+                match = search(chunk, start)
+                return -1 if match is None else match.start()
+        else:
+            delimiter = 0x0A if lf >= 0 else 0x0D
+
+            def next_stop(start):
+                return chunk.find(delimiter, start)
+        pos = 0
+        while pos < end:
             if self.skip_lf:
                 self.skip_lf = False
-                if byte == 0x0A:
+                if chunk[pos] == 0x0A:
+                    pos += 1
                     continue
-            if byte in (0x0A, 0x0D):
+            if chunk[pos] in (0x0A, 0x0D) and not self.line and not self.overflow:
+                # A run of terminators is a run of blank lines. Only the first
+                # can dispatch pending data; the rest are no-ops, so consume
+                # the run without a per-line search or dispatch.
                 self._line_done()
-                if byte == 0x0D:
-                    self.skip_lf = True
+                pos += 1
+                while pos < end and chunk[pos] in (0x0A, 0x0D):
+                    pos += 1
+                self.skip_lf = chunk[pos - 1] == 0x0D
                 continue
-            if self.overflow:
-                self.line_discarded = True
-                continue
-            if len(self.line) + 1 > self.max_event_bytes - self.event_bytes:
-                self._discard_event()
-                continue
-            self.line.append(byte)
+            stop = next_stop(pos)
+            if stop < 0:
+                self._append_line_span(chunk, pos, end)
+                return
+            self._append_line_span(chunk, pos, stop)
+            self._line_done()
+            if chunk[stop] == 0x0D:
+                self.skip_lf = True
+            pos = stop + 1
+
+    def _append_line_span(self, chunk, start, stop):
+        """Append a newline-free span while enforcing the retained byte cap."""
+        if start >= stop:
+            return
+        if self.overflow:
+            self.line_discarded = True
+            return
+        room = self.max_event_bytes - self.event_bytes - len(self.line)
+        if stop - start <= room:
+            self.line.extend(chunk[start:stop])
+            return
+        if room > 0:
+            self.line.extend(chunk[start:start + room])
+        self._discard_event()
 
     def finish(self):
         if self.line:
@@ -388,8 +560,10 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
     token = secrets.token_urlsafe(48)
     local = binding is not None and binding.get('provider') == 'local'
     bailian = binding is not None and binding.get('provider') == 'bailian'
-    opener = urllib.request.build_opener(NoRedirect(), *([urllib.request.ProxyHandler({})] if local else []))
     context = usage_context or {}
+    work_guidance = (context.get('phase') == 'work' and policy is None
+                     and not (local and binding.get('wire_api') == 'chat'))
+    opener = urllib.request.build_opener(NoRedirect(), *([urllib.request.ProxyHandler({})] if local else []))
     closeout = closeout or RelayCloseout()
 
     class Handler(BaseHTTPRequestHandler):
@@ -415,6 +589,7 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
             tracker = SSEUsageTracker()
             outcome = None
             lease = None
+            admission_rejected = False
             client_gone = False
             finish_lock = threading.Lock()
             upstream_request_id = None
@@ -471,7 +646,14 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                     elif binding['reasoning_effort'] == 'none':
                         request.pop('reasoning', None)
                         body = json.dumps(request, ensure_ascii=False).encode()
-                lease = closeout.begin(lambda: complete('failed', tracker.usage, 'closeout_timeout'))
+                try:
+                    lease = closeout.begin(lambda: complete('failed', tracker.usage, 'closeout_timeout'))
+                except TimeoutError:
+                    # Only closeout.begin owns admission rejection. Later
+                    # timeouts (validation, transport or an accepted request's
+                    # closeout) remain protocol/transport failures.
+                    admission_rejected = True
+                    raise
                 if usage_ledger is not None:
                     try:
                         request_id = usage_ledger.begin(context.get('phase', 'work'),
@@ -493,6 +675,9 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                             budget_failure['snapshot'] = None
                         self.send_error(400, 'Usage accounting failed; no upstream request was sent')
                         return
+                if work_guidance and self.path == '/v1/responses':
+                    body = _apply_work_guidance(
+                        body, usage_ledger=usage_ledger, request_id=request_id, closeout=closeout)
                 headers = {'Content-Type': 'application/json'}
                 if key:
                     headers['Authorization'] = 'Bearer ' + key
@@ -619,7 +804,10 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                     if isinstance(error, (OSError, TimeoutError, urllib.error.URLError)):
                         policy.transport_error = 'Exam endpoint transport failed'
                 try:
-                    self.send_error(400, 'Model protocol or frozen endpoint validation failed')
+                    if admission_rejected:
+                        self.send_error(400, 'Execution admission closed; no upstream request was sent')
+                    else:
+                        self.send_error(400, 'Model protocol or frozen endpoint validation failed')
                 except OSError:
                     pass
                 self.close_connection = True

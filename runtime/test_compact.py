@@ -134,6 +134,26 @@ class CompactViewTests(unittest.TestCase):
         self.assertEqual(summary['final_review']['blockers'], ['b'])
         self.assertNotIn('task', summary['tasks'][0])
 
+    def test_project_summary_propagates_return_event_identity_without_payload(self):
+        full = {'project_id': 'p' * 32, 'phase': 'running', 'accepted': False,
+                'continuation': 'paused', 'return_health': {'status': 'paused', 'next_action': None},
+                'return_event': {'id': 'e' * 32, 'status': 'processed',
+                                 'actions': {'private': 'payload'},
+                                 'last_error': 'private transport detail'},
+                'tasks': []}
+        before = copy.deepcopy(full)
+        summary = compact.project(full)
+        self.assertEqual(summary['return_event'], {'id': 'e' * 32, 'status': 'processed'})
+        self.assertEqual(set(summary['return_event']), {'id', 'status'})
+        self.assertEqual(summary['return_health'], {'status': 'paused', 'next_action': None})
+        self.assertEqual(full, before)
+
+        full['return_event'] = None
+        self.assertIsNone(compact.project(full)['return_event'])
+        self.assertIsNone(compact.project({'project_id': 'p' * 32, 'tasks': []})['return_event'])
+        receive = compact.project_receive({'project_id': 'p' * 32, 'project': full})
+        self.assertIsNone(receive['project']['return_event'])
+
     def test_project_receive_keeps_child_event_and_session_identifiers(self):
         full = {'proceed': True, 'project_id': 'p' * 32, 'instruction': 'review',
                 'events': [{'task_id': 'a', 'session_id': 's' * 32, 'proceed': True,
@@ -160,6 +180,124 @@ class CompactViewTests(unittest.TestCase):
         self.assertEqual([check['id'] for check in summary['evidence']['checks']], ['passed', 'failed'])
         self.assertEqual(summary['blockers'], ['not yet accepted'])
         self.assertEqual(summary['detail'], 'summary')
+
+
+class FormatSummaryTests(unittest.TestCase):
+    """Format evidence is summarized within its fixed, bounded vocabulary."""
+
+    @staticmethod
+    def _full(attempts):
+        full = review_full()
+        full['evidence']['exam']['usage'] = {'exam_requests': len(attempts)}
+        full['evidence']['exam']['attempts'] = attempts
+        return full
+
+    def test_legacy_attempts_omit_format_evidence_exactly(self):
+        full = review_full()
+        full['evidence']['exam']['attempts'].append({
+            'attempt': 2, 'requests': [{'request_hash': 'x' * 64, 'input_hash': 'y' * 64}],
+            'responses': [], 'cli_session_usage': None})
+        before = copy.deepcopy(full)
+        summary = compact.review(full)
+        self.assertEqual(full, before)
+        for attempt in summary['evidence']['exam']['attempts']:
+            self.assertEqual(set(attempt), {
+                'attempt', 'request_count', 'response_count', 'request_hashes',
+                'input_hashes', 'response_hashes', 'tool_call_count', 'cli_session_usage'})
+            self.assertNotIn('format_valid', attempt)
+            self.assertNotIn('format_error', attempt)
+            self.assertNotIn('text_formats', attempt)
+        self.assertEqual(compact.project_review(full)['evidence']['exam']['attempts'],
+                         summary['evidence']['exam']['attempts'])
+
+    def test_format_valid_keeps_booleans_and_none_and_normalizes_other_types(self):
+        attempts = [
+            {'attempt': 1, 'requests': [], 'responses': [], 'format_valid': True},
+            {'attempt': 2, 'requests': [], 'responses': [], 'format_valid': False},
+            {'attempt': 3, 'requests': [], 'responses': [], 'format_valid': 'true'},
+            {'attempt': 4, 'requests': [], 'responses': [], 'format_valid': 1},
+            {'attempt': 5, 'requests': [], 'responses': [], 'format_valid': None},
+            {'attempt': 6, 'requests': [], 'responses': []},
+        ]
+        summary = compact.review(self._full(attempts))
+        summarized = summary['evidence']['exam']['attempts']
+        self.assertEqual([attempt.get('format_valid', 'absent') for attempt in summarized],
+                         [True, False, None, None, None, 'absent'])
+        self.assertIs(summarized[0]['format_valid'], True)
+        self.assertIs(summarized[1]['format_valid'], False)
+        self.assertNotIn('format_valid', summarized[5])
+
+    def test_format_error_keeps_fixed_diagnostics_and_bounds_malformed_values(self):
+        diagnostics = [None, 'invalid JSON', 'root must contain only an answers array',
+                       'each answer needs exactly id and answer',
+                       'id and answer must be nonempty strings',
+                       'missing, duplicate, or unknown question ids', 'answer schema violation']
+        malformed = ['Exam returned invalid JSON', 'model payload: secret', 42,
+                     {'private': 'text'}, ['bad']]
+        attempts = [{'attempt': i + 1, 'requests': [], 'responses': [], 'format_error': value}
+                    for i, value in enumerate(diagnostics + malformed)]
+        attempts.append({'attempt': len(attempts) + 1, 'requests': [], 'responses': []})
+        full = self._full(attempts)
+        before = copy.deepcopy(full)
+        summary = compact.review(full)
+        self.assertEqual(full, before)
+        summarized = summary['evidence']['exam']['attempts']
+        self.assertEqual([attempt.get('format_error', 'absent') for attempt in summarized],
+                         diagnostics + ['answer schema violation'] * len(malformed) + ['absent'])
+        self.assertNotIn('format_error', summarized[-1])
+
+    def test_text_formats_align_with_request_hashes_for_mixed_modes(self):
+        requests = [
+            {'request_hash': 'a' * 64, 'input_hash': '1' * 64, 'text_format': 'json_object'},
+            {'request_hash': 'b' * 64, 'input_hash': '2' * 64, 'text_format': 'json_schema'},
+            {'request_hash': 'c' * 64, 'input_hash': '3' * 64, 'text_format': 'text'},
+            {'request_hash': 'd' * 64, 'input_hash': '4' * 64, 'text_format': 'json'},
+            {'request_hash': 'e' * 64, 'input_hash': '5' * 64, 'text_format': 7},
+            {'request_hash': 'f' * 64, 'input_hash': '6' * 64},
+        ]
+        full = self._full([{'attempt': 1, 'requests': requests, 'responses': []}])
+        before = copy.deepcopy(full)
+        summary = compact.review(full)
+        attempt = summary['evidence']['exam']['attempts'][0]
+        self.assertEqual(full, before)
+        self.assertEqual(attempt['request_hashes'], [request['request_hash'] for request in requests])
+        self.assertEqual(attempt['text_formats'],
+                         ['json_object', 'json_schema', 'text', None, None, None])
+        self.assertEqual(len(attempt['text_formats']), len(attempt['request_hashes']))
+
+    def test_both_review_routes_expose_identical_format_evidence_without_mutation(self):
+        full = self._full([
+            {'attempt': 1,
+             'requests': [{'request_hash': 'r' * 64, 'input_hash': 'i' * 64,
+                           'text_format': 'json_schema'},
+                          {'request_hash': 's' * 64, 'input_hash': 'j' * 64,
+                           'text_format': 'json_object'}],
+             'responses': [{'response_hash': 'z' * 64, 'tool_call_count': 0}],
+             'cli_session_usage': {'total_tokens': 8},
+             'format_valid': False, 'format_error': 'invalid JSON'},
+            {'attempt': 2, 'requests': [], 'responses': [],
+             'format_valid': True, 'format_error': None},
+        ])
+        full.update(project_id='p' * 32, worktree='/tmp/integration', commit='b' * 40,
+                    pins={'a': 'c' * 40}, final_review={'accepted': False, 'blockers': ['b']})
+        before = copy.deepcopy(full)
+        reviewed = compact.review(full)
+        projected = compact.project_review(full)
+        self.assertEqual(full, before)
+        self.assertEqual(reviewed['evidence']['exam']['attempts'],
+                         projected['evidence']['exam']['attempts'])
+        attempts = reviewed['evidence']['exam']['attempts']
+        self.assertEqual(attempts[0]['format_valid'], False)
+        self.assertEqual(attempts[0]['format_error'], 'invalid JSON')
+        self.assertEqual(attempts[0]['text_formats'], ['json_schema', 'json_object'])
+        self.assertEqual(attempts[1]['format_valid'], True)
+        self.assertIsNone(attempts[1]['format_error'])
+        self.assertNotIn('text_formats', attempts[1])
+        self.assertEqual(reviewed['evidence']['exam']['answers'], full['evidence']['exam']['answers'])
+        self.assertEqual(reviewed['evidence']['exam']['usage'], full['evidence']['exam']['usage'])
+        self.assertEqual(reviewed['identity'], full['identity'])
+        self.assertEqual(reviewed['blockers'], full['blockers'])
+        self.assertEqual(projected['pins'], {'a': 'c' * 40})
 
 
 if __name__ == '__main__':

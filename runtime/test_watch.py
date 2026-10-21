@@ -161,6 +161,331 @@ class ActivityTests(unittest.TestCase):
         self.assertEqual(self.events()[-1]['kind'], 'diagnostic')
 
 
+class TimestampRobustnessTests(unittest.TestCase):
+    """Pure timestamp-boundary tests for rendering, ordering, and streaming."""
+    MISSING = object()
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.state = Path(self.temp.name) / 'state'
+        (self.state / 'runs').mkdir(parents=True)
+        self.bridge = SimpleNamespace(
+            STATE=self.state, CACHE=Path(self.temp.name) / 'cache',
+            run_dir=lambda sid: self.state / 'runs' / sid)
+
+    def task(self, sid, created_at=MISSING, **fields):
+        directory = self.state / 'runs' / sid
+        directory.mkdir(parents=True)
+        value = {
+            'session_id': sid, 'model': 'fixture-model', 'repo': 'fixture-repo',
+            'phase': 'running', 'continuation': 'active',
+        }
+        if created_at is not self.MISSING:
+            value['created_at'] = created_at
+        value.update(fields)
+        (directory / 'state.json').write_text(json.dumps(value))
+        return sid
+
+    def event(self, sid, timestamp=MISSING, text='event', **fields):
+        value = {'version': 1, 'kind': 'message', 'phase': 'work', 'text': text}
+        if timestamp is not self.MISSING:
+            value['time'] = timestamp
+        value.update(fields)
+        with (self.state / 'runs' / sid / activity.FILENAME).open('a') as stream:
+            stream.write(json.dumps(value, ensure_ascii=False) + '\n')
+
+    def snapshot(self):
+        return {path.relative_to(self.state): (path.read_bytes(), path.stat().st_mode & 0o777)
+                for path in self.state.rglob('*') if path.is_file()}
+
+    def test_missing_null_boolean_nonnumeric_and_nonfinite_times_are_unknown(self):
+        for value in (self.MISSING, None, False, True, '123', [], float('nan'),
+                      float('inf'), -float('inf'), 10 ** 100):
+            with self.subTest(value=value):
+                event = {'kind': 'message', 'phase': 'work', 'text': 'CONTENT'}
+                if value is not self.MISSING:
+                    event['time'] = value
+                rendered = watch.render(event)
+                self.assertEqual(rendered, '[??:??:??] message (work) \nCONTENT')
+
+    def test_valid_times_keep_local_display_and_sanitized_content(self):
+        for value in (0, 0.75, -1.25):
+            with self.subTest(value=value):
+                expected = time.strftime('%H:%M:%S', time.localtime(value))
+                rendered = watch.render({'time': value, 'kind': 'message',
+                                         'phase': 'work', 'text': 'VISIBLE'})
+                self.assertEqual(rendered, f'[{expected}] message (work) \nVISIBLE')
+        rendered = watch.render({
+            'time': 'malformed', 'kind': 'message', 'phase': 'work',
+            'text': 'VISIBLE Authorization: Bearer TOKEN_123\x1b[31mTAIL'})
+        self.assertIn('VISIBLE', rendered)
+        self.assertNotIn('TOKEN_123', rendered)
+        self.assertNotIn('\x1b', rendered)
+        with patch.object(watch.time, 'localtime', side_effect=RuntimeError('internal bug')):
+            with self.assertRaisesRegex(RuntimeError, 'internal bug'):
+                watch.render({'time': 1, 'text': 'programming errors stay visible'})
+
+    def test_mixed_created_at_values_sort_safely_and_preserve_filters(self):
+        values = {
+            1: 2.5, 2: None, 3: '1', 4: float('nan'), 5: float('inf'),
+            6: False, 7: -1, 8: 0, 9: 10 ** 30, 10: 1e20,
+        }
+        ids = {number: f'{number:032x}' for number in values}
+        for number, created_at in values.items():
+            fields = {}
+            if number == 1:
+                fields = {'watch_origin': {'group': 'a' * 24}, 'project_id': 'p' * 32}
+            elif number == 2:
+                fields = {'watch_origin': {'group': 'a' * 24}}
+            self.task(ids[number], created_at, **fields)
+        self.task('b' * 32, [], notification_only=True)
+        invalid_path = self.task('c' * 32, None)
+        path = self.state / 'runs' / invalid_path / 'state.json'
+        state = json.loads(path.read_text())
+        state['session_id'] = 'd' * 32
+        path.write_text(json.dumps(state))
+
+        expected = [ids[n] for n in (7, 2, 3, 4, 5, 6, 8, 9, 10, 1)]
+        self.assertEqual([row['session_id'] for row in watch.tasks(self.state)], expected)
+        self.assertEqual([row['session_id'] for row in watch.tasks(self.state, 'a' * 24)],
+                         [ids[2], ids[1]])
+        self.assertEqual([row['session_id'] for row in watch.tasks(self.state, project='p' * 32)],
+                         [ids[1]])
+
+    def test_platform_unrepresentable_created_at_uses_unknown_order(self):
+        missing = self.task('1' * 32)
+        float_unrepresentable = self.task('2' * 32, 1e20)
+        huge_integer = self.task('3' * 32, 10 ** 30)
+        valid = self.task('4' * 32, 2.5)
+        self.assertEqual([row['session_id'] for row in watch.tasks(self.state)],
+                         [missing, float_unrepresentable, huge_integer, valid])
+
+    def test_unexpected_created_at_conversion_errors_remain_visible(self):
+        self.task('1' * 32, 2.5)
+        with patch.object(watch.time, 'localtime', side_effect=RuntimeError('internal bug')):
+            with self.assertRaisesRegex(RuntimeError, 'internal bug'):
+                watch.tasks(self.state)
+
+    def test_history_streams_damaged_timestamps_with_healthy_neighbors(self):
+        sid = self.task('1' * 32, 1)
+        self.event(sid, self.MISSING, 'BAD_MISSING')
+        self.event(sid, '123', 'BAD_STRING')
+        self.event(sid, 0.5, 'HEALTHY_AFTER')
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            watch.stream(self.bridge, sid, follow=False, history=True)
+        rendered = output.getvalue()
+        self.assertEqual(rendered.count('[??:??:??]'), 2)
+        self.assertLess(rendered.index('BAD_MISSING'), rendered.index('BAD_STRING'))
+        self.assertLess(rendered.index('BAD_STRING'), rendered.index('HEALTHY_AFTER'))
+
+    def test_tail_stream_keeps_damaged_event_and_following_healthy_event(self):
+        sid = self.task('1' * 32, 1)
+        self.event(sid, 0, 'HEALTHY_BEFORE_TAIL')
+        self.event(sid, None, 'TAIL_UNKNOWN')
+        self.event(sid, 1.5, 'TAIL_HEALTHY')
+        output = io.StringIO()
+        with contextlib.redirect_stdout(output):
+            watch.stream(self.bridge, sid, follow=False, tail=2)
+        rendered = output.getvalue()
+        self.assertNotIn('HEALTHY_BEFORE_TAIL', rendered)
+        self.assertIn('[??:??:??] message (work)', rendered)
+        self.assertLess(rendered.index('TAIL_UNKNOWN'), rendered.index('TAIL_HEALTHY'))
+
+    def test_follow_stream_continues_after_unknown_time_to_later_event(self):
+        sid = self.task('1' * 32, 1)
+        self.event(sid, self.MISSING, 'FOLLOW_UNKNOWN')
+
+        output = io.StringIO()
+        with patch.object(watch.time, 'sleep',
+                          side_effect=lambda _: self.event(sid, 2, 'FOLLOW_HEALTHY')), \
+                patch.object(watch, 'close_finished_panel', return_value=True), \
+                contextlib.redirect_stdout(output):
+            watch.stream(self.bridge, sid, follow=True, tail=10,
+                         auto_close_group='a' * 24)
+        rendered = output.getvalue()
+        self.assertIn('[??:??:??] message (work)', rendered)
+        self.assertLess(rendered.index('FOLLOW_UNKNOWN'), rendered.index('FOLLOW_HEALTHY'))
+
+    def test_streaming_is_read_only_and_json_events_are_unchanged(self):
+        sid = self.task('1' * 32, 1)
+        self.event(sid, self.MISSING, 'RAW_MISSING')
+        self.event(sid, '123', 'RAW_STRING')
+        self.event(sid, 0, 'RAW_VALID')
+        source = [json.loads(line) for line in
+                  (self.state / 'runs' / sid / activity.FILENAME).read_text().splitlines()]
+        before = self.snapshot()
+        human = io.StringIO()
+        with contextlib.redirect_stdout(human):
+            watch.main(self.bridge, [sid, '--history', '--no-follow'])
+        self.assertEqual(human.getvalue().count('[??:??:??]'), 2)
+        raw = io.StringIO()
+        with contextlib.redirect_stdout(raw):
+            watch.main(self.bridge, [sid, '--history', '--no-follow', '--json'])
+        self.assertEqual([json.loads(line) for line in raw.getvalue().splitlines()], source)
+        self.assertEqual(self.snapshot(), before)
+
+    def test_curses_frame_renders_unknown_time_and_later_healthy_event(self):
+        sid = self.task('1' * 32, 1)
+        self.event(sid, float('nan'), 'CURSES_UNKNOWN')
+        self.event(sid, 1.5, 'CURSES_HEALTHY')
+
+        class Screen:
+            def __init__(self):
+                self.lines = []
+
+            def timeout(self, _):
+                pass
+
+            def getmaxyx(self):
+                return 14, 100
+
+            def erase(self):
+                pass
+
+            def refresh(self):
+                pass
+
+            def getch(self):
+                return ord('q')
+
+            def addnstr(self, y, x, text, n, style=0):
+                self.lines.append(text)
+
+        screen = Screen()
+        with patch.object(watch.curses, 'curs_set', return_value=None), \
+                patch.object(watch.curses, 'wrapper',
+                             side_effect=lambda display: display(screen)):
+            watch.ui(self.bridge, sid, tail=20)
+        rendered = '\n'.join(screen.lines)
+        self.assertIn('[??:??:??] message (work)', rendered)
+        self.assertLess(rendered.index('CURSES_UNKNOWN'), rendered.index('CURSES_HEALTHY'))
+
+
+class TailReaderTests(unittest.TestCase):
+    """Pure byte-cursor tests for Reader.seek_tail (no subprocesses)."""
+
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.addCleanup(self.temp.cleanup)
+        self.root = Path(self.temp.name)
+        self.log = self.root / activity.FILENAME
+
+    @staticmethod
+    def record(text):
+        return (json.dumps({'version': 1, 'kind': 'message', 'text': text},
+                           ensure_ascii=False) + '\n').encode('utf-8')
+
+    @staticmethod
+    def offset_after_tail_newline(data, count):
+        newlines = [i for i, byte in enumerate(data) if byte == 10]
+        if len(newlines) <= count:
+            return 0
+        return newlines[-count - 1] + 1
+
+    def reader_for(self, data):
+        self.log.write_bytes(data)
+        return activity.Reader(self.log)
+
+    def sized_record(self, size, text):
+        prefix = (b'{"version":1,"kind":"message","text":' +
+                  json.dumps(text).encode('ascii') + b'}')
+        self.assertGreaterEqual(size, len(prefix) + 1)
+        return prefix + b' ' * (size - len(prefix) - 1) + b'\n'
+
+    def test_tail_counts_have_exact_byte_offsets_and_record_suffixes(self):
+        records = [self.record(f'record-{i}') for i in range(6)]
+        data = b''.join(records)
+        for count in (0, 1, 2, 5, 6, 7):
+            reader = self.reader_for(data)
+            reader.seek_tail(count)
+            self.assertEqual(reader.offset, self.offset_after_tail_newline(data, count),
+                             f'tail {count}')
+            expected = [f'record-{i}'
+                        for i in range(max(0, len(records) - count), len(records))]
+            self.assertEqual([e['text'] for e in reader.read()], expected, f'tail {count}')
+
+    def test_incomplete_final_record_is_excluded_and_retried(self):
+        complete = [self.record(f'complete-{i}') for i in range(3)]
+        partial = b'{"version":1,"kind":"message","text":"finished"'
+        data = b''.join(complete) + partial
+        for count in (0, 1, 2, 3, 4):
+            reader = self.reader_for(data)
+            reader.seek_tail(count)
+            self.assertEqual(reader.offset, self.offset_after_tail_newline(data, count),
+                             f'tail {count}')
+            expected = [f'complete-{i}' for i in range(max(0, 3 - count), 3)]
+            self.assertEqual([e['text'] for e in reader.read()], expected, f'tail {count}')
+        reader = self.reader_for(data)
+        reader.seek_tail(1)
+        self.assertEqual([e['text'] for e in reader.read()], ['complete-2'])
+        with self.log.open('ab') as stream:
+            stream.write(b'}\n')
+        self.assertEqual([e['text'] for e in reader.read()], ['finished'])
+
+    def test_chunk_boundaries_and_lines_longer_than_a_chunk(self):
+        records = [
+            self.sized_record(65536, 'chunk-end'),    # newline is byte 65535
+            self.sized_record(65537, 'chunk-start'),  # newline is byte 131072
+            self.sized_record(70000, 'long-line'),    # record crosses chunks
+            self.sized_record(20000, 'short-line'),
+        ]
+        data = b''.join(records)
+        self.assertEqual(data.index(b'\n'), 65535)
+        self.assertEqual(data.index(b'\n', 65536), 131072)
+        for count in (0, 1, 2, 3, 4, 5):
+            reader = self.reader_for(data)
+            reader.seek_tail(count)
+            self.assertEqual(reader.offset, self.offset_after_tail_newline(data, count),
+                             f'tail {count}')
+            expected = ['chunk-end', 'chunk-start', 'long-line',
+                        'short-line'][max(0, 4 - count):]
+            self.assertEqual([e['text'] for e in reader.read()], expected, f'tail {count}')
+
+    def test_utf8_offsets_are_byte_offsets(self):
+        text = 'héllo-λ-😀'
+        records = [self.record(text) for _ in range(3)]
+        data = b''.join(records)
+        reader = self.reader_for(data)
+        reader.seek_tail(2)
+        self.assertGreater(len(text.encode('utf-8')), len(text))
+        self.assertEqual(reader.offset, len(records[0]))
+        self.assertEqual([e['text'] for e in reader.read()], [text, text])
+
+    def test_missing_and_empty_files_leave_cursor_at_zero(self):
+        missing = activity.Reader(self.log)
+        missing.seek_tail(3)
+        self.assertEqual(missing.offset, 0)
+        self.assertEqual(list(missing.read()), [])
+        empty = self.reader_for(b'')
+        empty.seek_tail(0)
+        self.assertEqual(empty.offset, 0)
+        self.assertEqual(list(empty.read()), [])
+
+    def test_independent_cursors_seek_tail_separately(self):
+        data = b''.join(self.record(f'event-{i}') for i in range(4))
+        self.log.write_bytes(data)
+        first, second = activity.Reader(self.log), activity.Reader(self.log)
+        first.seek_tail(1)
+        second.seek_tail(2)
+        self.assertEqual([e['text'] for e in first.read()], ['event-3'])
+        self.assertEqual([e['text'] for e in second.read()], ['event-2', 'event-3'])
+
+    def test_truncation_and_replacement_reset_the_read_cursor(self):
+        data = b''.join(self.record(f'old-{i}') for i in range(3))
+        reader = self.reader_for(data)
+        reader.seek_tail(1)
+        self.assertEqual([e['text'] for e in reader.read()], ['old-2'])
+        self.log.write_bytes(self.record('shorter'))
+        self.assertEqual([e['text'] for e in reader.read()], ['shorter'])
+        replacement = self.root / 'replacement'
+        replacement.write_bytes(b''.join(self.record(f'new-{i}') for i in range(4)))
+        os.replace(replacement, self.log)
+        self.assertEqual([e['text'] for e in reader.read()],
+                         ['new-0', 'new-1', 'new-2', 'new-3'])
+
+
 class ViewerTests(unittest.TestCase):
     setUp = BridgeTests.setUp
     tearDown = BridgeTests.tearDown

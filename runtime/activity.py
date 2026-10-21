@@ -271,17 +271,20 @@ class Reader:
                 self.identity = (st.st_dev, st.st_ino)
                 position, needed = st.st_size, count + 1
                 self.offset = 0
-                while position:
+                while position and needed > 0:
                     size = min(position, 65536)
                     position -= size
                     stream.seek(position)
                     chunk = stream.read(size)
-                    for i in range(len(chunk) - 1, -1, -1):
-                        if chunk[i] == 10:
-                            needed -= 1
-                            if not needed:
-                                self.offset = position + i + 1
-                                return
+                    found = chunk.count(b'\n')
+                    if found < needed:
+                        needed -= found
+                        continue
+                    # The chunk holds enough newlines: find the needed-th one from
+                    # the end in one C-level split, staying within this bound.
+                    prefix = chunk.rsplit(b'\n', needed)[0]
+                    self.offset = position + len(prefix) + 1
+                    return
         except FileNotFoundError:
             pass
 

@@ -7,6 +7,7 @@ reusable only after the resulting task (and its project, if any) is accepted.
 from __future__ import annotations
 import contextlib
 import fcntl
+import math
 from pathlib import Path
 import re
 import time
@@ -102,33 +103,90 @@ class Experience:
     def promote_project(self, project):
         if project['phase'] != 'accepted':
             return
-        accepted_sessions = {t['session_id'] for t in project['tasks'] if t['phase'] == 'accepted'}
-        # Reconstruct missing task records after a crash between grade and memory.
-        for sid in accepted_sessions:
+        # Reconstruct only the canonical record for each currently accepted child.
+        # The project tasks and the child's own acceptance are the authority; never
+        # infer candidates by scanning the experience corpus.
+        targets = []
+        seen = set()
+        for task in project['tasks']:
+            if task['phase'] != 'accepted' or task['session_id'] in seen:
+                continue
+            sid = task['session_id']
+            seen.add(sid)
             state = self.b.read_json(self.b.run_dir(sid) / 'state.json')
-            self.record(sid, state['acceptance'])
+            ident = self.record(sid, state['acceptance'])
+            if ident is not None:
+                targets.append(ident)
+        if not targets:
+            return
+        project_commit = project['integration']['commit']
         with self.locked() as folder:
-            for path in folder.glob('*.json'):
+            for ident in targets:
+                path = folder / (ident + '.json')
                 e = self.b.read_json(path)
-                if e.get('session_id') in accepted_sessions and e['outcome'] == 'accepted':
-                    e['reusable'] = True
-                    e['project_commit'] = project['integration']['commit']
-                    e['content_hash'] = self.b.digest({k: v for k, v in e.items() if k != 'content_hash'})
-                    self.b.write_json(path, e)
+                if e.get('outcome') != 'accepted':
+                    continue
+                e['reusable'] = True
+                e['project_commit'] = project_commit
+                e['content_hash'] = self.b.digest({k: v for k, v in e.items() if k != 'content_hash'})
+                self.b.write_json(path, e)
 
     def valid(self, e):
         return e.get('content_hash') == self.b.digest({k: v for k, v in e.items() if k != 'content_hash'})
 
+    @staticmethod
+    def usable_record(e):
+        """Return whether a decoded record has all fields lookup/context rely on."""
+        if not isinstance(e, dict):
+            return False
+        for key in ('id', 'repo', 'session_id', 'source_commit', 'source_packet_id', 'task'):
+            if not isinstance(e.get(key), str):
+                return False
+        if 'project_id' in e and e['project_id'] is not None and not isinstance(e['project_id'], str):
+            return False
+        for key in ('paths', 'public_lessons'):
+            value = e.get(key)
+            if not isinstance(value, list) or not all(isinstance(x, str) for x in value):
+                return False
+        if type(e.get('reusable')) is not bool:
+            return False
+        if 'disabled' in e and type(e['disabled']) is not bool:
+            return False
+        created_at = e.get('created_at')
+        if type(created_at) is bool:
+            return False
+        if isinstance(created_at, int):
+            return True  # Preserve integer timestamps of any magnitude.
+        return isinstance(created_at, float) and math.isfinite(created_at)
+
+    def load_record(self, path):
+        try:
+            e = self.b.read_json(path)
+        except (OSError, UnicodeDecodeError, ValueError):
+            # A single unreadable/undecodable file must not hide its neighbors.
+            return None
+        return e if self.usable_record(e) else None
+
     def source_valid(self, e):
         try:
             state = self.b.status(e['session_id'])
-            if not state['accepted'] or state['acceptance']['packet_id'] != e['source_packet_id']:
+            acceptance = state.get('acceptance')
+            commit, packet_id = e.get('source_commit'), e.get('source_packet_id')
+            if (not isinstance(acceptance, dict) or not isinstance(commit, str) or not commit
+                    or not isinstance(packet_id, str) or not packet_id or not state['accepted']
+                    or acceptance.get('packet_id') != packet_id or acceptance.get('commit') != commit):
                 return False
-            if e.get('project_id'):
-                p = self.b.project_manager().load(e['project_id'])
+            # Membership is defined by the verified source status, not by the
+            # record: a project child cannot be re-read as standalone and a
+            # record cannot claim a different (even accepted) project.
+            source_project = state.get('project_id') or None
+            if (e.get('project_id') or None) != source_project:
+                return False
+            if source_project:
+                p = self.b.project_manager().load(source_project)
                 if p['phase'] != 'accepted' or p['integration']['commit'] != e.get('project_commit'):
                     return False
-                packet = self.b.read_json(self.b.project_manager().path(e['project_id']).parent / 'integration-review.json')
+                packet = self.b.read_json(self.b.project_manager().path(source_project).parent / 'integration-review.json')
                 if self.b.digest(packet) != p['integration']['packet_id']:
                     return False
                 tree = p['integration']['worktree']
@@ -143,27 +201,36 @@ class Experience:
         repo = str(Path(repo).resolve())
         if type(limit) is not int or not 1 <= limit <= 20:
             raise self.b.GateError('Experience limit must be 1-20')
-        found = []
         with self.locked() as folder:
+            candidates = []
             for path in folder.glob('*.json'):
-                e = self.b.read_json(path)
+                e = self.load_record(path)
+                if e is None:
+                    continue
                 if not self.valid(e) or e['repo'] != repo or e.get('disabled'):
                     continue
                 if not include_candidates and not e['reusable']:
                     continue
-                if not include_candidates and not self.source_valid(e):
-                    continue
                 if paths and not self.b.project_manager().overlap(paths, e['paths']):
                     continue
-                found.append(e)
-        # Prioritize repaired-and-verified experience over unremarkable successes;
-        # keep the most recent record per task/session instead of failed rounds.
-        found.sort(key=lambda e: (bool(e['public_lessons']), e['created_at']), reverse=True)
-        unique, seen = [], set()
-        for e in found:
-            if e['session_id'] not in seen:
-                seen.add(e['session_id']); unique.append(e)
-        return unique[:limit]
+                candidates.append(e)
+            # Prioritize repaired-and-verified experience over unremarkable successes;
+            # keep the most recent record per task/session instead of failed rounds.
+            candidates.sort(key=lambda e: (bool(e['public_lessons']), e['created_at']), reverse=True)
+            # Provenance checks are expensive; run them lazily in rank order and stop
+            # once enough distinct sessions are selected. Rejected sources are skipped
+            # so older valid records can still fill the requested slots.
+            unique, seen = [], set()
+            for e in candidates:
+                if e['session_id'] in seen:
+                    continue
+                if not include_candidates and not self.source_valid(e):
+                    continue
+                seen.add(e['session_id'])
+                unique.append(e)
+                if len(unique) >= limit:
+                    break
+        return unique
 
     def context(self, repo, paths, enabled=True):
         if not enabled:

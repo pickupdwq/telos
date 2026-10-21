@@ -4,7 +4,7 @@
 
 **Turn coding goals into reviewed, testable results.**
 
-[简体中文](README.zh-CN.md) · [Architecture](docs/architecture.md) · [Configuration](docs/configuration.md) · [MCP tools](docs/tools.md)
+[简体中文](README.zh-CN.md) · [Quick start](#quick-start) · [20-round RSI results](#20-round-rsi-campaign) · [Architecture](docs/architecture.md) · [Configuration](docs/configuration.md) · [MCP tools](docs/tools.md)
 
 [![CI](https://github.com/pickupdwq/telos/actions/workflows/ci.yml/badge.svg)](https://github.com/pickupdwq/telos/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
@@ -14,6 +14,8 @@
 Telos is a local MCP bridge for Codex. Your original GPT flagship conversation acts as the **supervisor**: it defines the task, freezes acceptance criteria, reviews code and decides whether the result passes. A configurable **executor** implements the change, then answers a closed-book questionnaire in the same conversation.
 
 There are two model roles. Each task has one executor; the original supervisor owns review and acceptance. Project mode can schedule several tasks with separate executors.
+
+**20-round RSI campaign completed:** 17 improvements accepted, 2 experiments rejected, and the final task comparison inconclusive. Local regression verification ran **3.25× faster** with four processes. Faster model responses or faster overall task delivery at equal quality have **not** been demonstrated. [Results and limits ↓](#20-round-rsi-campaign)
 
 ## System architecture
 
@@ -43,6 +45,100 @@ Read left to right: the original supervisor delegates through Telos to a task ex
 - **System audits.** The supervisor freezes a public checklist and execution boundaries. Executors inspect read-only source, use constrained API/browser probes, and deliver reports, logs and screenshots. The supervisor reviews coverage/evidence; confirmed findings can become repair tasks. Audit acceptance concerns investigation quality, not absence of bugs. See the [audit guide](docs/audits.md).
 
 Telos produces accepted commits in isolated worktrees. Merging, pushing and deploying remain separate actions.
+
+## 20-round RSI campaign
+
+On October 20–21, 2026, Telos completed 20 experiments aimed at speed, quality and reliable reuse. The original `gpt-6-astra` supervisor at `max` directed an Alibaba Cloud Bailian executor, `deepseek-v4.1-flash-1017` at `max`, on `feature/rsi-20-rounds-20261020`, starting from main at `5e6a917`.
+
+Each experiment followed a hypothesis and frozen checks → scoped implementation → verification → original-supervisor review → accept or reject cycle. Later rounds used earlier accepted tools: the verification CLI from round 4 gained exact selection in round 8 and optional parallel execution in round 15, then supported subsequent rounds. This is supervised recursive improvement of the software and workflow. The campaign kept the installed supervisory controller fixed and did not train model weights.
+
+**Outcome: 17 accepted source improvements, 2 rejected experiments (10 and 16), and 1 inconclusive final comparison (20).** Rejected code was excluded. The final integrated project passed acceptance at `20c68f6`; its runtime is byte-identical to the candidate measured in round 20, `281757c`. Retries, final verification and report writing are not additional numbered rounds.
+
+### What improved
+
+- **Reusable verification.** An import-safe CLI records exact test IDs, outcomes, scope and timings. It supports module/class/method selection and optional fresh-process parallelism with `--jobs 1..4`; serial remains the default.
+- **Local processing.** Reverse scanning accelerates log-tail positioning; bulk scanning accelerates SSE usage parsing. Experience lookup validates only the required ranked sources, and project promotion reads canonical target records rather than unrelated records. These gains concern specific local paths.
+- **Reliability and observability.** Experience reuse checks current accepted provenance and isolates damaged records. Observer views tolerate malformed timestamps without inventing a current time. Status and exam summaries expose useful evidence; relay diagnostics distinguish confirmed requests that were never sent from protocol errors. Request/time and patch-format hints were added, but their effect on live retry rates is unproven.
+
+### Optimization details
+
+**Experience retrieval and promotion — rounds 1, 14, 17 and 19.** In [experience.py](runtime/experience.py), `lookup` filters and ranks eligible records before checking their source, stopping when it has enough valid results. Previously it checked provenance throughout the candidate set. In the 120-record fixture, three lookup scenarios fell from **120 / 120 / 120 source checks to 3 / 3 / 5**, with identical selected IDs; candidate-only inspection required none. Reading the JSON record collection is still O(N), so this is a reduction in provenance work, not an indexed lookup.
+
+`load_record` now skips individual unreadable, invalid-JSON or ill-shaped records without hiding valid neighbors or rewriting files. `source_valid` binds a lesson to the current accepted commit, evidence packet and trusted project membership, preventing stale or relabelled records from qualifying for reuse. `promote_project` reconstructs canonical records for currently accepted children instead of scanning the entire memory collection: **300 unrelated reads became 0, with only 2 target records read**. Missing canonical records can be rebuilt and user-disabled preferences remain preserved. Evidence includes 39 damage-isolation scenarios, 22 source-identity scenarios and 15 promotion scenarios; this does not establish a live task-success gain or atomic promotion across all children.
+
+**Log-tail positioning and observer robustness — rounds 3 and 18.** [activity.py](runtime/activity.py), `Reader.seek_tail`, replaces the Python per-byte reverse loop with `bytes.count` and a bounded `rsplit` inside at most 64 KiB blocks. It keeps byte-offset semantics while locating the required newline boundary. In the warm-cache 3.85 MB / 200-line-tail fixture, opposite-order paired medians moved from about **89.86 ms to 2.22 ms (40.55×)**; 54 independent semantic assertions passed. This is cursor positioning, not total log processing. In [watch.py](runtime/watch.py), malformed, non-finite and platform-unrepresentable timestamps now have safe ordering and an explicit `[??:??:??]` display instead of crashing or implying the current time. The observer checks covered 41 scenarios / 145 assertions. The separate oversized-line discard defect attempted in round 16 remains unresolved.
+
+**SSE usage parsing — round 12.** [isolation.py](runtime/isolation.py), `SSEUsageTracker.feed`, scans newline-free spans in bulk rather than appending one byte at a time. It chooses a delimiter search strategy once per chunk, handles CR/LF boundaries across chunks, and preserves the retained-event byte cap and oversized-event discard behavior. An initial version slowed dense blank-line cases by 4.2–4.5× and was rejected; the accepted repair removed that regression. Equivalence checks covered **1,003 scenarios / 349,538 assertions**. Synthetic benchmarks in both execution orders measured about **61× for large events, 254–258× for oversized input and 3.31–3.32× for small input**. These timings exclude network and model execution.
+
+**Verification selection, reporting and parallelism — rounds 4, 8 and 15.** [verify_all.py](runtime/verify_all.py) now runs only through `main`, exposes `--list`, supports repeatable `--module` / exact `--test` selection, and records per-test IDs, outcomes and timing. This lets later workers run an appropriate local subset while the supervisor retains full host verification. Optional `--jobs 2..4` distributes modules to fresh processes, combines results in stable report order, and reports worker failures or malformed/missing results as failures rather than passing incomplete coverage. Default execution remains serial. The final same-commit 527-test comparison is below; the CLI was actually reused in later rounds.
+
+**Project callbacks — rounds 2 and 7.** [projects.py](runtime/projects.py) and [compact.py](runtime/compact.py) expose `return_event.id` and `return_event.status` in full and compact project status, removing the need to inspect private courier files just to recover an event identity. Notification logic suppresses a new wake-up only for a healthy, active, running-only transition with nothing for the supervisor to do. Existing outstanding events, receipts/reminders, completed work and error states remain actionable. Checks covered 20 phase/status combinations in both views, plus 24 suppressed states, 27 preserved actionable states and 6 existing courier states. No live callback-latency improvement was measured.
+
+**Closed-book exam format and evidence — rounds 5 and 9.** [closed_book.py](runtime/closed_book.py) explicitly requests `text.format.type=json_object` for the tested Bailian/model binding and supplies the exact answer schema and IDs on format retries. Tools remain disabled and the strict answer parser still rejects malformed or incomplete answers. Per-attempt `format_valid`, bounded `format_error` and requested format markers survive [compact.py](runtime/compact.py) summaries without copying arbitrary model error text. Three actual development-pilot exam receipts were replayed through both summary routes to verify this evidence. The change improves protocol visibility; it has not demonstrated fewer live exam retries.
+
+**Work closeout and editing guidance — rounds 6, 11 and 13.** [isolation.py](runtime/isolation.py) adds fresh, advisory admission-time and further-work-request allowances to supported work-phase Responses requests, after accounting for the current reservation and exam reserve. A relay fixture observed allowances **2 → 1 → 0** while preserving 3 work requests plus 2 exam requests. Only a rejection from `closeout.begin` receives the explicit “no upstream request was sent” diagnostic; later timeouts retain their protocol/transport classification. Five loopback scenarios verified the no-send boundary. [executor.py](runtime/executor.py) also supplies raw patch syntax and a scoped fallback suggestion on initial/resumed implementation turns after successful preflight. These hints do not loosen budgets or permissions or impose a new hard retry cap. Five malformed-patch rejections still occurred during round 13, so reduced editing failures are not claimed.
+
+### What “faster” means here
+
+The final local verification compared **the same accepted commit and the same 527 tests** on one host:
+
+| Native regression verification | Serial, default | Four processes, opt-in |
+| --- | ---: | ---: |
+| Tests executed and passed | 527 | 527 |
+| Failures / errors / skips | 0 / 0 / 0 | 0 / 0 / 0 |
+| Elapsed time | 162.63 s | 50.04 s |
+| Speedup relative to serial | 1× | **3.25×** |
+
+The complete test IDs, reported order and outcomes matched, and all 395 original native tests remained included. All **21 installer tests** also passed. This final confirmation is one serial/parallel pair; round 15 separately tested both execution orders. It measures local test execution, not Bailian response latency or complete task delivery. [Commands to reproduce →](docs/testing.md#selection-and-parallel-verification)
+
+Round 20 separately ran **16 real-model trials: 4 withheld cases × 2 repeats × 2 versions**, with matched model settings and budgets and counterbalanced order:
+
+| Real-task metric | Baseline | RSI candidate | Observed change |
+| --- | ---: | ---: | --- |
+| Final accepted tasks | 8/8 | 8/8 | Equal final pass count |
+| Accepted on first submission | 7/8 | 6/8 | One fewer first-pass acceptance |
+| Executor requests, including exams and repairs | 85 | 73 | −14.12% |
+| Executor tokens | 1,263,538 | 827,156 | −34.54% |
+| Cumulative provider request time | 1,272.794 s | 1,317.912 s | **+3.54%** |
+| Task wall time, including supervisor review and waiting | 1,763.288 s | 2,333.199 s | **+32.32%** |
+
+**This comparison does not establish faster model responses, faster overall delivery, unchanged task quality or general quality improvement.** Provider time is accumulated across requests, not a measurement of single-request time to first token. Equal final pass counts include repairs. Token savings were concentrated in one baseline audit: the candidate used more tokens in 4 of 8 pairs, and the other 7 pairs combined used 62,251 more tokens.
+
+The sample is small, review was not blinded, experience reuse was disabled for comparison, and the remote model alias has no immutable weight revision. Supplementary diagnostics and their limits are documented in the [full campaign report](docs/rsi-campaign-20261020.md); they do not retroactively change the frozen results.
+
+<details>
+<summary>All 20 experiments</summary>
+
+| Round | Experiment and result | Decision |
+| --- | --- | --- |
+| 1 | Lazy experience provenance checks preserve selected results with fewer source validations. | Accepted |
+| 2 | Full and compact project status expose the exact return-event ID and status. | Accepted |
+| 3 | Bounded reverse log-tail scanning; about 40.55× faster in the measured 3.85 MB fixture. | Accepted |
+| 4 | Import-safe regression CLI with exact test IDs, outcomes, scope and timings. | Accepted |
+| 5 | Bailian JSON-object exam format and retry diagnostics; live retry benefit unproven. | Accepted |
+| 6 | Time/request allowance hints preserve deadline enforcement and exam reserves. | Accepted |
+| 7 | Suppress fresh running-only wake-ups while retaining actionable events and reminders. | Accepted |
+| 8 | Exact class/method test selection with default full coverage preserved. | Accepted |
+| 9 | Compact exam summaries retain safe format and parsing metadata. | Accepted |
+| 10 | Request-duration aggregation remained incomplete when the budget ran out; code excluded. | Rejected |
+| 11 | Distinguish scoped, confirmed no-send admission closures from protocol failures. | Accepted |
+| 12 | Bulk SSE usage scanning improves synthetic parser timings while retaining streaming bounds. | Accepted |
+| 13 | Initial/resumed patch-format guidance; malformed patches still occurred. | Accepted |
+| 14 | Isolate unreadable or malformed experience records during lookup and context construction. | Accepted |
+| 15 | Optional module parallelism; about 3.30–3.33× faster full verification in the round's paired runs. | Accepted |
+| 16 | Oversized-line discard across EOF polls lacked a completed submission and exam within budget; code excluded, limitation remains. | Rejected |
+| 17 | Bind reused experience to current accepted commits, evidence and project membership. | Accepted |
+| 18 | Robust observer timestamp display and ordering, with explicit unknown values. | Accepted |
+| 19 | Canonical promotion: 300 unrelated record reads reduced to 0; only 2 targets read. | Accepted |
+| 20 | Final matched task comparison: no demonstrated general quality or overall speed improvement. | Inconclusive |
+
+</details>
+
+The full campaign, including rejected work, repairs, exams, the development pilot, protocol probe and report authoring, used **945 external executor requests and 38,032,107 tokens**. These totals exclude supervisor usage and are not a monetary cost estimate.
+
+[Per-round report, hypotheses and limitations](docs/rsi-campaign-20261020.md) · [Experiment data](docs/rsi-campaign-20261020.json) · [Final acceptance and verification summary](docs/rsi-results-20261021.json)
+
+The per-round report was frozen before the final delivery checks; the final summary records their subsequent completion. These are historical measurements of the pinned commits, not a new version benchmark on every README update.
 
 ## Requirements and compatibility
 
@@ -239,9 +335,12 @@ Pause/cancel prevents follow-on stages; an already-running provider request may 
 python3 -m unittest discover -s tests -v
 mkdir -p .artifacts
 python3 runtime/verify_all.py .artifacts/regression.json
+
+# Optional: run the same full runtime suite with up to four module workers.
+python3 runtime/verify_all.py .artifacts/regression-parallel.json --jobs 4
 ```
 
-The runtime verification command runs the macOS regression suite with local model mocks. See [CONTRIBUTING.md](CONTRIBUTING.md), [testing](docs/testing.md), [security](SECURITY.md) and the [changelog](CHANGELOG.md). Architecture assets are PNG/SVG files generated by [scripts/render_architecture.py](scripts/render_architecture.py).
+The runtime verification commands run the macOS regression suite with local model mocks and make no paid model calls. Use `--list` to inspect selected test IDs without running them, `--module` to select modules, or `--test` for an exact class/method. Focused runs cover only their selected tests. See [CONTRIBUTING.md](CONTRIBUTING.md), [testing and selection examples](docs/testing.md), [security](SECURITY.md) and the [changelog](CHANGELOG.md). Architecture assets are PNG/SVG files generated by [scripts/render_architecture.py](scripts/render_architecture.py).
 
 ## License
 

@@ -12,6 +12,31 @@ python3 runtime/verify_all.py .artifacts/regression.json
 
 The installer tests use temporary directories and mocked prerequisites. They cover runtime/Skill packaging, legacy upgrades, exact configuration preservation, conflicts, active-task locks and publication rollback. The runtime suite requires macOS and runs each locally declared test once; avoid broad `unittest discover` over `runtime/`, which can repeat inherited tests. Coverage includes task gates, callbacks, project orchestration, isolation, providers, closed-book exams, experience, storage, audits and local endpoints. Use the generated report for the current test count.
 
+### Selection and parallel verification
+
+The RSI campaign added reusable test selection and optional parallel execution:
+
+```sh
+# Inspect the complete test inventory without executing tests.
+python3 runtime/verify_all.py --list
+
+# Run the full suite with up to four isolated module workers.
+mkdir -p .artifacts
+python3 runtime/verify_all.py .artifacts/regression-parallel.json --jobs 4
+
+# Run one allowlisted module, or one exact class/method.
+python3 runtime/verify_all.py .artifacts/experience.json --module test_experience
+python3 runtime/verify_all.py .artifacts/lookup.json --test test_experience.LookupTests
+python3 runtime/verify_all.py --list \
+  --test test_experience.LookupTests.test_lookup_candidates_skip_provenance_checks
+```
+
+`--jobs` accepts 1–4 and defaults to serial (`1`). Parallelism is across selected nonempty modules, with each module in a fresh process; a single selected module does not gain four workers. `--module` and `--test` are repeatable. Exact test selectors use `module.Class` or `module.Class.test_method`, without a `runtime.` prefix. When both options are present, each test selector must belong to the selected module scope. Focused reports cover only the selected tests and cannot substitute for full-suite acceptance.
+
+Reports retain selected IDs, per-test outcomes and timings; parallel reports also record worker failures. Compare IDs and outcomes as well as elapsed time. At the final accepted RSI commit `20c68f6`, the same 527 native tests passed in 162.63 s serial and 50.04 s with `--jobs 4` on one host (3.25×), with no failures, errors or skips and all 395 original tests retained. All 21 installer tests passed separately. This was one final confirmation pair, with both execution orders previously measured in round 15. It measures local verification only; see the [RSI results](../README.md#20-round-rsi-campaign) and [final summary](rsi-results-20261021.json) for the real-task comparison and its limits.
+
+`--list` 只列出范围和测试 ID；`--module` / `--test` 缩小测试范围，不能用局部通过代替全量验收。`--jobs 4` 按模块启动独立进程，默认仍串行。3.25 倍是同一提交、本机相同测试的验证提速，不表示百炼响应或整个任务交付提速。
+
 Observer coverage (`test_watch`) uses actual subprocess pipes, a real isolated
 Codex CLI with a local model fixture, and a separate tmux server when available.
 No existing terminal panes are changed. It verifies streaming before process

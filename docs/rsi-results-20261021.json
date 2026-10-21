@@ -1,0 +1,183 @@
+{
+  "schema_version": 1,
+  "completed_at_utc": "2026-10-20T22:10:15.154288+00:00",
+  "scope": "Historical public summary of the completed 20-round campaign; subsequent documentation updates are not new experiments.",
+  "branch": "feature/rsi-20-rounds-20261020",
+  "baseline_commit": "5e6a917135f9a71ad4cb7d84a65bde8aa3beceb1",
+  "measured_candidate_commit": "281757c98911553c0fd53d68969848bd79b00dce",
+  "accepted_commit": "20c68f6fa4a55b179fbdc8d53b364588814f2d80",
+  "accepted_runtime_tree": "2172312119ab59ac4e37b7cb3cc12a29af0bd4b1",
+  "runtime_identical_to_measured_candidate": true,
+  "project_accepted": true,
+  "supervisor": {
+    "model": "gpt-6-astra",
+    "reasoning_effort": "max",
+    "role": "original supervisor"
+  },
+  "executor": {
+    "provider": "bailian",
+    "model": "deepseek-v4.1-flash-1017",
+    "reasoning_effort": "max"
+  },
+  "experiments": {
+    "completed": 20,
+    "accepted_source_improvements": 17,
+    "rejected": [
+      10,
+      16
+    ],
+    "inconclusive": [
+      20
+    ],
+    "report_authoring_is_extra_round": false
+  },
+  "verification": {
+    "native": {
+      "passed": true,
+      "tests": 527,
+      "original_tests_preserved": 395,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0,
+      "serial_seconds": 162.63300054099818
+    },
+    "installer": {
+      "passed": true,
+      "tests": 21,
+      "original_tests_preserved": 21,
+      "failures": 0,
+      "errors": 0,
+      "skipped": 0
+    },
+    "same_commit_parallel_confirmation": {
+      "passed": true,
+      "tests": 527,
+      "same_complete_ids_and_order": true,
+      "parallel_seconds": 50.04078108300746,
+      "serial_over_parallel_speedup": 3.2500092328939303
+    },
+    "project_checks": [
+      {
+        "id": "complete-campaign-ledger",
+        "status": "passed"
+      },
+      {
+        "id": "final-experience-behavior",
+        "status": "passed"
+      }
+    ]
+  },
+  "final_comparison": {
+    "cases": 4,
+    "repeats_per_case_per_version": 2,
+    "trials": 16,
+    "pairs": 8,
+    "order": "counterbalanced",
+    "matched_model_settings_and_budgets": true,
+    "review_blinded": false,
+    "experience_reuse_enabled": false,
+    "sides": {
+      "baseline": {
+        "trials": 8,
+        "final_passed": 8,
+        "first_submission_accepted": 7,
+        "supervisor_repair_actions": 1,
+        "requests": 85,
+        "total_tokens": 1263538,
+        "provider_seconds": 1272.794,
+        "wall_seconds": 1763.288,
+        "audit_true_positive": 6,
+        "audit_false_positive": 0,
+        "audit_false_negative": 0,
+        "accepted_audits_scored": 2
+      },
+      "candidate": {
+        "trials": 8,
+        "final_passed": 8,
+        "first_submission_accepted": 6,
+        "supervisor_repair_actions": 2,
+        "requests": 73,
+        "total_tokens": 827156,
+        "provider_seconds": 1317.912,
+        "wall_seconds": 2333.199,
+        "audit_true_positive": 6,
+        "audit_false_positive": 0,
+        "audit_false_negative": 0,
+        "accepted_audits_scored": 2
+      }
+    },
+    "token_distribution": {
+      "candidate_lower_pairs": 4,
+      "candidate_higher_pairs": 4,
+      "median_candidate_over_baseline": 1.0495453590410926,
+      "largest_saving_pair_candidate_minus_baseline_tokens": -498633,
+      "other_seven_pairs_candidate_minus_baseline_tokens": 62251
+    },
+    "conclusion": "No demonstrated general quality or overall speed uplift in the small unblinded matched comparison; preserve the observed higher provider/wall time and lower candidate first-pass acceptance.",
+    "time_definitions": {
+      "provider_seconds": "Cumulative provider request time, including repairs and exams; not single-request time to first token.",
+      "wall_seconds": "Trial wall time including original-supervisor review, waiting and continuations. Totals use the original comparison summary; summing rounded trial rows differs by 0.001 s per version."
+    }
+  },
+  "executor_accounting": {
+    "parts": [
+      {
+        "scope": "rounds01_to19_including_setup_rejections_repairs_exams",
+        "requests": 718,
+        "total_tokens": 33338731
+      },
+      {
+        "scope": "round20_all16matched_trials_including_repairs_exams",
+        "requests": 158,
+        "total_tokens": 2090694
+      },
+      {
+        "scope": "separate_four_trial_development_pilot",
+        "requests": 42,
+        "total_tokens": 633310
+      },
+      {
+        "scope": "separate_provider_protocol_probe",
+        "requests": 1,
+        "total_tokens": 138
+      },
+      {
+        "scope": "separate_report_authoring_including_timeout_repairs_and_closed_book_exam",
+        "requests": 26,
+        "total_tokens": 1969234
+      }
+    ],
+    "experiments_only": {
+      "requests": 876,
+      "total_tokens": 35429425
+    },
+    "all_external_executor": {
+      "requests": 945,
+      "total_tokens": 38032107
+    },
+    "includes_rejected_work_repairs_and_exams": true,
+    "excludes_supervisor_usage": true,
+    "currency_estimate": null
+  },
+  "limitations": [
+    "The per-round report predates final delivery checks. This summary records their subsequent completion without changing the historical report.",
+    "The final local speed measurement is one same-commit serial/parallel pair on one host; round 15 separately measured both execution orders.",
+    "Component benchmarks, local verification, cumulative provider time and supervisor-inclusive task wall time have different scopes.",
+    "Equal final pass counts include repairs and do not prove unchanged quality; candidate first-submission acceptance was lower in this small sample.",
+    "Four withheld cases and two repeats per version with unblinded review do not establish general capability or causal improvements.",
+    "Experience reuse was disabled in the final comparison; remote model aliases do not provide immutable weight revisions.",
+    "Supplementary fractional-balance and parser diagnostics, including the candidate parser recovery observation, are disclosed in the per-round report and do not retroactively change frozen grading.",
+    "The installed supervisory controller remained fixed and model weights were not trained; this is supervised software/workflow improvement, not autonomous RSI.",
+    "Rounds 10 and 16 were rejected and excluded. The round 16 oversized-line discard limitation remains.",
+    "This public summary omits private grading materials and raw host logs; it is not a complete independent replay package."
+  ],
+  "historical_campaign_report": "rsi-campaign-20261020.md",
+  "historical_campaign_data": "rsi-campaign-20261020.json",
+  "source_artifact_sha256": {
+    "final-delivery-evidence.json": "3f4ffc1e9d826363a7e3fa14964ca2823ef4c209103056ab22d9486dbf49e512",
+    "final-delivery-20261021-native-report.json": "8ed07cca8ee7c4a623b79d66324ab5b1cc210d3bb93eef4382b2ee3fd050cf6e",
+    "final-delivery-20261021-installer-report.json": "e0ffb46b39ebe26322eda2683440f155cbc851e2e23b4d950fdeeffa534b5973",
+    "final-delivery-parallel-20261021-native-report.json": "4eca8c206d7a1c1e2b804c4a7ea35703b686c391609a33cef253fe5c168151ac",
+    "final-delivery-parallel-20261021-confirmation.json": "5a2ab241347f302e1a2fd87fab1eb7493497d78ded7d9c4a2aeeafbd62a9f371"
+  }
+}
