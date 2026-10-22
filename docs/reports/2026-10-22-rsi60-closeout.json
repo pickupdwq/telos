@@ -1,0 +1,468 @@
+{
+  "schema_version": 1,
+  "scope": "2026-10-22 RSI campaign closeout; not a new RSI round",
+  "base_main_commit": "0c462765f6784b573b2ee1a0adfbd7223e06fb51",
+  "r0_commit": "db5ff87efc4fa649bdfae2405dadd9a25ab0e1fd",
+  "pre_closeout_source_commit": "8619debba03d18d0c7790af8df28ec13e0b161fa",
+  "delivery_branch": "rsi/macos-delivery-20261022",
+  "progress": {
+    "planned": 60,
+    "started": 11,
+    "closed": 11,
+    "real_matched_pairs": 3,
+    "confirmed_retained": 1,
+    "confirmed_efficiency_gains": 0,
+    "open_rounds": [],
+    "supervisor_total_tokens": null
+  },
+  "rounds": [
+    {
+      "round_id": "R001",
+      "decision": "阻塞终止",
+      "implementation_accepted": null,
+      "implementation_commit": null,
+      "confirmed_gain": false,
+      "event_sha256": "6f976c63969231312018db32939ad6166ccdeeb43484b5df883dd4495a71d9e9",
+      "delivery_disposition": "no_code_delivered",
+      "observed_requests": 14,
+      "observed_total_tokens": 180948,
+      "total_tokens": null
+    },
+    {
+      "round_id": "R002",
+      "decision": "证据不足",
+      "implementation_accepted": true,
+      "implementation_commit": "16e36a46011ab2dfb7435bdce0bcabd6cdddf6ea",
+      "confirmed_gain": false,
+      "event_sha256": "21bab26483bce2dd53b5fe1b4cd4d8be248dce858449eb38f9ec653fd79f4397",
+      "delivery_disposition": "integrated_correctness_only",
+      "implementation_cost": {
+        "requests": 20,
+        "total_tokens": 458811
+      }
+    },
+    {
+      "round_id": "R003",
+      "decision": "证据不足",
+      "implementation_accepted": true,
+      "implementation_commit": "9505151ebdd6bec60803ade4bb75c65baf584472",
+      "confirmed_gain": false,
+      "event_sha256": "44de42aa0c9ced92f3c3be7898aca31e4b4d312348314581dd4650670bd397d7",
+      "delivery_disposition": "integrated_correctness_only",
+      "implementation_cost": {
+        "requests": 23,
+        "total_tokens": 545422
+      }
+    },
+    {
+      "round_id": "R004",
+      "decision": "证据不足",
+      "implementation_accepted": true,
+      "implementation_commit": "e85e956177bd610f621b3ff891c7eec84d263300",
+      "confirmed_gain": false,
+      "event_sha256": "b5d73e7903ffca7cfbf86a11fa6a124b76787a926ff48b5f550ce10320c9bfe7",
+      "delivery_disposition": "integrated_correctness_only",
+      "implementation_cost": {
+        "requests": 22,
+        "total_tokens": 537739
+      }
+    },
+    {
+      "round_id": "R005",
+      "decision": "证据不足",
+      "implementation_accepted": true,
+      "implementation_commit": "960d79bfab7f8402adf27d26254132da9da50e5e",
+      "confirmed_gain": false,
+      "event_sha256": "91371070208c77599a2146d9bbbf8005409fb640b3d3d994376136232bf52485",
+      "delivery_disposition": "archive_patch_only",
+      "implementation_cost": {
+        "requests": 10,
+        "total_tokens": 149878
+      }
+    },
+    {
+      "round_id": "R006",
+      "decision": "阻塞终止",
+      "implementation_accepted": false,
+      "implementation_commit": null,
+      "confirmed_gain": false,
+      "event_sha256": "2325807fa719d06e53c4f6f905704f1f1529cd7329ea28c5d1e62d170aea1830",
+      "delivery_disposition": "no_code_delivered",
+      "observed_requests": 1,
+      "observed_total_tokens": 0,
+      "total_tokens": null
+    },
+    {
+      "round_id": "R007",
+      "decision": "保留",
+      "implementation_accepted": true,
+      "implementation_commit": "8619debba03d18d0c7790af8df28ec13e0b161fa",
+      "confirmed_gain": true,
+      "event_sha256": "1ea43967b9fde5180b178a6ee648ead369343316e6d4fd0bca48f61023b6ddcd",
+      "delivery_disposition": "integrated_correctness_only"
+    },
+    {
+      "round_id": "R008",
+      "decision": "阻塞终止",
+      "implementation_accepted": false,
+      "implementation_commit": null,
+      "confirmed_gain": false,
+      "event_sha256": "ced50ab9472fb799e7390d3db6886bafc42bd70a99fff930a71d1c68e9fadab6",
+      "delivery_disposition": "no_code_delivered",
+      "cost": {
+        "requests": 3,
+        "failed_requests": 1,
+        "observed_total_tokens": 20942,
+        "total_tokens": null
+      }
+    },
+    {
+      "round_id": "R009",
+      "decision": "证据不足",
+      "implementation_accepted": null,
+      "implementation_commit": null,
+      "confirmed_gain": false,
+      "event_sha256": "d435e7fabffda560ac79c7df481098f5723b538d51b68fc4a9ae48ec325def19",
+      "delivery_disposition": "no_code_delivered",
+      "model_inference_requests": 0
+    },
+    {
+      "round_id": "R010",
+      "decision": "证据不足",
+      "implementation_accepted": true,
+      "implementation_commit": "468e5a6d4f3eafb722d9e0ef4ae1c10e1f2d0c12",
+      "confirmed_gain": false,
+      "event_sha256": "c4c2da9f062e0e1446a88f468a69a45ae6a0e604cadcc8eda027893e6bdd0e23",
+      "delivery_disposition": "archive_patch_only",
+      "cost": {
+        "implementation_requests": 56,
+        "implementation_total_tokens": 2703152,
+        "screen_requests": 3,
+        "screen_observed_tokens": 23001,
+        "screen_actual_tokens": null,
+        "combined_requests": 59,
+        "combined_observed_tokens": 2726153,
+        "combined_actual_tokens": null
+      }
+    },
+    {
+      "round_id": "R011",
+      "decision": "阻塞终止",
+      "implementation_accepted": false,
+      "implementation_commit": null,
+      "confirmed_gain": false,
+      "event_sha256": "30d9d2c709672e3d6909c9ec116e98eb0f9b4c0d3fc007f2bee70fcce7c9edeb",
+      "delivery_disposition": "no_code_delivered",
+      "cost": {
+        "requests": 24,
+        "failed_requests": 1,
+        "observed_total_tokens": 464202,
+        "actual_total_tokens": null
+      }
+    }
+  ],
+  "live_measurements": {
+    "R002-screen": {
+      "evidence_sha256": "d08d8f7793cf648e1eb5408cae8870c97c93a5c7f1290085865ccc9af89068a1",
+      "continuation": "active",
+      "trials": [
+        {
+          "id": "job_planner-r1-baseline",
+          "side": "baseline",
+          "outcome": "passed",
+          "requests": 18,
+          "observed_total_tokens": 290354,
+          "total_tokens": 290354,
+          "provider_seconds": 293.657,
+          "wall_seconds": 366.854
+        },
+        {
+          "id": "job_planner-r1-candidate",
+          "side": "candidate",
+          "outcome": "passed",
+          "requests": 8,
+          "observed_total_tokens": 115025,
+          "total_tokens": 115025,
+          "provider_seconds": 242.13,
+          "wall_seconds": 353.32
+        }
+      ]
+    },
+    "R005-development": {
+      "evidence_sha256": "a83a34fcdda4019a9000b1cfdc5a0c17c3e21622a02eebd0d8601df8b8ee0171",
+      "continuation": "cancelled",
+      "trials": [
+        {
+          "id": "job_planner-r1-baseline",
+          "side": "baseline",
+          "outcome": "passed",
+          "requests": 13,
+          "observed_total_tokens": 174853,
+          "total_tokens": 174853,
+          "provider_seconds": 227.417,
+          "wall_seconds": 302.145
+        },
+        {
+          "id": "job_planner-r1-candidate",
+          "side": "candidate",
+          "outcome": "passed",
+          "requests": 12,
+          "observed_total_tokens": 166494,
+          "total_tokens": 166494,
+          "provider_seconds": 282.546,
+          "wall_seconds": 344.028
+        },
+        {
+          "id": "job_planner-r2-candidate",
+          "side": "candidate",
+          "outcome": "failed",
+          "requests": 5,
+          "observed_total_tokens": 51150,
+          "total_tokens": null,
+          "provider_seconds": 324.97,
+          "wall_seconds": 436.187
+        },
+        {
+          "id": "job_planner-r2-baseline",
+          "side": "baseline",
+          "outcome": "pending",
+          "requests": null,
+          "observed_total_tokens": null,
+          "total_tokens": null,
+          "provider_seconds": null,
+          "wall_seconds": null
+        },
+        {
+          "id": "job_planner-r3-baseline",
+          "side": "baseline",
+          "outcome": "pending",
+          "requests": null,
+          "observed_total_tokens": null,
+          "total_tokens": null,
+          "provider_seconds": null,
+          "wall_seconds": null
+        },
+        {
+          "id": "job_planner-r3-candidate",
+          "side": "candidate",
+          "outcome": "pending",
+          "requests": null,
+          "observed_total_tokens": null,
+          "total_tokens": null,
+          "provider_seconds": null,
+          "wall_seconds": null
+        }
+      ]
+    },
+    "R007-holdout": {
+      "evidence_sha256": "0e96ea7ac5da1c8ada7f1074c9cc84e9eb6f6704c6acd04e3387eab45115294b",
+      "continuation": "active",
+      "trials": [
+        {
+          "id": "inventory_ledger-r1-baseline",
+          "side": "baseline",
+          "outcome": "passed",
+          "requests": 10,
+          "observed_total_tokens": 161675,
+          "total_tokens": 161675,
+          "provider_seconds": 178.427,
+          "wall_seconds": 221.234
+        },
+        {
+          "id": "inventory_ledger-r1-candidate",
+          "side": "candidate",
+          "outcome": "passed",
+          "requests": 19,
+          "observed_total_tokens": 508982,
+          "total_tokens": 508982,
+          "provider_seconds": 321.878,
+          "wall_seconds": 576.718
+        }
+      ]
+    },
+    "R010-development": {
+      "evidence_sha256": "e4c431dc6e26b403d1b637a9d064dd80dcd4fe030964c8e594ec8627ff251f09",
+      "continuation": "cancelled",
+      "trials": [
+        {
+          "id": "job_planner_int_boundary-r1-baseline",
+          "side": "baseline",
+          "outcome": "failed",
+          "requests": 3,
+          "observed_total_tokens": 23001,
+          "total_tokens": null,
+          "provider_seconds": 235.467,
+          "wall_seconds": 315.466
+        },
+        {
+          "id": "job_planner_int_boundary-r1-candidate",
+          "side": "candidate",
+          "outcome": "pending",
+          "requests": null,
+          "observed_total_tokens": null,
+          "total_tokens": null,
+          "provider_seconds": null,
+          "wall_seconds": null
+        },
+        {
+          "id": "job_planner_int_boundary-r2-candidate",
+          "side": "candidate",
+          "outcome": "pending",
+          "requests": null,
+          "observed_total_tokens": null,
+          "total_tokens": null,
+          "provider_seconds": null,
+          "wall_seconds": null
+        },
+        {
+          "id": "job_planner_int_boundary-r2-baseline",
+          "side": "baseline",
+          "outcome": "pending",
+          "requests": null,
+          "observed_total_tokens": null,
+          "total_tokens": null,
+          "provider_seconds": null,
+          "wall_seconds": null
+        },
+        {
+          "id": "job_planner_int_boundary-r3-baseline",
+          "side": "baseline",
+          "outcome": "pending",
+          "requests": null,
+          "observed_total_tokens": null,
+          "total_tokens": null,
+          "provider_seconds": null,
+          "wall_seconds": null
+        },
+        {
+          "id": "job_planner_int_boundary-r3-candidate",
+          "side": "candidate",
+          "outcome": "pending",
+          "requests": null,
+          "observed_total_tokens": null,
+          "total_tokens": null,
+          "provider_seconds": null,
+          "wall_seconds": null
+        }
+      ]
+    }
+  },
+  "native_regression": {
+    "tests": 616,
+    "passed": true,
+    "failures": 0,
+    "errors": 0,
+    "skipped": 0,
+    "real_git_and_sandbox": true,
+    "model_boundary": "deterministic mocks; separate live report required",
+    "seconds": 85.45873220800422,
+    "evidence_sha256": "0a2866b8fc61a98f49c80881521ffe2158aaf1b211069ede0d6301291cec98bc",
+    "prior_suites": {
+      "retained_source": {
+        "tests": 601,
+        "all_test_ids_preserved": true,
+        "evidence_sha256": "0694b833ccaaebfce5ae6fed5269ccbc63e4589cd008a4840ce9d15e74918981"
+      },
+      "R002": {
+        "tests": 603,
+        "all_test_ids_preserved": true,
+        "evidence_sha256": "e2cad910ac31c4495b468fd157a68cabaea23da6fa58a8406994db31620761fa"
+      },
+      "R003": {
+        "tests": 600,
+        "all_test_ids_preserved": true,
+        "evidence_sha256": "eee3925c270b1868e59db7bfe872ebdee1cbdf1eccf1732b5402db974bb45aa7"
+      },
+      "R004": {
+        "tests": 600,
+        "all_test_ids_preserved": true,
+        "evidence_sha256": "1c6e8e608240afd2af19c023e55611f90518d7de824eff9ddf268a95ed778f50"
+      }
+    }
+  },
+  "installer_regression": {
+    "tests": 21,
+    "passed": true,
+    "seconds": 1.956,
+    "output_sha256": "e0ab89538eb14cc615475cc00bc8c9670931fbbfd9f07c3795ba854253f224d2",
+    "targets": "temporary directories only"
+  },
+  "archived_candidates": {
+    "R005": {
+      "candidate_commit": "960d79bfab7f8402adf27d26254132da9da50e5e",
+      "patch_base_commit": "0c462765f6784b573b2ee1a0adfbd7223e06fb51",
+      "patch_sha256": "52549cc79d7bf225f8061bcfe09a5139b70f9c665a336a02c9400791580d3ccb",
+      "patch_bytes": 15457,
+      "runtime_tree": "0fb7a3862ddda8129289ef468165604f3c329175",
+      "replay_exact_runtime_match": true,
+      "replayed_files": 7,
+      "included_in_default_runtime": false
+    },
+    "R010": {
+      "candidate_commit": "468e5a6d4f3eafb722d9e0ef4ae1c10e1f2d0c12",
+      "patch_base_commit": "0c462765f6784b573b2ee1a0adfbd7223e06fb51",
+      "patch_sha256": "8828d3d96a4f73b3d739631f8773df2353cd711b2fff63066846b90f9dcebacd",
+      "patch_bytes": 78007,
+      "runtime_tree": "b241058f4738dfbbfe000f3c551eba5b2c8cf101",
+      "replay_exact_runtime_match": true,
+      "replayed_files": 14,
+      "included_in_default_runtime": false
+    }
+  },
+  "protection_checks": {
+    "daily_launcher_runtime_config_unchanged": true,
+    "main_unchanged": true,
+    "original_experiment_branch_unchanged": true,
+    "telos_linux_branch_unchanged": true
+  },
+  "publication_checks": {
+    "selected_files": 22,
+    "sensitive_pattern_findings": [],
+    "index_local_targets_checked": 26
+  },
+  "limitations": [
+    "No new paid model requests during closeout.",
+    "Original round decisions and retention count are unchanged by correctness-only integration.",
+    "No valid combined live comparison against R0; quality/first-pass/speed/token improvements remain unknown.",
+    "R007 paired oracle missed a large-integer CLI defect on both first submissions; no clean efficiency inference.",
+    "Unknown actual usage remains null, never zero; observed totals are not full billed usage.",
+    "Supervisor whole-process tokens and monetary cost are unknown.",
+    "Private contracts, check code, exam answers, raw state and credentials are intentionally not published.",
+    "Historical candidate commit IDs are provenance; archived patches replay from published v3.7.8."
+  ],
+  "execution_configuration": {
+    "profile": "bailian_deepseek",
+    "model": "deepseek-v4.1-flash-1017",
+    "reasoning_effort": "max",
+    "http_timeout_seconds": 180,
+    "job_timeout_seconds": 600,
+    "experience": false,
+    "notify": false,
+    "paid_calls_during_closeout": 0,
+    "installed_configuration_changed": false,
+    "budget_classes": {
+      "scout": {
+        "max_requests": 32,
+        "max_total_tokens": 1200000,
+        "exam_reserve_requests": 2,
+        "exam_reserve_tokens": 120000,
+        "closeout_reserve_seconds": 120
+      },
+      "implementation": {
+        "max_requests": 60,
+        "max_total_tokens": 3000000,
+        "exam_reserve_requests": 4,
+        "exam_reserve_tokens": 160000,
+        "closeout_reserve_seconds": 120
+      },
+      "paired_trial": {
+        "max_requests": 40,
+        "max_total_tokens": 1500000,
+        "exam_reserve_requests": 3,
+        "exam_reserve_tokens": 120000,
+        "closeout_reserve_seconds": 120
+      }
+    }
+  },
+  "delivery_runtime_tree": "46d72cdc750a2a3bb5c708cac97855af32743aac"
+}

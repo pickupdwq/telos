@@ -28,17 +28,25 @@ BEARER = re.compile(r'(?i)\bBearer\s+[^\s\"\'&,;]+')
 KEY = re.compile(r'\bsk-[A-Za-z0-9_-]{12,}')
 
 
+def _without_controls(text):
+    return ''.join(c for c in text if c in '\n\t' or not unicodedata.category(c).startswith('C'))
+
+
 def clean(value, secrets=()):
-    text = str(value)
+    # Normalize first: removing controls after matching can reassemble a
+    # credential that neither the exact-secret nor pattern pass could see.
+    text = _without_controls(str(value))
     for secret in secrets:
         if secret:
-            text = text.replace(secret, '[REDACTED]')
+            secret = _without_controls(str(secret))
+            if secret:
+                text = text.replace(secret, '[REDACTED]')
     text = BEARER.sub('Bearer [REDACTED]', text)
     text = SENSITIVE.sub(r'\1[REDACTED]', text)
     text = KEY.sub('[REDACTED]', text)
     # Untrusted commands/output must not control the observer terminal (OSC,
     # escape sequences, carriage-return overwrites, bidi controls).
-    text = ''.join(c for c in text if c in '\n\t' or not unicodedata.category(c).startswith('C'))
+    text = _without_controls(text)
     return text if len(text) <= MAX_TEXT else text[:MAX_TEXT] + '\n[truncated]'
 
 

@@ -4,7 +4,7 @@
 
 **Turn coding goals into reviewed, testable results.**
 
-[简体中文](README.zh-CN.md) · [Quick start](#quick-start) · [20-round RSI results](#20-round-rsi-campaign) · [Architecture](docs/architecture.md) · [Configuration](docs/configuration.md) · [MCP tools](docs/tools.md)
+[简体中文](README.zh-CN.md) · [Documentation](docs/README.md) · [Quick start](#quick-start) · [20-round RSI results](#20-round-rsi-campaign) · [Architecture](docs/architecture.md) · [Configuration](docs/configuration.md) · [MCP tools](docs/tools.md)
 
 [![CI](https://github.com/pickupdwq/telos/actions/workflows/ci.yml/badge.svg)](https://github.com/pickupdwq/telos/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)

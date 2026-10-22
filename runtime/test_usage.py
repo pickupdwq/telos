@@ -5,6 +5,7 @@ import json
 import os
 from pathlib import Path
 import socket
+import ssl
 import struct
 import tempfile
 import threading
@@ -453,10 +454,72 @@ class LedgerTests(unittest.TestCase):
             ledger.begin('work')
 
 
+class FailureMetadataTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory()
+        self.path = Path(self.temp.name) / 'usage.json'
+
+    def tearDown(self):
+        self.temp.cleanup()
+
+    def entry(self, ledger):
+        return next(iter(json.loads(ledger.path.read_text())['requests'].values()))
+
+    def test_failed_request_persists_only_complete_allowlisted_metadata(self):
+        ledger = usage.UsageLedger(self.path)
+        request = ledger.begin('work')
+        ledger.finish(request, responses_usage(), status='failed', latency_ms=12.5,
+                      error_kind='transport', upstream_request_id='req-1',
+                      failure_stage='upstream_read', failure_type='timeout')
+        entry = self.entry(ledger)
+        self.assertEqual((entry['status'], entry['error_kind'], entry['latency_ms'],
+                          entry['upstream_request_id'], entry['failure_stage'],
+                          entry['failure_type']),
+                         ('failed', 'transport', 12.5, 'req-1', 'upstream_read', 'timeout'))
+        self.assertEqual(entry['usage']['input_tokens'], 100)
+
+        invalid = (
+            {'failure_stage': 'upstream_read'},
+            {'failure_type': 'timeout'},
+            {'failure_stage': 'other', 'failure_type': 'timeout'},
+            {'failure_stage': 'relay', 'failure_type': 'network'},
+            {'failure_stage': 1, 'failure_type': 'timeout'},
+            {'failure_stage': 'relay', 'failure_type': 1},
+        )
+        for metadata in invalid:
+            with self.subTest(metadata=metadata):
+                request = ledger.begin('work')
+                ledger.finish(request, None, status='failed', **metadata)
+                stored = json.loads(ledger.path.read_text())['requests'][request]
+                self.assertNotIn('failure_stage', stored)
+                self.assertNotIn('failure_type', stored)
+
+        completed = ledger.begin('work')
+        ledger.finish(completed, responses_usage(), failure_stage='relay', failure_type='other')
+        stored = json.loads(ledger.path.read_text())['requests'][completed]
+        self.assertNotIn('failure_stage', stored)
+        self.assertNotIn('failure_type', stored)
+
+    def test_first_finish_wins_and_legacy_calls_are_unchanged(self):
+        ledger = usage.UsageLedger(self.path)
+        request = ledger.begin('work')
+        ledger.finish(request, None, status='failed', failure_stage='relay',
+                      failure_type='other')
+        before = self.entry(ledger)
+        ledger.finish(request, responses_usage(), status='completed',
+                      failure_stage='response_validation', failure_type='value_error')
+        self.assertEqual(self.entry(ledger), before)
+
+        legacy = ledger.begin('work')
+        ledger.finish(legacy, responses_usage())
+        self.assertNotIn('failure_stage', json.loads(self.path.read_text())['requests'][legacy])
+
+
 class PeerBudgetTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()
         self.path = Path(self.temp.name) / 'usage.json'
+        self.peer_paths = 0
         self.state = {'session_id': 'a' * 32, 'job_id': 'job-1'}
         self.contract = {'executor': {'provider': 'ark', 'model': 'm', 'reasoning_effort': 'max',
                                       'base_url': 'http://127.0.0.1:9/v1', 'http_timeout': 1}}
@@ -469,17 +532,64 @@ class PeerBudgetTests(unittest.TestCase):
     def fake_relay(self, *args, **kwargs):
         yield 'http://127.0.0.1:9/v1', 'token', 9
 
-    def run_peer(self, ledger, finish_usage):
+    def run_peer(self, ledger, finish_usage, isolated_fn=None, relay_factory=None,
+                 credential=('KEY', 'env')):
         def isolated(*args, **kwargs):
             request = ledger.begin('work', provider='ark', model='m', job='job-1')
             ledger.finish(request, finish_usage)
             return {'thread_id': 't', 'summary': 'ok', 'usage': None}
         with patch.object(telos, 'backend_bindings', return_value={'executor': self.binding}), \
-                patch.object(telos, 'provider_credential', return_value=('KEY', 'env')), \
+                patch.object(telos, 'provider_credential', return_value=credential), \
+                patch.object(telos, 'usage_ledger', return_value=ledger), \
+                patch.object(telos, 'isolated_peer_turn', side_effect=isolated_fn or isolated), \
+                patch.object(isolation, 'model_relay', relay_factory or self.fake_relay):
+            return telos.peer_turn(self.state, self.contract, 'message')
+
+    def relay_with_diagnostic(self, diagnostic, token='relay-token'):
+        @contextlib.contextmanager
+        def relay(*args, **kwargs):
+            kwargs['diagnostics']['failure'] = diagnostic
+            yield 'http://127.0.0.1:9/v1', token, 9
+        return relay
+
+    def unknown_with_failure(self, ledger, message='synthetic executor failure'):
+        def isolated(*args, **kwargs):
+            request = ledger.begin('work', provider='ark', model='m', job='job-1')
+            ledger.finish(request, None)
+            raise RuntimeError(message)
+        return isolated
+
+    def relay_detail(self, message):
+        marker = 'Relay diagnostic: '
+        start = message.index(marker) + len(marker)
+        end = message.index('; Task budget cannot be evaluated', start)
+        return message[start:end]
+
+    def run_peer_failure(self, error, *, key='KEY', token='token', budget=None,
+                         finish_usage=None, state=None):
+        self.peer_paths += 1
+        path = self.path.with_name(f'usage-{self.peer_paths}.json')
+        ledger = usage.UsageLedger(path, budget)
+
+        def isolated(*args, **kwargs):
+            request = ledger.begin('work', provider='ark', model='m', job='job-1')
+            ledger.finish(request, finish_usage)
+            raise error
+
+        @contextlib.contextmanager
+        def relay(*args, **kwargs):
+            yield 'http://127.0.0.1:9/v1', token, 9
+
+        with patch.object(telos, 'backend_bindings', return_value={'executor': self.binding}), \
+                patch.object(telos, 'provider_credential', return_value=(key, 'env')), \
                 patch.object(telos, 'usage_ledger', return_value=ledger), \
                 patch.object(telos, 'isolated_peer_turn', side_effect=isolated), \
-                patch.object(isolation, 'model_relay', self.fake_relay):
-            return telos.peer_turn(self.state, self.contract, 'message')
+                patch.object(isolation, 'model_relay', relay):
+            try:
+                telos.peer_turn(state or self.state, self.contract, 'message')
+            except Exception as caught:
+                return caught
+        self.fail('peer_turn unexpectedly succeeded')
 
     def test_unknown_usage_fails_the_turn_instead_of_silent_success(self):
         ledger = usage.UsageLedger(self.path, {'max_input_tokens': 10})
@@ -487,6 +597,100 @@ class PeerBudgetTests(unittest.TestCase):
             self.run_peer(ledger, None)
         self.assertIn('unknown', str(caught.exception))
         self.assertEqual(caught.exception.snapshot['budget_state']['state'], 'unknown')
+
+    def test_relay_diagnostic_survives_unknown_usage_budget_stop(self):
+        self.binding = {**self.binding, 'provider': 'bailian'}
+        ledger = usage.UsageLedger(self.path, {'max_input_tokens': 10})
+        with self.assertRaises(usage.BudgetExceeded) as caught:
+            self.run_peer(ledger, None,
+                          isolated_fn=self.unknown_with_failure(ledger),
+                          relay_factory=self.relay_with_diagnostic('synthetic relay failure'))
+        message = str(caught.exception)
+        self.assertIn('synthetic executor failure', message)
+        self.assertIn('synthetic relay failure', message)
+        self.assertIn('usage is unknown', message)
+        self.assertEqual(caught.exception.snapshot['budget_state']['state'], 'unknown')
+        self.assertEqual(caught.exception.snapshot['totals']['in_flight_requests'], 0)
+
+    def test_relay_diagnostic_redacts_upstream_and_relay_secrets(self):
+        self.binding = {**self.binding, 'provider': 'bailian'}
+        ledger = usage.UsageLedger(self.path, {'max_input_tokens': 10})
+        with self.assertRaises(usage.BudgetExceeded) as caught:
+            self.run_peer(
+                ledger, None,
+                isolated_fn=self.unknown_with_failure(ledger, 'executor saw UPSTREAM_SECRET'),
+                relay_factory=self.relay_with_diagnostic(
+                    'relay saw UPSTREAM_SECRET and RELAY_SECRET', token='RELAY_SECRET'),
+                credential=('UPSTREAM_SECRET', 'env'))
+        message = str(caught.exception)
+        self.assertNotIn('UPSTREAM_SECRET', message)
+        self.assertNotIn('RELAY_SECRET', message)
+        self.assertIn('executor saw [REDACTED]', message)
+        self.assertIn('relay saw [REDACTED] and [REDACTED]', message)
+
+    def test_relay_diagnostic_redacts_when_upstream_credential_is_empty(self):
+        self.binding = {**self.binding, 'provider': 'bailian'}
+        ledger = usage.UsageLedger(self.path, {'max_input_tokens': 10})
+        with self.assertRaises(usage.BudgetExceeded) as caught:
+            self.run_peer(ledger, None,
+                          isolated_fn=self.unknown_with_failure(ledger),
+                          relay_factory=self.relay_with_diagnostic(
+                              'relay saw RELAY_SECRET', token='RELAY_SECRET'),
+                          credential=('', 'local'))
+        message = str(caught.exception)
+        self.assertNotIn('RELAY_SECRET', message)
+        self.assertIn('relay saw [REDACTED]', message)
+        self.assertIn('synthetic executor failure', message)
+
+    def test_relay_diagnostic_redacts_before_capping_a_cutoff_secret(self):
+        self.binding = {**self.binding, 'provider': 'bailian'}
+        ledger = usage.UsageLedger(self.path, {'max_input_tokens': 10})
+        with self.assertRaises(usage.BudgetExceeded) as caught:
+            self.run_peer(
+                ledger, None,
+                isolated_fn=self.unknown_with_failure(ledger),
+                relay_factory=self.relay_with_diagnostic('A' * 598 + 'TOPSECRET'),
+                credential=('TOPSECRET', 'env'))
+        detail = self.relay_detail(str(caught.exception))
+        self.assertEqual(len(detail), 600)
+        self.assertEqual(detail[:598], 'A' * 598)
+        self.assertNotIn('TO', detail[598:])
+
+    def test_relay_diagnostic_cap_applies_after_secret_expansion(self):
+        self.binding = {**self.binding, 'provider': 'bailian'}
+        ledger = usage.UsageLedger(self.path, {'max_input_tokens': 10})
+        with self.assertRaises(usage.BudgetExceeded) as caught:
+            self.run_peer(ledger, None,
+                          isolated_fn=self.unknown_with_failure(ledger),
+                          relay_factory=self.relay_with_diagnostic('K' * 2000),
+                          credential=('K', 'env'))
+        detail = self.relay_detail(str(caught.exception))
+        self.assertEqual(detail, '[REDACTED]' * 60)
+
+    def test_relay_diagnostic_survives_accounting_errors(self):
+        self.binding = {**self.binding, 'provider': 'bailian'}
+        for error_type in (OSError, ValueError):
+            with self.subTest(error_type=error_type.__name__):
+                ledger = usage.UsageLedger(self.path.with_name(error_type.__name__ + '.json'))
+                with patch.object(ledger, 'ensure_known',
+                                  side_effect=error_type('ledger unreadable')):
+                    with self.assertRaises(telos.GateError) as caught:
+                        self.run_peer(
+                            ledger, responses_usage(),
+                            relay_factory=self.relay_with_diagnostic('synthetic relay failure'))
+                message = str(caught.exception)
+                self.assertIn('synthetic relay failure', message)
+                self.assertIn('Usage accounting unavailable', message)
+                self.assertIn('ledger unreadable', message)
+
+    def test_unknown_usage_without_relay_diagnostic_keeps_legacy_message(self):
+        ledger = usage.UsageLedger(self.path, {'max_input_tokens': 10})
+        with self.assertRaises(usage.BudgetExceeded) as caught:
+            self.run_peer(ledger, None)
+        message = str(caught.exception)
+        self.assertTrue(message.startswith(
+            'Task budget cannot be evaluated because usage is unknown'))
+        self.assertNotIn('Relay diagnostic', message)
 
     def test_observed_overspend_allows_the_turn_but_blocks_the_next_request(self):
         ledger = usage.UsageLedger(self.path, {'max_input_tokens': 10})
@@ -501,6 +705,59 @@ class PeerBudgetTests(unittest.TestCase):
             self.assertEqual(telos.redact_credentials('actionable failure', [binding]), 'actionable failure')
         with patch.object(telos, 'provider_credential', return_value=('secret-key', 'env')):
             self.assertEqual(telos.redact_credentials('failed secret-key', [binding]), 'failed [REDACTED]')
+
+    def test_failure_origin_redacts_upstream_and_relay_credentials_before_cutoff(self):
+        upstream = 'UPSTREAM_CREDENTIAL_12345'
+        relay = 'RELAY_CREDENTIAL_98765'
+        for label, credential, key, token in (
+                ('upstream', upstream, upstream, 'relay-token'),
+                ('relay', relay, 'UPSTREAM_KEY', relay)):
+            with self.subTest(label=label):
+                caught = self.run_peer_failure(
+                    RuntimeError('a' * 1190 + credential + ' trailing'), key=key, token=token,
+                    budget={'max_total_tokens': 100})
+                message = str(caught)
+                prefix = message[:1202]
+                self.assertEqual(prefix[:1190], 'a' * 1190)
+                self.assertEqual(prefix[1190:], '[REDACTED]; ')
+                self.assertNotIn(credential[:12], prefix)
+                self.assertIn('Task budget cannot be evaluated', message[1202:])
+
+    def test_failure_origin_caps_replacement_expansion_after_redaction(self):
+        caught = self.run_peer_failure(
+            RuntimeError('x' * 1300), key='x', budget={'max_total_tokens': 100})
+        message = str(caught)
+        self.assertEqual(message[:1202], '[REDACTED]' * 120 + '; ')
+        self.assertNotIn('x', message[:1202])
+        self.assertIn('Task budget cannot be evaluated', message[1202:])
+
+    def test_failure_origin_skips_empty_credentials_and_keeps_short_text(self):
+        caught = self.run_peer_failure(RuntimeError('actionable failure RELAY_TOKEN'),
+                                       key='', token='RELAY_TOKEN',
+                                       budget={'max_total_tokens': 100})
+        self.assertTrue(str(caught).startswith('actionable failure [REDACTED]; '))
+        caught = self.run_peer_failure(RuntimeError('actionable failure'), key='', token='',
+                                       budget={'max_total_tokens': 100})
+        self.assertTrue(str(caught).startswith('actionable failure; '))
+        caught = self.run_peer_failure(RuntimeError('actionable failure'),
+                                       budget={'max_total_tokens': 100})
+        self.assertTrue(str(caught).startswith('actionable failure; '))
+
+    def test_unknown_budget_preserves_timeout_origin_thread_and_snapshot(self):
+        failure = telos.providers.ExecutionTimeout('Execution timed out; UPSTREAM_SECRET RELAY_TOKEN')
+        failure.thread_id = 'thread-42'
+        caught = self.run_peer_failure(
+            failure, key='UPSTREAM_SECRET', token='RELAY_TOKEN',
+            budget={'max_total_tokens': 100},
+            state={'session_id': 'b' * 32, 'job_id': 'job-2'})
+        self.assertIsInstance(caught, usage.BudgetExceeded)
+        self.assertIn('Execution timed out', str(caught))
+        self.assertNotIn('UPSTREAM_SECRET', str(caught))
+        self.assertNotIn('RELAY_TOKEN', str(caught))
+        self.assertEqual(caught.origin_kind, 'execution_timeout')
+        self.assertEqual(caught.thread_id, 'thread-42')
+        self.assertEqual(caught.snapshot['budget_state']['state'], 'unknown')
+        self.assertEqual(caught.snapshot['totals']['in_flight_requests'], 0)
 
     def test_ledger_read_failure_is_not_ignored_after_a_turn(self):
         ledger = usage.UsageLedger(self.path)
@@ -1064,6 +1321,71 @@ class RelayAdmissionDiagnosticTests(unittest.TestCase):
         self.assertEqual(self.ledger.snapshot()['totals']['failed_requests'], 1)
         self.assertEqual(len(opener.calls), 1)
         self.assertTrue(handler.close_connection)
+
+
+
+    def test_upstream_open_exceptions_record_safe_stage_and_type(self):
+        cases = (
+            (TimeoutError('secret-message'), 'timeout'),
+            (urllib.error.URLError(TimeoutError('secret-message')), 'timeout'),
+            (ssl.SSLError('secret-message'), 'tls'),
+            (ConnectionRefusedError('secret-message'), 'connection'),
+            (OSError('secret-message'), 'os_error'),
+            (ValueError('secret-message'), 'value_error'),
+            (RuntimeError('secret-message'), 'other'),
+        )
+        for index, (error, expected) in enumerate(cases):
+            with self.subTest(error=type(error).__name__):
+                path = Path(self.temp.name) / f'open-{index}.json'
+                ledger = usage.UsageLedger(path)
+                opener = _RelayOpener(error=error)
+                with self.relay(ledger=ledger, opener=opener) as (handler_class, relay, unused):
+                    _, status, _ = self.invoke(handler_class, relay)
+                self.assertEqual(status, 400)
+                entry = next(iter(json.loads(path.read_text())['requests'].values()))
+                self.assertEqual((entry['status'], entry['failure_stage'], entry['failure_type']),
+                                 ('failed', 'upstream_open', expected))
+                self.assertNotIn('secret-message', json.dumps(entry))
+
+    def test_upstream_read_exception_records_read_stage(self):
+        class BrokenRead:
+            status = 200
+            headers = Message()
+            headers['Content-Type'] = 'application/json'
+
+            def read(self, amount=-1):
+                raise ValueError('secret-message')
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+        opener = _RelayOpener(BrokenRead())
+        with self.relay(opener=opener) as (handler_class, relay, unused):
+            _, status, _ = self.invoke(handler_class, relay)
+        self.assertEqual(status, 400)
+        entry = next(iter(json.loads(self.ledger.path.read_text())['requests'].values()))
+        self.assertEqual((entry['failure_stage'], entry['failure_type']),
+                         ('upstream_read', 'value_error'))
+        self.assertNotIn('secret-message', json.dumps(entry))
+
+    def test_policy_validation_exception_records_validation_stage_before_outer_catch(self):
+        class InvalidPolicy(_RelayPolicySpy):
+            def validate_response(self, raw, content_type):
+                raise ValueError('secret-message')
+
+        opener = _RelayOpener(_JsonResponse())
+        with self.relay(policy=InvalidPolicy(), opener=opener) as (handler_class, relay, unused):
+            _, status, _ = self.invoke(handler_class, relay)
+        self.assertEqual(status, 400)
+        entry = next(iter(json.loads(self.ledger.path.read_text())['requests'].values()))
+        self.assertEqual((entry['status'], entry['error_kind'], entry['failure_stage'],
+                          entry['failure_type']),
+                         ('failed', 'protocol', 'response_validation', 'value_error'))
+        self.assertEqual(entry['usage']['input_tokens'], 100)
+        self.assertNotIn('secret-message', json.dumps(entry))
 
 
 

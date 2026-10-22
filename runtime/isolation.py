@@ -8,6 +8,7 @@ import re
 import secrets
 import shutil
 import socket
+import ssl
 import threading
 import time
 import urllib.error
@@ -501,6 +502,22 @@ def _terminal(status, outcome):
     return status, None
 
 
+def _failure_type(error):
+    if isinstance(error, TimeoutError):
+        return 'timeout'
+    if isinstance(error, urllib.error.URLError) and isinstance(error.reason, TimeoutError):
+        return 'timeout'
+    if isinstance(error, ssl.SSLError):
+        return 'tls'
+    if isinstance(error, ConnectionError):
+        return 'connection'
+    if isinstance(error, OSError):
+        return 'os_error'
+    if isinstance(error, ValueError):
+        return 'value_error'
+    return 'other'
+
+
 def _bailian_request(raw, binding):
     """Pair historical tool results as required by Bailian's Responses API.
 
@@ -605,17 +622,23 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
             finish_lock = threading.Lock()
             upstream_request_id = None
             observation_id = secrets.token_hex(16) if observer is not None else None
+            failure_stage = 'relay'
 
-            def complete(status, raw_usage=None, error_kind=None):
+            def complete(status, raw_usage=None, error_kind=None, failure_type=None,
+                         stage=None):
                 nonlocal finished
                 with finish_lock:
                     if request_id is None or finished:
                         return
                     finished = True
                     try:
+                        metadata = {}
+                        if status == 'failed' and stage is not None and failure_type is not None:
+                            metadata = {'failure_stage': stage, 'failure_type': failure_type}
                         usage_ledger.finish(request_id, raw_usage, status=status,
                                             latency_ms=(time.monotonic() - started) * 1000,
                                             error_kind=error_kind,
+                                            **metadata,
                                             **({'upstream_request_id': upstream_request_id}
                                                if upstream_request_id else {}))
                     except Exception as error:
@@ -659,7 +682,9 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                         request.pop('reasoning', None)
                         body = json.dumps(request, ensure_ascii=False).encode()
                 try:
-                    lease = closeout.begin(lambda: complete('failed', tracker.usage, 'closeout_timeout'))
+                    lease = closeout.begin(
+                        lambda: complete('failed', tracker.usage, 'closeout_timeout',
+                                         failure_type='timeout', stage=failure_stage))
                 except TimeoutError:
                     # Only closeout.begin owns admission rejection. Later
                     # timeouts (validation, transport or an accepted request's
@@ -694,6 +719,7 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                 if key:
                     headers['Authorization'] = 'Bearer ' + key
                 req = urllib.request.Request(endpoint.rstrip('/') + suffix, data=body, headers=headers)
+                failure_stage = 'upstream_open'
                 try:
                     response = opener.open(req, timeout=closeout.timeout(timeout))
                 except urllib.error.HTTPError as error:
@@ -709,18 +735,21 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                             failed_usage = usage_from_payload(error.read(2 * 1024 * 1024), failed_type)
                     except Exception:
                         failed_usage = None
-                    complete('failed', failed_usage, 'http_' + str(error.code))
+                    complete('failed', failed_usage, 'http_' + str(error.code),
+                             failure_type=_failure_type(error), stage='upstream_open')
                     # Never return arbitrary provider diagnostics or redirect locations.
                     if policy and (error.code in (408, 429) or error.code >= 500):
                         policy.transport_error = 'Exam endpoint HTTP ' + str(error.code)
                     self.send_error(error.code, 'Model endpoint rejected request'); return
                 with response:
+                    failure_stage = 'upstream_read'
                     track_response(response)
                     validated = None
                     content_type = response.headers.get('Content-Type', 'application/json')
                     if chat_request is not None:
                         from chat_adapter import convert, encode
                         raw = response.read(16 * 1024 * 1024 + 1)
+                        failure_stage = 'response_validation'
                         if len(raw) > 16 * 1024 * 1024:
                             raise ValueError('Local response exceeds size limit')
                         try:
@@ -735,32 +764,42 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                         validated, content_type = encode(converted, request.get('stream', False))
                         if policy:
                             try:
+                                failure_stage = 'response_validation'
                                 policy.validate_response(validated, content_type)
-                            except Exception:
-                                complete('failed', seen_usage, 'protocol')
+                            except Exception as error:
+                                complete('failed', seen_usage, 'protocol',
+                                         failure_type=_failure_type(error),
+                                         stage='response_validation')
                                 raise
                         complete('completed', seen_usage)
                     elif policy:
                         validated = response.read(policy.MAX_RESPONSE_BYTES + 1)
+                        failure_stage = 'response_validation'
                         seen_usage = usage_from_payload(validated, content_type)
                         try:
+                            failure_stage = 'response_validation'
                             policy.validate_response(validated, content_type)
-                        except Exception:
-                            complete('failed', seen_usage, 'protocol')
+                        except Exception as error:
+                            complete('failed', seen_usage, 'protocol',
+                                     failure_type=_failure_type(error),
+                                     stage='response_validation')
                             raise
                         complete('completed', seen_usage)
                     elif 'application/json' in content_type:
                         validated = response.read(16 * 1024 * 1024 + 1)
+                        failure_stage = 'response_validation'
                         if len(validated) > 16 * 1024 * 1024:
                             raise ValueError('Model response exceeds size limit')
                         seen_usage = usage_from_payload(validated, content_type)
                         outcome = response_outcome(validated, content_type)
                     elif 'text/event-stream' not in content_type:
                         validated = response.read(16 * 1024 * 1024 + 1)
+                        failure_stage = 'response_validation'
                         if len(validated) > 16 * 1024 * 1024:
                             raise ValueError('Model response exceeds size limit')
                         seen_usage = usage_from_payload(validated, content_type)
                         outcome = response_outcome(validated, content_type)
+                    failure_stage = 'relay'
                     try:
                         self.send_response(response.status)
                         self.send_header('Content-Type', content_type)
@@ -772,11 +811,14 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                     if validated is not None:
                         status, error_kind = _terminal('completed', outcome)
                         complete('failed' if client_gone else status, seen_usage,
-                                 'client_disconnected' if client_gone else error_kind)
+                                 'client_disconnected' if client_gone else error_kind,
+                                 failure_type='other',
+                                 stage='relay' if client_gone else 'response_validation')
                         if not client_gone:
                             self.wfile.write(validated); self.wfile.flush()
                         return
                     while True:
+                        failure_stage = 'upstream_read'
                         read_timeout = closeout.timeout(timeout)
                         sock = closeout.response_socket(response)
                         if sock is not None:
@@ -786,27 +828,35 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                             break
                         # Account before delivery: a broken downstream must not
                         # discard a terminal usage event that already arrived.
+                        failure_stage = 'response_validation'
                         tracker.feed(chunk)
                         observe('feed', observation_id, chunk)
                         if tracker.outcome:
                             status, error_kind = _terminal('completed', tracker.outcome)
                             complete('failed' if client_gone else status, tracker.usage,
-                                     'client_disconnected' if client_gone else error_kind)
+                                     'client_disconnected' if client_gone else error_kind,
+                                     failure_type='other',
+                                     stage='relay' if client_gone else 'response_validation')
+                        failure_stage = 'relay'
                         if not client_gone:
                             try:
                                 self.wfile.write(chunk); self.wfile.flush()
                             except OSError:
                                 client_gone = True
                                 closeout.stop('client_disconnected')
+                    failure_stage = 'response_validation'
                     seen_usage, outcome = tracker.finish()
                     outcome = outcome or 'missing_terminal'
                     status, error_kind = _terminal('completed', outcome)
                     complete('failed' if client_gone else status, seen_usage,
-                             'client_disconnected' if client_gone else error_kind)
+                             'client_disconnected' if client_gone else error_kind,
+                             failure_type='other',
+                             stage='relay' if client_gone else 'response_validation')
             except Exception as error:
                 if seen_usage is None:
                     seen_usage, _ = tracker.finish()
-                complete('failed', seen_usage, 'protocol' if seen_usage is not None else 'transport')
+                complete('failed', seen_usage, 'protocol' if seen_usage is not None else 'transport',
+                         failure_type=_failure_type(error), stage=failure_stage)
                 if diagnostics is not None:
                     detail = str(error).replace(token, '[REDACTED]')
                     diagnostics['failure'] = (detail.replace(key, '[REDACTED]') if key else detail)[:600]

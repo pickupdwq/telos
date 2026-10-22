@@ -72,6 +72,44 @@ class ActivityTests(unittest.TestCase):
                         {e['kind'] for e in self.events()})
         self.assertEqual(self.log.stat().st_mode & 0o777, 0o600)
 
+    def test_controls_are_removed_before_secret_and_pattern_redaction(self):
+        cases = [
+            'known EXACT\u200b_SECRET tail',
+            'Bearer abc\u0000def',
+            'api_\u200bkey: SYNTHETIC_VALUE',
+            's\u0000k-abcdefghijklmno',
+            'ordinary\ttext\nsecond line',
+        ]
+        for case in cases:
+            self.recorder.emit('message', case)
+        self.recorder.emit('message', 'fields', item_id='Bearer abc\u0000def',
+                           status='secret=SYNTHETIC_FIELD', event_type='api_\u200bkey')
+        events = self.events()
+        texts = [event['text'] for event in events]
+        raw = json.dumps(events)
+        for forbidden in ('EXACT_SECRET', 'abc\u0000def', 'SYNTHETIC_VALUE',
+                          'abcdefghijklmno', 'SYNTHETIC_FIELD', '\u200b', '\u0000'):
+            self.assertNotIn(forbidden, raw)
+        self.assertIn('[REDACTED]', texts[0])
+        self.assertIn('Bearer [REDACTED]', texts[1])
+        self.assertIn('api_key: [REDACTED]', texts[2])
+        self.assertIn('[REDACTED]', texts[3])
+        self.assertEqual(texts[4], 'ordinary\ttext\nsecond line')
+        self.assertIn('fields', texts[5])
+
+        controlled = activity.Recorder(self.root, 'b' * 32, secrets=('CANARY\u0000SECRET',))
+        controlled.emit('message', 'CANARY\u200bSECRET')
+        controlled.emit('message', 'CANARY\u0000SECRET')
+        raw = json.dumps(self.events())
+        self.assertNotIn('CANARY', raw)
+        self.assertNotIn('SECRET', raw)
+
+    def test_clean_sanitizes_before_bound_and_keeps_newline_tab(self):
+        text = activity.clean('a' * (activity.MAX_TEXT + 10) + '\u0000', ('x',))
+        self.assertTrue(text.startswith('a' * activity.MAX_TEXT))
+        self.assertTrue(text.endswith('\n[truncated]'))
+        self.assertEqual(activity.clean('tab\there\nline\x00'), 'tab\there\nline')
+
     def test_concurrent_append_partial_line_and_independent_readers(self):
         self.log.write_bytes(b'{"interrupted":')
         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:

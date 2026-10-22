@@ -25,6 +25,8 @@ EXAM_RESERVES = {'exam_reserve_requests': 'max_requests',
 TOKEN_FIELDS = ('input_tokens', 'cached_input_tokens', 'uncached_input_tokens',
                 'output_tokens', 'reasoning_output_tokens', 'total_tokens')
 PHASES = ('work', 'exam')
+FAILURE_STAGES = frozenset(('relay', 'upstream_open', 'upstream_read', 'response_validation'))
+FAILURE_TYPES = frozenset(('timeout', 'tls', 'connection', 'os_error', 'value_error', 'other'))
 _LOCKS = {}
 _LOCKS_GUARD = threading.Lock()
 
@@ -311,7 +313,7 @@ class UsageLedger:
             return request_id
 
     def finish(self, request_id, raw_usage, status='completed', *, latency_ms=None, error_kind=None,
-               upstream_request_id=None):
+               upstream_request_id=None, failure_stage=None, failure_type=None):
         if status not in ('completed', 'failed'):
             raise ValueError('Usage completion status must be completed or failed')
         with self._locked():
@@ -326,6 +328,10 @@ class UsageLedger:
                 entry['error_kind'] = _bounded_error(error_kind)
             if isinstance(upstream_request_id, str) and re.fullmatch(r'[A-Za-z0-9_.:-]{1,128}', upstream_request_id):
                 entry['upstream_request_id'] = upstream_request_id
+            if (status == 'failed' and type(failure_stage) is str and type(failure_type) is str
+                    and failure_stage in FAILURE_STAGES and failure_type in FAILURE_TYPES):
+                entry['failure_stage'] = failure_stage
+                entry['failure_type'] = failure_type
             self._write(data)
             return self._snapshot(data)
 

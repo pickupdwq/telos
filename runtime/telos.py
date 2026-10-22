@@ -1123,29 +1123,43 @@ def peer_turn(state, contract, message, phase="work", policy=None):
             failure = error
     # The relay has now stopped admissions and drained/interrupted its current
     # requests. Checking earlier misclassified still-settling usage as unknown.
-    origin = str(failure)[:1200] + '; ' if failure else ''
+    origin = str(failure) if failure else ''
     for secret in (key, token):
         if secret:
             origin = origin.replace(secret, '[REDACTED]')
+    origin = origin[:1200] + '; ' if failure else ''
     if closeout.reason == 'execution_deadline':
         origin = 'Execution admission deadline reached; ' + origin
+    relay_diagnostic = ''
+    if diagnostics.get('failure'):
+        detail = str(diagnostics['failure'])
+        for secret in (key, token):
+            if secret:
+                detail = detail.replace(secret, '[REDACTED]')
+        relay_diagnostic = 'Relay diagnostic: ' + detail[:600] + '; '
     try:
         if budget_failure:
             raise BudgetExceeded(budget_failure.get('message', 'Task budget exhausted'),
                                  budget_failure.get('snapshot'))
         ledger.ensure_known()
     except BudgetExceeded as error:
-        combined = BudgetExceeded(origin + str(error), error.snapshot)
+        combined = BudgetExceeded(origin + relay_diagnostic + str(error), error.snapshot)
         if isinstance(failure, providers.ExecutionTimeout) or closeout.reason == 'execution_deadline':
             combined.origin_kind = 'execution_timeout'
         if getattr(failure, 'thread_id', None):
             combined.thread_id = failure.thread_id
         raise combined from None
     except (OSError, ValueError) as error:
-        message = (origin + 'Usage accounting unavailable; configured task budget cannot be verified, '
-                   'so further paid requests are blocked: ' + str(error)[:200])
+        message = (origin + relay_diagnostic
+                   + 'Usage accounting unavailable; configured task budget cannot be verified, '
+                   + 'so further paid requests are blocked: ' + str(error)[:200])
         if contract.get('budget'):
-            raise BudgetExceeded(message, None) from None
+            combined = BudgetExceeded(message, None)
+            if isinstance(failure, providers.ExecutionTimeout) or closeout.reason == 'execution_deadline':
+                combined.origin_kind = 'execution_timeout'
+            if getattr(failure, 'thread_id', None):
+                combined.thread_id = failure.thread_id
+            raise combined from None
         raise GateError(message) from None
     if failure:
         if isinstance(failure, providers.ExecutionTimeout):
@@ -2087,6 +2101,28 @@ def serve():
         stop.set()
 
 
+def _validate_operands(parser, command, ids, cache_action):
+    """Reject invalid command operand counts before any handler can run."""
+    bounds = {
+        "serve": (0, 0), "doctor": (0, 0), "recover": (0, 0),
+        "auth": (1, 1), "status": (1, 2), "review": (1, 2),
+        "receive": (2, 3), "pause": (1, 1), "resume": (1, 1),
+        "cancel": (1, 1), "_job": (2, 2), "_dispatch": (1, 1),
+        "_project_check": (2, 2),
+    }
+    if command == "local":
+        expected = {"list": 1, "add": 2, "select": 2}.get(ids[0]) if ids else None
+        if (expected is not None and len(ids) != expected) or not 1 <= len(ids) <= 2:
+            parser.error("telos local expects: list | add NAME | select NAME")
+        return
+    if command == "cache":
+        minimum, maximum = (1 if cache_action in ("archive", "cleanup") else 0), 1
+    else:
+        minimum, maximum = bounds[command]
+    if not minimum <= len(ids) <= maximum:
+        parser.error(f"telos {command} expects {minimum} to {maximum} operands")
+
+
 def main():
     os.umask(0o077)
     if sys.argv[1:2] == ['compare']:
@@ -2106,6 +2142,7 @@ def main():
     parser.add_argument('--reasoning-effort', choices=providers.EFFORTS, default='none')
     parser.add_argument('--default', action='store_true', help='Make the selected local endpoint the default executor')
     args = parser.parse_args()
+    _validate_operands(parser, args.command, args.ids, args.action)
     if args.command == "serve":
         serve()
     elif args.command == 'local':

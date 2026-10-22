@@ -1,0 +1,301 @@
+diff --git a/runtime/activity.py b/runtime/activity.py
+index 9c2b6792cd23259fd90124361e37fb070a1eb580..ad6c57c7dbf87ed44bf95290762461499eddac1e 100644
+--- a/runtime/activity.py
++++ b/runtime/activity.py
+@@ -28,17 +28,25 @@ BEARER = re.compile(r'(?i)\bBearer\s+[^\s\"\'&,;]+')
+ KEY = re.compile(r'\bsk-[A-Za-z0-9_-]{12,}')
+ 
+ 
++def _without_controls(text):
++    return ''.join(c for c in text if c in '\n\t' or not unicodedata.category(c).startswith('C'))
++
++
+ def clean(value, secrets=()):
+-    text = str(value)
++    # Normalize first: removing controls after matching can reassemble a
++    # credential that neither the exact-secret nor pattern pass could see.
++    text = _without_controls(str(value))
+     for secret in secrets:
+         if secret:
+-            text = text.replace(secret, '[REDACTED]')
++            secret = _without_controls(str(secret))
++            if secret:
++                text = text.replace(secret, '[REDACTED]')
+     text = BEARER.sub('Bearer [REDACTED]', text)
+     text = SENSITIVE.sub(r'\1[REDACTED]', text)
+     text = KEY.sub('[REDACTED]', text)
+     # Untrusted commands/output must not control the observer terminal (OSC,
+     # escape sequences, carriage-return overwrites, bidi controls).
+-    text = ''.join(c for c in text if c in '\n\t' or not unicodedata.category(c).startswith('C'))
++    text = _without_controls(text)
+     return text if len(text) <= MAX_TEXT else text[:MAX_TEXT] + '\n[truncated]'
+ 
+ 
+diff --git a/runtime/executor.py b/runtime/executor.py
+index 1bd8684f535b322b9358eefa4ad47dd3ee8d02c9..a681d290fa132d6763f2b061f036093ed0da15de 100644
+--- a/runtime/executor.py
++++ b/runtime/executor.py
+@@ -69,6 +69,13 @@ def _work_guidance(evidence, contract, state, *, artifact_root=None):
+     ]
+     if (artifact_root is None and contract.get('task_type') != 'audit'
+             and 'audit' not in contract):
++        lines.append(
++            'Execution package: before editing, map each requirement to its file/interface, dependencies, '
++            'edge cases and public test; keep this map in working context, not a new file. Batch independent '
++            'reads within scope. Implement related changes, run focused tests and repair coherently in this '
++            'turn; stop for a real blocker or budget limit. Final delivery must identify evidence, failures, '
++            'blockers and unfinished items. This grants no broader permissions or private acceptance access.'
++        )
+         lines += _patch_format_guidance()
+     return '\n'.join(lines) + '\n'
+ 
+diff --git a/runtime/telos.py b/runtime/telos.py
+index 87101352adfb29f0093c8fdbf8fce52f3947de46..c20c585e776c11d3a07ef73774c75f3b03c8b21e 100644
+--- a/runtime/telos.py
++++ b/runtime/telos.py
+@@ -2087,6 +2087,28 @@ def serve():
+         stop.set()
+ 
+ 
++def _validate_operands(parser, command, ids, cache_action):
++    """Reject invalid command operand counts before any handler can run."""
++    bounds = {
++        "serve": (0, 0), "doctor": (0, 0), "recover": (0, 0),
++        "auth": (1, 1), "status": (1, 2), "review": (1, 2),
++        "receive": (2, 3), "pause": (1, 1), "resume": (1, 1),
++        "cancel": (1, 1), "_job": (2, 2), "_dispatch": (1, 1),
++        "_project_check": (2, 2),
++    }
++    if command == "local":
++        expected = {"list": 1, "add": 2, "select": 2}.get(ids[0]) if ids else None
++        if (expected is not None and len(ids) != expected) or not 1 <= len(ids) <= 2:
++            parser.error("telos local expects: list | add NAME | select NAME")
++        return
++    if command == "cache":
++        minimum, maximum = (1 if cache_action in ("archive", "cleanup") else 0), 1
++    else:
++        minimum, maximum = bounds[command]
++    if not minimum <= len(ids) <= maximum:
++        parser.error(f"telos {command} expects {minimum} to {maximum} operands")
++
++
+ def main():
+     os.umask(0o077)
+     if sys.argv[1:2] == ['compare']:
+@@ -2106,6 +2128,7 @@ def main():
+     parser.add_argument('--reasoning-effort', choices=providers.EFFORTS, default='none')
+     parser.add_argument('--default', action='store_true', help='Make the selected local endpoint the default executor')
+     args = parser.parse_args()
++    _validate_operands(parser, args.command, args.ids, args.action)
+     if args.command == "serve":
+         serve()
+     elif args.command == 'local':
+diff --git a/runtime/test_mcp_contract.py b/runtime/test_mcp_contract.py
+index 98019e2c539c8469f3af9faf2d1517eaa5fc8bc0..fe89905f8068b466c3a87754a7248a4950c4959b 100644
+--- a/runtime/test_mcp_contract.py
++++ b/runtime/test_mcp_contract.py
+@@ -368,6 +368,50 @@ class MCPBoundaryTests(unittest.TestCase):
+         self.assertEqual(evidence['usage'], snapshot)
+ 
+ 
++class CLIOperandValidationTests(unittest.TestCase):
++    def assert_usage_exit(self, *argv):
++        stderr = io.StringIO()
++        with patch.object(b.sys, 'argv', ['telos', *argv]), \
++                patch.object(b.sys, 'stderr', stderr):
++            with self.assertRaises(SystemExit) as caught:
++                b.main()
++        self.assertEqual(caught.exception.code, 2)
++        self.assertIn('usage:', stderr.getvalue().lower())
++        self.assertNotIn('Traceback', stderr.getvalue())
++
++    def test_invalid_operand_counts_exit_two_with_usage(self):
++        cases = [
++            ('serve', 'extra'), ('doctor', 'extra'), ('recover', 'extra'),
++            ('auth',), ('auth', 'provider', 'extra'),
++            ('status',), ('status', 'sid', 'full', 'extra'),
++            ('review',), ('review', 'sid', 'full', 'extra'),
++            ('receive', 'sid'), ('receive', 'sid', 'event', 'full', 'extra'),
++            ('pause',), ('resume', 'sid', 'extra'), ('cancel',),
++            ('cache', 'target', 'extra'), ('cache', '--action', 'archive'),
++            ('local',), ('local', 'list', 'extra'), ('local', 'add'),
++            ('local', 'add', 'name', 'extra'), ('local', 'select'),
++            ('_job', 'sid'), ('_job', 'sid', 'job', 'extra'),
++            ('_dispatch',), ('_dispatch', 'sid', 'extra'),
++            ('_project_check', 'pid'), ('_project_check', 'pid', 'vid', 'extra'),
++        ]
++        for argv in cases:
++            with self.subTest(argv=argv):
++                self.assert_usage_exit(*argv)
++
++    def test_valid_operands_and_positional_detail_reach_handler(self):
++        with patch.object(b, 'status', return_value={}) as status, \
++                patch.object(b.sys, 'argv', ['telos', 'status', 'sid', 'summary']), \
++                patch.object(b, 'print'):
++            b.main()
++        status.assert_called_once_with('sid', 'summary')
++
++    def test_genuine_handler_exceptions_are_not_swallowed(self):
++        with patch.object(b, 'status', side_effect=RuntimeError('handler failed')), \
++                patch.object(b.sys, 'argv', ['telos', 'status', 'sid']):
++            with self.assertRaisesRegex(RuntimeError, 'handler failed'):
++                b.main()
++
++
+ if __name__ == '__main__':
+     import unittest
+     unittest.main(verbosity=2)
+diff --git a/runtime/test_preflight.py b/runtime/test_preflight.py
+index 754a313fc51f5e060788a1b1fbf75c7b196943dd..cd8785c74c0efcb1d582428b7cdf350649dcf50f 100644
+--- a/runtime/test_preflight.py
++++ b/runtime/test_preflight.py
+@@ -407,6 +407,9 @@ class PatchFormatGuidanceTests(ExecutorPreflightOrderTests):
+         self.assertEqual(prompt.count('*** Add File: path'), 1)
+         self.assertEqual(prompt.count('*** Update File: path'), 1)
+         self.assertEqual(prompt.count('Patch format: apply_patch takes raw patch text'), 1)
++        self.assertEqual(prompt.count(ExecutionPackageGuidanceTests.ADVISORY), 1)
++        self.assertLess(prompt.index(ExecutionPackageGuidanceTests.ADVISORY),
++                        prompt.index('Patch format: apply_patch'))
+         self.assertLess(prompt.index('*** Begin Patch'), prompt.index('*** End Patch'))
+         self.assertIn('without a JSON wrapper or Markdown fence', prompt)
+         self.assertIn('only for new paths', prompt)
+@@ -502,6 +505,55 @@ class PatchFormatGuidanceTests(ExecutorPreflightOrderTests):
+         self.assertLessEqual(len(block), 1200)
+ 
+ 
++class ExecutionPackageGuidanceTests(unittest.TestCase):
++    ADVISORY = (
++        'Execution package: before editing, map each requirement to its file/interface, dependencies, '
++        'edge cases and public test; keep this map in working context, not a new file. Batch independent '
++        'reads within scope. Implement related changes, run focused tests and repair coherently in this '
++        'turn; stop for a real blocker or budget limit. Final delivery must identify evidence, failures, '
++        'blockers and unfinished items. This grants no broader permissions or private acceptance access.'
++    )
++
++    def setUp(self):
++        self.state = {'worktree': '/worktree', 'base_commit': 'a' * 40}
++        self.evidence = {'status': 'passed', 'cwd': '/worktree', 'interpreter': '/verified/python'}
++
++    def test_implementation_guidance_has_one_exact_bounded_advisory_before_patch_block(self):
++        for contract in ({}, {'task_type': 'implementation'}):
++            with self.subTest(contract=contract):
++                text = executor._work_guidance(self.evidence, contract, self.state)
++                self.assertEqual(text.count(self.ADVISORY), 1)
++                self.assertLessEqual(len(self.ADVISORY), 600)
++                self.assertLess(text.index(self.ADVISORY), text.index('Patch format: apply_patch'))
++                guidance = text.split('Verified work guidance', 1)[1]
++                self.assertLessEqual(len(guidance), 2500)
++
++    def test_audit_modes_exclude_the_advisory_and_patch_block(self):
++        audit_contracts = (
++            {'task_type': 'audit', 'audit': {'targets': []}},
++            {'audit': {'targets': []}},
++        )
++        for contract in audit_contracts:
++            with self.subTest(contract=contract):
++                text = executor._work_guidance(self.evidence, contract, self.state,
++                                               artifact_root='/artifacts')
++                self.assertNotIn(self.ADVISORY, text)
++                self.assertNotIn('Patch format: apply_patch', text)
++
++    def test_legacy_audit_key_contract_without_artifact_root_excludes_the_advisory(self):
++        text = executor._work_guidance(
++            self.evidence, {'audit': {'targets': []}}, self.state)
++        self.assertNotIn(self.ADVISORY, text)
++        self.assertNotIn('Patch format: apply_patch', text)
++
++    def test_artifact_root_implementation_excludes_the_advisory(self):
++        text = executor._work_guidance(
++            self.evidence, {'task_type': 'implementation', 'audit': {'targets': []}}, self.state,
++            artifact_root='/artifacts')
++        self.assertNotIn(self.ADVISORY, text)
++        self.assertNotIn('Patch format: apply_patch', text)
++
++
+ @unittest.skipUnless(sys.platform == 'darwin' and Path('/usr/bin/sandbox-exec').exists(),
+                      'requires macOS sandbox-exec')
+ class RealSandboxPreflightTests(unittest.TestCase):
+diff --git a/runtime/test_reasoning.py b/runtime/test_reasoning.py
+index 7a680188018257191608deb66f87d116ce906ae0..cedbbb841026293e7b6170cbb9be75708ac47fd0 100644
+--- a/runtime/test_reasoning.py
++++ b/runtime/test_reasoning.py
+@@ -94,6 +94,30 @@ class ReasoningTests(unittest.TestCase):
+         self.assertNotIn('\\u0007', raw)
+         self.assertEqual(self.events()[-1]['status'], 'interrupted')
+ 
++    def test_complete_visibility_normalizes_before_redaction(self):
++        decoder = reasoning.Decoder(self.recorder, 'request', secrets=self.recorder.secrets)
++        text = ('SAFE Bearer abc\u0000def api_\u200bkey: SYNTHETIC_VALUE '
++                'EXACT\u200b_PRIVATE_KEY\nSAFE_END\n')
++        decoder.feed(sse(delta(text)))
++        decoder.feed(sse(done(text)))
++        events = self.events()
++        raw = json.dumps(events)
++        for forbidden in ('abcdef', 'SYNTHETIC_VALUE', 'EXACT', '\\u0000', '\\u200b'):
++            self.assertNotIn(forbidden, raw)
++        displayed = list(watch.EventBuffer(events))[0]['text']
++        self.assertIn('SAFE Bearer [REDACTED]', displayed)
++        self.assertIn('api_key: [REDACTED]', displayed)
++        self.assertIn('SAFE_END\n', displayed)
++
++        controlled = activity.Recorder(self.root, 'b' * 32,
++                                       secrets=('EXACT\u0000PRIVATE_KEY',))
++        decoder = reasoning.Decoder(controlled, 'request', secrets=controlled.secrets)
++        decoder.feed(sse(delta('SAFE EXACT\u200bPRIVATE_KEY END')))
++        decoder.flush('completed')
++        raw = json.dumps(self.events())
++        self.assertNotIn('PRIVATE_KEY', raw)
++        self.assertIn('SAFE [REDACTED] END', json.loads(raw)[-1]['text'])
++
+     def test_duplicate_sequence_parts_summaries_and_request_ids_stay_separate(self):
+         for request in ('first', 'second'):
+             decoder = reasoning.Decoder(self.recorder, request)
+diff --git a/runtime/test_watch.py b/runtime/test_watch.py
+index 1d4979520f594f954c28560ef554f8d809e16da4..b79d20825a886093e8bb6a2b90c1130fb4eca1b8 100644
+--- a/runtime/test_watch.py
++++ b/runtime/test_watch.py
+@@ -72,6 +72,44 @@ class ActivityTests(unittest.TestCase):
+                         {e['kind'] for e in self.events()})
+         self.assertEqual(self.log.stat().st_mode & 0o777, 0o600)
+ 
++    def test_controls_are_removed_before_secret_and_pattern_redaction(self):
++        cases = [
++            'known EXACT\u200b_SECRET tail',
++            'Bearer abc\u0000def',
++            'api_\u200bkey: SYNTHETIC_VALUE',
++            's\u0000k-abcdefghijklmno',
++            'ordinary\ttext\nsecond line',
++        ]
++        for case in cases:
++            self.recorder.emit('message', case)
++        self.recorder.emit('message', 'fields', item_id='Bearer abc\u0000def',
++                           status='secret=SYNTHETIC_FIELD', event_type='api_\u200bkey')
++        events = self.events()
++        texts = [event['text'] for event in events]
++        raw = json.dumps(events)
++        for forbidden in ('EXACT_SECRET', 'abc\u0000def', 'SYNTHETIC_VALUE',
++                          'abcdefghijklmno', 'SYNTHETIC_FIELD', '\u200b', '\u0000'):
++            self.assertNotIn(forbidden, raw)
++        self.assertIn('[REDACTED]', texts[0])
++        self.assertIn('Bearer [REDACTED]', texts[1])
++        self.assertIn('api_key: [REDACTED]', texts[2])
++        self.assertIn('[REDACTED]', texts[3])
++        self.assertEqual(texts[4], 'ordinary\ttext\nsecond line')
++        self.assertIn('fields', texts[5])
++
++        controlled = activity.Recorder(self.root, 'b' * 32, secrets=('CANARY\u0000SECRET',))
++        controlled.emit('message', 'CANARY\u200bSECRET')
++        controlled.emit('message', 'CANARY\u0000SECRET')
++        raw = json.dumps(self.events())
++        self.assertNotIn('CANARY', raw)
++        self.assertNotIn('SECRET', raw)
++
++    def test_clean_sanitizes_before_bound_and_keeps_newline_tab(self):
++        text = activity.clean('a' * (activity.MAX_TEXT + 10) + '\u0000', ('x',))
++        self.assertTrue(text.startswith('a' * activity.MAX_TEXT))
++        self.assertTrue(text.endswith('\n[truncated]'))
++        self.assertEqual(activity.clean('tab\there\nline\x00'), 'tab\there\nline')
++
+     def test_concurrent_append_partial_line_and_independent_readers(self):
+         self.log.write_bytes(b'{"interrupted":')
+         with concurrent.futures.ThreadPoolExecutor(max_workers=4) as pool:

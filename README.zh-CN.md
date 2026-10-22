@@ -2,7 +2,7 @@
 
 **让编码目标变成可测试、可审核的成果。**
 
-[English](README.md) · [快速开始](#快速开始) · [20 轮 RSI 结果](#20-轮-rsi-进化实验) · [架构说明](docs/architecture.md) · [配置指南](docs/configuration.md) · [MCP 工具](docs/tools.md)
+[English](README.md) · [文档索引](docs/README.md) · [快速开始](#快速开始) · [20 轮 RSI 结果](#20-轮-rsi-进化实验) · [架构说明](docs/architecture.md) · [配置指南](docs/configuration.md) · [MCP 工具](docs/tools.md)
 
 [![CI](https://github.com/pickupdwq/telos/actions/workflows/ci.yml/badge.svg)](https://github.com/pickupdwq/telos/actions/workflows/ci.yml)
 [![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)

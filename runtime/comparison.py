@@ -11,6 +11,7 @@ import contextlib
 import fcntl
 import hashlib
 import json
+import math
 import os
 from pathlib import Path
 import platform
@@ -548,6 +549,36 @@ def control(root, action):
         return {'continuation': progress['continuation'], 'note': 'In-flight requests may finish; no automatic next stage'}
 
 
+def _wall_timestamp(value):
+    return type(value) is int or (type(value) is float and math.isfinite(value))
+
+
+def _wall_duration(result):
+    started = result.get('started_at')
+    finished = result.get('finished_at')
+    if not _wall_timestamp(started) or not _wall_timestamp(finished) or finished < started:
+        return None
+    try:
+        duration = finished - started
+    except (OverflowError, ValueError):
+        return None
+    if type(duration) is float and not math.isfinite(duration):
+        return None
+    return duration
+
+
+def _wall_total(durations):
+    if any(value is None for value in durations):
+        return None
+    try:
+        total = sum(durations)
+    except OverflowError:
+        return None
+    if type(total) is float and not math.isfinite(total):
+        return None
+    return round(total, 3)
+
+
 def summarize(manifest, results):
     sides = {}
     for side in SIDES:
@@ -555,6 +586,7 @@ def summarize(manifest, results):
         completed = [results[t['id']] for t in planned if t['id'] in results]
         passed = sum(r['outcome'] == 'passed' for r in completed)
         usage = [r['measurement']['usage'] for r in completed]
+        durations = [_wall_duration(r) for r in completed]
         observed = sum(u['totals']['total_tokens'] for u in usage)
         unknown = sum(u['unknown_fields']['total_tokens'] for u in usage)
         exact = observed if not unknown else None
@@ -568,7 +600,7 @@ def summarize(manifest, results):
                        'unknown_token_requests': unknown,
                        # Includes failed trials and repair/exam requests, not just winners.
                        'tokens_per_success': exact / passed if passed and exact is not None else None,
-                       'trial_wall_seconds': round(sum(r['finished_at'] - r['started_at'] for r in completed), 3),
+                       'trial_wall_seconds': _wall_total(durations),
                        'provider_seconds': (round(sum(r['measurement']['provider_seconds'] for r in completed), 3)
                            if all(r['measurement']['provider_seconds'] is not None for r in completed) else None)}
         for key in ('true_positive', 'false_positive', 'false_negative'):
@@ -617,7 +649,7 @@ def report(root):
             result = read(root / record['result'])
             if digest(result) != record['result_hash']:
                 raise ComparisonError('Saved trial evidence changed')
-            results[trial_id] = {**result, 'started_at': record['started_at']}
+            results[trial_id] = {**result, 'started_at': record.get('started_at', result.get('started_at'))}
         summary = summarize(manifest, results)
         output = {'manifest_hash': progress['manifest_hash'], 'label': manifest['label'],
                   'versions': {s: manifest['versions'][s]['sha256'] for s in SIDES},
@@ -635,12 +667,13 @@ def report(root):
             if result:
                 measured = result['measurement']
                 usage = measured['usage']
+                duration = _wall_duration(result)
                 row.update(reason=result.get('reason'), evidence=progress['trials'][trial['id']]['result'],
                            requests=usage['totals']['requests'],
                            observed_total_tokens=usage['totals']['total_tokens'],
                            total_tokens=usage['totals']['total_tokens'] if not usage['unknown_fields']['total_tokens'] else None,
                            provider_seconds=measured['provider_seconds'],
-                           wall_seconds=round(result['finished_at'] - result['started_at'], 3),
+                           wall_seconds=round(duration, 3) if duration is not None else None,
                            rounds=measured['rounds'], turns=measured['turns'], oracle=result.get('oracle'))
             output['trials'].append(row)
         write(root / 'report.json', output)

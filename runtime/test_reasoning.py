@@ -94,6 +94,30 @@ class ReasoningTests(unittest.TestCase):
         self.assertNotIn('\\u0007', raw)
         self.assertEqual(self.events()[-1]['status'], 'interrupted')
 
+    def test_complete_visibility_normalizes_before_redaction(self):
+        decoder = reasoning.Decoder(self.recorder, 'request', secrets=self.recorder.secrets)
+        text = ('SAFE Bearer abc\u0000def api_\u200bkey: SYNTHETIC_VALUE '
+                'EXACT\u200b_PRIVATE_KEY\nSAFE_END\n')
+        decoder.feed(sse(delta(text)))
+        decoder.feed(sse(done(text)))
+        events = self.events()
+        raw = json.dumps(events)
+        for forbidden in ('abcdef', 'SYNTHETIC_VALUE', 'EXACT', '\\u0000', '\\u200b'):
+            self.assertNotIn(forbidden, raw)
+        displayed = list(watch.EventBuffer(events))[0]['text']
+        self.assertIn('SAFE Bearer [REDACTED]', displayed)
+        self.assertIn('api_key: [REDACTED]', displayed)
+        self.assertIn('SAFE_END\n', displayed)
+
+        controlled = activity.Recorder(self.root, 'b' * 32,
+                                       secrets=('EXACT\u0000PRIVATE_KEY',))
+        decoder = reasoning.Decoder(controlled, 'request', secrets=controlled.secrets)
+        decoder.feed(sse(delta('SAFE EXACT\u200bPRIVATE_KEY END')))
+        decoder.flush('completed')
+        raw = json.dumps(self.events())
+        self.assertNotIn('PRIVATE_KEY', raw)
+        self.assertIn('SAFE [REDACTED] END', json.loads(raw)[-1]['text'])
+
     def test_duplicate_sequence_parts_summaries_and_request_ids_stay_separate(self):
         for request in ('first', 'second'):
             decoder = reasoning.Decoder(self.recorder, request)

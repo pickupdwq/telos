@@ -269,6 +269,96 @@ class SummaryTests(unittest.TestCase):
             c.outcome_checks(None, {'audit': {}, 'expected_findings': ['c1']}, measured)
 
 
+class DurationTests(unittest.TestCase):
+    def fixture(self):
+        trials = [{'id': f'case-{side}', 'case_id': 'case', 'repeat': 1, 'side': side}
+                  for side in c.SIDES]
+        results = {t['id']: {
+            'outcome': 'passed', 'started_at': 1, 'finished_at': 3, 'oracle': None,
+            'measurement': {'provider_seconds': 0.5, 'usage': {
+                'totals': {'requests': 2, 'total_tokens': 100},
+                'unknown_fields': {'total_tokens': 0}}}}
+            for t in trials}
+        return {'trials': trials}, results
+
+    def test_exact_large_integer_durations_and_negative_epochs(self):
+        manifest, results = self.fixture()
+        for result in results.values():
+            result.update(started_at=2**53, finished_at=2**53 + 1)
+        out = c.summarize(manifest, results)
+        for side in c.SIDES:
+            self.assertEqual(out['sides'][side]['trial_wall_seconds'], 1)
+
+        for result in results.values():
+            result.update(started_at=-10, finished_at=-9)
+        out = c.summarize(manifest, results)
+        self.assertEqual(out['sides']['baseline']['trial_wall_seconds'], 1)
+
+    def test_invalid_or_reversed_timestamps_are_unknown_not_zero(self):
+        invalid = [
+            (None, 3), (1, None), (3, 1), (True, 3), (1, False),
+            (float('inf'), 3), (1, float('-inf')), (float('nan'), 3),
+            ('1', 3), (1, '3'), (-1e308, 1e308), (10**400, 1.0),
+        ]
+        for started, finished in invalid:
+            with self.subTest(started=started, finished=finished):
+                manifest, results = self.fixture()
+                results['case-baseline'].update(started_at=started, finished_at=finished)
+                out = c.summarize(manifest, results)
+                self.assertIsNone(out['sides']['baseline']['trial_wall_seconds'])
+                self.assertEqual(out['sides']['candidate']['trial_wall_seconds'], 2)
+
+    def test_empty_and_fractional_durations_round_without_unknown_as_zero(self):
+        manifest, results = self.fixture()
+        out = c.summarize(manifest, {})
+        self.assertEqual(out['sides']['baseline']['trial_wall_seconds'], 0)
+        self.assertEqual(out['sides']['candidate']['trial_wall_seconds'], 0)
+
+        results['case-baseline'].update(started_at=1.0, finished_at=1.0006)
+        results['case-candidate'].update(started_at=-2, finished_at=-2)
+        out = c.summarize(manifest, results)
+        self.assertEqual(out['sides']['baseline']['trial_wall_seconds'], 0.001)
+        self.assertEqual(out['sides']['candidate']['trial_wall_seconds'], 0)
+
+    def test_report_agrees_on_unknown_row_and_markdown_with_integrity_checks(self):
+        manifest = {
+            'label': 'durations', 'versions': {
+                side: {'sha256': side, 'version': side} for side in c.SIDES},
+            'executor': {'provider': 'local', 'model': 'fixture', 'reasoning_effort': 'low'},
+            'upstream_revision': None, 'environment': {}, 'request_ceiling': 2,
+            'cases': [{'id': 'case', 'category': 'fixture', 'split': 'development'}],
+            'trials': [
+                {'id': 'case-r1-baseline', 'case_id': 'case', 'repeat': 1, 'side': 'baseline'},
+                {'id': 'case-r1-candidate', 'case_id': 'case', 'repeat': 1, 'side': 'candidate'},
+            ]}
+        base = {'outcome': 'passed', 'oracle': None, 'measurement': {
+            'provider_seconds': 0.5, 'rounds': 0, 'turns': 1,
+            'usage': {'totals': {'requests': 2, 'total_tokens': 100},
+                      'unknown_fields': {'total_tokens': 0}}}}
+        candidate = {**base, 'started_at': 2**53, 'finished_at': 2**53 + 1}
+        with tempfile.TemporaryDirectory() as folder:
+            root = Path(folder)
+            c.write(root / 'manifest.json', manifest)
+            c.write(root / 'base.json', base)
+            c.write(root / 'candidate.json', candidate)
+            progress = {'manifest_hash': c.digest(manifest), 'active_trial': None, 'trials': {
+                'case-r1-baseline': {'outcome': 'passed', 'result': 'base.json',
+                                     'result_hash': c.digest(base)},
+                'case-r1-candidate': {'outcome': 'passed', 'result': 'candidate.json',
+                                      'result_hash': c.digest(candidate)}}}
+            c.write(root / 'progress.json', progress)
+            with patch.object(c, 'verify_runtime'):
+                out = c.report(root)
+            self.assertIsNone(out['sides']['baseline']['trial_wall_seconds'])
+            self.assertEqual(out['sides']['candidate']['trial_wall_seconds'], 1)
+            rows = {row['id']: row for row in c.read(root / 'report.json')['trials']}
+            self.assertIsNone(rows['case-r1-baseline']['wall_seconds'])
+            self.assertEqual(rows['case-r1-candidate']['wall_seconds'], 1)
+            self.assertIn('| trial_wall_seconds | unknown | 1 |',
+                          (root / 'report.md').read_text())
+            self.assertEqual(c.digest(c.read(root / 'base.json')), c.digest(base))
+
+
 class SuiteTests(unittest.TestCase):
     def test_twenty_distinct_public_cases_with_real_failing_seeds(self):
         cases = evaluation_suite.cases(); c.validate_cases(cases)
