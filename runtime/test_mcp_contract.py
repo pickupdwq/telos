@@ -368,6 +368,50 @@ class MCPBoundaryTests(unittest.TestCase):
         self.assertEqual(evidence['usage'], snapshot)
 
 
+class CLIOperandValidationTests(unittest.TestCase):
+    def assert_usage_exit(self, *argv):
+        stderr = io.StringIO()
+        with patch.object(b.sys, 'argv', ['telos', *argv]), \
+                patch.object(b.sys, 'stderr', stderr):
+            with self.assertRaises(SystemExit) as caught:
+                b.main()
+        self.assertEqual(caught.exception.code, 2)
+        self.assertIn('usage:', stderr.getvalue().lower())
+        self.assertNotIn('Traceback', stderr.getvalue())
+
+    def test_invalid_operand_counts_exit_two_with_usage(self):
+        cases = [
+            ('serve', 'extra'), ('doctor', 'extra'), ('recover', 'extra'),
+            ('auth',), ('auth', 'provider', 'extra'),
+            ('status',), ('status', 'sid', 'full', 'extra'),
+            ('review',), ('review', 'sid', 'full', 'extra'),
+            ('receive', 'sid'), ('receive', 'sid', 'event', 'full', 'extra'),
+            ('pause',), ('resume', 'sid', 'extra'), ('cancel',),
+            ('cache', 'target', 'extra'), ('cache', '--action', 'archive'),
+            ('local',), ('local', 'list', 'extra'), ('local', 'add'),
+            ('local', 'add', 'name', 'extra'), ('local', 'select'),
+            ('_job', 'sid'), ('_job', 'sid', 'job', 'extra'),
+            ('_dispatch',), ('_dispatch', 'sid', 'extra'),
+            ('_project_check', 'pid'), ('_project_check', 'pid', 'vid', 'extra'),
+        ]
+        for argv in cases:
+            with self.subTest(argv=argv):
+                self.assert_usage_exit(*argv)
+
+    def test_valid_operands_and_positional_detail_reach_handler(self):
+        with patch.object(b, 'status', return_value={}) as status, \
+                patch.object(b.sys, 'argv', ['telos', 'status', 'sid', 'summary']), \
+                patch.object(b, 'print'):
+            b.main()
+        status.assert_called_once_with('sid', 'summary')
+
+    def test_genuine_handler_exceptions_are_not_swallowed(self):
+        with patch.object(b, 'status', side_effect=RuntimeError('handler failed')), \
+                patch.object(b.sys, 'argv', ['telos', 'status', 'sid']):
+            with self.assertRaisesRegex(RuntimeError, 'handler failed'):
+                b.main()
+
+
 if __name__ == '__main__':
     import unittest
     unittest.main(verbosity=2)

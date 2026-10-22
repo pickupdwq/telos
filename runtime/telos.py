@@ -2087,6 +2087,28 @@ def serve():
         stop.set()
 
 
+def _validate_operands(parser, command, ids, cache_action):
+    """Reject invalid command operand counts before any handler can run."""
+    bounds = {
+        "serve": (0, 0), "doctor": (0, 0), "recover": (0, 0),
+        "auth": (1, 1), "status": (1, 2), "review": (1, 2),
+        "receive": (2, 3), "pause": (1, 1), "resume": (1, 1),
+        "cancel": (1, 1), "_job": (2, 2), "_dispatch": (1, 1),
+        "_project_check": (2, 2),
+    }
+    if command == "local":
+        expected = {"list": 1, "add": 2, "select": 2}.get(ids[0]) if ids else None
+        if (expected is not None and len(ids) != expected) or not 1 <= len(ids) <= 2:
+            parser.error("telos local expects: list | add NAME | select NAME")
+        return
+    if command == "cache":
+        minimum, maximum = (1 if cache_action in ("archive", "cleanup") else 0), 1
+    else:
+        minimum, maximum = bounds[command]
+    if not minimum <= len(ids) <= maximum:
+        parser.error(f"telos {command} expects {minimum} to {maximum} operands")
+
+
 def main():
     os.umask(0o077)
     if sys.argv[1:2] == ['compare']:
@@ -2106,6 +2128,7 @@ def main():
     parser.add_argument('--reasoning-effort', choices=providers.EFFORTS, default='none')
     parser.add_argument('--default', action='store_true', help='Make the selected local endpoint the default executor')
     args = parser.parse_args()
+    _validate_operands(parser, args.command, args.ids, args.action)
     if args.command == "serve":
         serve()
     elif args.command == 'local':
