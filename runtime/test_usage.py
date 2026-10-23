@@ -1123,6 +1123,18 @@ def work_guidance_budget(item):
 
 
 class WorkGuidanceTests(unittest.TestCase):
+    def prepare(self, raw, *, seconds_remaining=None, requests_remaining=None):
+        class Metadata:
+            def snapshot(self):
+                return {'budget_state': {'remaining': {'max_requests': requests_remaining}}}
+
+            def admission_remaining(self):
+                return seconds_remaining
+
+        metadata = Metadata()
+        return isolation._apply_work_guidance(
+            raw, usage_ledger=metadata, request_id='request-1', closeout=metadata)
+
     def test_list_input_preserves_payload_and_appends_one_developer_message(self):
         payload = {
             'model': 'frozen-model',
@@ -1137,7 +1149,7 @@ class WorkGuidanceTests(unittest.TestCase):
             'tool_choice': 'auto', 'stream': True, 'metadata': {'key': 'value'},
         }
         raw = json.dumps(payload, indent=2).encode()
-        prepared = isolation.prepare_work_request(
+        prepared = self.prepare(
             raw, seconds_remaining=12.75, requests_remaining=4)
         self.assertIsInstance(prepared, bytes)
         updated = json.loads(prepared)
@@ -1157,7 +1169,7 @@ class WorkGuidanceTests(unittest.TestCase):
 
     def test_string_input_becomes_one_user_message_with_original_text(self):
         raw = json.dumps({'model': 'm', 'input': 'keep this text unchanged'}).encode()
-        updated = json.loads(isolation.prepare_work_request(raw, seconds_remaining=3))
+        updated = json.loads(self.prepare(raw, seconds_remaining=3))
         self.assertEqual(len(updated['input']), 2)
         self.assertEqual(updated['input'][0],
                          {'role': 'user', 'content': 'keep this text unchanged'})
@@ -1168,19 +1180,19 @@ class WorkGuidanceTests(unittest.TestCase):
 
     def test_zero_is_known_and_unknown_values_are_omitted(self):
         raw = json.dumps({'model': 'm', 'input': []}).encode()
-        updated = json.loads(isolation.prepare_work_request(
+        updated = json.loads(self.prepare(
             raw, seconds_remaining=0, requests_remaining=0))
         _, budget = work_guidance_budget(updated['input'][-1])
         self.assertEqual(budget['admission_seconds_remaining'], 0)
         self.assertEqual(budget['further_work_requests_remaining'], 0)
 
-        updated = json.loads(isolation.prepare_work_request(
+        updated = json.loads(self.prepare(
             raw, seconds_remaining=0.9, requests_remaining=None))
         _, budget = work_guidance_budget(updated['input'][-1])
         self.assertEqual(budget['admission_seconds_remaining'], 0)
         self.assertNotIn('further_work_requests_remaining', budget)
 
-        updated = json.loads(isolation.prepare_work_request(
+        updated = json.loads(self.prepare(
             raw, seconds_remaining=None, requests_remaining=2))
         _, budget = work_guidance_budget(updated['input'][-1])
         self.assertNotIn('admission_seconds_remaining', budget)
@@ -1190,13 +1202,13 @@ class WorkGuidanceTests(unittest.TestCase):
                                   (float('nan'), None), (float('inf'), None), ('4', None),
                                   (None, True), (None, -1), (None, 2.5), (None, '2')):
             with self.subTest(seconds=seconds, requests=requests):
-                self.assertIs(isolation.prepare_work_request(
+                self.assertIs(self.prepare(
                     raw, seconds_remaining=seconds, requests_remaining=requests), raw)
 
     def test_unsupported_bodies_are_returned_unchanged(self):
         for raw in (b'not-json', b'[]', b'{}', b'{"input":3}', b'{"input":{"a":1}}', b'"text"'):
             with self.subTest(raw=raw):
-                self.assertIs(isolation.prepare_work_request(
+                self.assertIs(self.prepare(
                     raw, seconds_remaining=5, requests_remaining=1), raw)
 
     def test_ineligible_payload_never_reads_optional_hint_metadata(self):

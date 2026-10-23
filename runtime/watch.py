@@ -242,7 +242,8 @@ def group_finished(state_dir, group):
         related = [s for s in states.values() if not s.get('notification_only')
                    and (s in selected or s.get('project_id') in projects)]
         for state in related:
-            if state.get('phase') != 'accepted' and state.get('continuation') != 'cancelled':
+            if (state.get('phase') != 'accepted' and state.get('continuation') != 'cancelled'
+                    and not (state.get('discussion_complete') is True and state.get('return_complete') is True)):
                 return False
             pid = state.get('job_pid')
             if pid is not None:

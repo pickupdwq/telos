@@ -31,6 +31,8 @@ The main Skill loads detailed references only when needed. Live MCP schemas defi
 
 Telos creates internal Git commits in isolated worktrees to pin acceptance evidence. An explicit prohibition on commits must be clarified before dispatch. Merge, push and deployment follow the user's separate authorization; Skill installation grants none of those actions.
 
+New delegated requirements default to [multi-executor planning meetings](../skills/telos/references/meetings.md) before the implementation contract. The original supervisor chooses the participant count, resolves evidence-backed disagreements and freezes the public plan. Meetings have no default token/round/job cap and do not grant code acceptance.
+
 ## Install and upgrade
 
 Fresh install:

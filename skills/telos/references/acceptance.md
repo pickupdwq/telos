@@ -1,5 +1,8 @@
 # Receive, review and finish
 
+Design meetings use `discussion_result` and `telos_meeting_conclude`; do not evaluate or grade meeting participants. A concluded meeting has `accepted=false`. Only the subsequent implementation contract follows the acceptance process below.
+
+
 ## Event-driven continuation
 
 For `[TELOS_EVENT ...]`, take the session/project ID and event ID from that event. If the user paused or cancelled, honor that control state first (`telos_return_control` for a standalone task, `telos_project_control` for a project); do not continue work because a completion arrived.
@@ -11,6 +14,16 @@ For project events, call `telos_project_receive`, review each returned child usi
 `telos_project_receive` keeps read and continuation distinct. The default `detail="summary"` is the MCP callback continuation: if a valid progress reminder exists, it recovers the unhandled child receipts and may return `proceed=true` with the original child action event IDs. `detail="full"` is always read-only: it returns the stored original batch even after child state changes, with project and child `proceed=false`, and it never consumes a reminder, recovers state, re-authorizes work or changes action idempotency. Before the first receipt, it returns `receipt_available=false`; receive with `detail="summary"` to acknowledge the event.
 
 With automatic return enabled, yield while waiting instead of repeatedly polling. If an expected return fails, call `telos_status` (or `telos_project_status` for the project). Inspect the reported continuation, `return_channel.health`, event ID/status, receipt and last error; use child status for a child's return diagnostics. On the original supervisor, receive a known pending event with its existing ID and follow `proceed`/`next_action`. If the channel cannot be reconciled, report the exact diagnostic and preserve the task. Queue submission is different from processing/receipt. Keep ownership on the original supervisor; never invent metadata, start a replacement supervisor or blindly resend an uncertain operation. Manual mode is an explicit user choice, not an automatic fallback for a broken callback.
+
+## Requirement clarification
+
+`phase=needs_clarification` and `next_action=answer_clarification_then_send` mean that the executor is waiting for a decision, not presenting work for evaluation. `telos_receive` and project child receipts preserve `clarification.questions`, `summary` and any format `error` in both summary and full views. A received event authorizes continuation; it does not answer the questions.
+
+- Resolve factual/technical questions using the user's instructions, code and existing decisions. For material business choices that remain open, ask the user concisely with a recommendation and wait for the answer. Continue independent work where possible.
+- Send the answer via `telos_send` with the same `session_id` and received child `event_id`. Answer each question explicitly and instruct the executor to continue within the frozen contract. Do not send private references/check code. If `clarification.error` reports malformed output, request the corrected work-reply format rather than guessing the missing decision.
+- The executor resumes its original conversation. It returns `status="needs_clarification"` with nonempty `clarification_questions` when questions remain; only an explicit `status="completed"` with `clarification_questions=[]` and the normal delivery fields clears an outstanding clarification. Legacy plain-text replies remain readable but cannot clear pending questions.
+- Pending clarification blocks checks/exams; do not use evaluate/grade to advance it. Each answer is a normal work turn and consumes existing work/request/project-job budgets. Pause/cancel and event idempotency still apply. If the user has not answered, keep the task pending; do not repeatedly send the same question or treat silence as a decision.
+- A changed requirement that contradicts the frozen task/checks needs a newly reviewed contract. Preserve the old task's evidence and spent budget; never edit its contract or open a replacement merely to bypass limits. Project dependents wait for acceptance; unrelated eligible tasks can continue.
 
 ## Review before scoring
 

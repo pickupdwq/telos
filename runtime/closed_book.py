@@ -8,6 +8,7 @@ import json
 
 from providers import ProviderError
 from usage import normalize_usage
+from serialization import digest as fingerprint
 
 
 JSON_OBJECT_PROVIDER = 'bailian'
@@ -28,11 +29,6 @@ FORMAT_ERRORS = {
 def format_diagnostic(error):
     """Return a bounded schema diagnostic, never attacker- or model-controlled text."""
     return FORMAT_ERRORS.get(str(error), 'answer schema violation')[:160]
-
-
-def fingerprint(value):
-    return hashlib.sha256(json.dumps(value, ensure_ascii=False, sort_keys=True,
-                                     separators=(',', ':')).encode()).hexdigest()
 
 
 class ExamPolicy:

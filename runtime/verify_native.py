@@ -189,6 +189,7 @@ TELOS_CACHE_DIR=CACHE
                     return b.read_json(b.run_dir(sid) / "state.json")
 
                 fixture = {"repo": str(repo), "task": "Addition fixture; no execution needed.",
+                    "skip_meeting_reason": "Direct native callback verification; no model work is dispatched.",
                     "questions": [{"id": "q1", "prompt": "What is addition?", "reference": "Arithmetic summation.", "points": 100}],
                     "checks": [{"id": "addition", "argv": ["{python}", "-c", "from calc import add; raise SystemExit(0 if add(1,2)==3 else 1)"]}]}
 

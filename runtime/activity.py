@@ -10,6 +10,7 @@ import fcntl
 import json
 import os
 from pathlib import Path
+import queue
 import re
 import signal
 import subprocess
@@ -21,6 +22,7 @@ import uuid
 FILENAME = 'activity.jsonl'
 MAX_LINE = 4 * 1024 * 1024
 MAX_TEXT = 32000
+LOG_LOCK_TIMEOUT = 0.05
 SENSITIVE = re.compile(
     r'(?i)(\b(?:authorization|api[_-]?key|access[_-]?token|password|secret|'
     r'telos_(?:relay|audit)_token)\b[\"\']?\s*[:=]\s*[\"\']?)([^\s\"\'&,;]+)')
@@ -65,7 +67,15 @@ class Recorder:
             fd = os.open(self.directory / FILENAME,
                          os.O_APPEND | os.O_CREAT | os.O_RDWR | os.O_NOFOLLOW, 0o600)
             with os.fdopen(fd, 'a+b', buffering=0) as stream:
-                fcntl.flock(stream, fcntl.LOCK_EX)
+                deadline = time.monotonic() + LOG_LOCK_TIMEOUT
+                while True:
+                    try:
+                        fcntl.flock(stream, fcntl.LOCK_EX | fcntl.LOCK_NB)
+                        break
+                    except BlockingIOError:
+                        if time.monotonic() >= deadline:
+                            raise
+                        time.sleep(.001)
                 raw = (json.dumps(record, ensure_ascii=False) + '\n').encode()
                 # Finish an interrupted prior line before appending a new one.
                 # Each complete event is durable independently of the viewer.
@@ -169,6 +179,63 @@ def files(b, state):
         recorder.emit('diagnostic', 'Worktree change summary unavailable')
 
 
+class OutputObserver:
+    """Bounded, disposable display writer; pipe readers never wait for disk I/O."""
+    MAX_BYTES = 4 * 1024 * 1024
+
+    def __init__(self, recorder):
+        self.recorder = recorder
+        self.queue = queue.Queue(maxsize=64)
+        self.lock = threading.Lock()
+        self.pending_bytes = 0
+        self.stopping = threading.Event()
+        self.gap = threading.Event()
+        self.worker = threading.Thread(target=self.run, name='telos-output-observer', daemon=True)
+        self.worker.start()
+
+    def submit(self, method, args, size):
+        if self.stopping.is_set():
+            return
+        with self.lock:
+            # A stderr flood must not crowd out structured executor events.
+            # Reserve half of both queue limits; pipe readers still never wait.
+            diagnostic = method == 'emit'
+            byte_limit = self.MAX_BYTES // 2 if diagnostic else self.MAX_BYTES
+            if (size > byte_limit - self.pending_bytes or
+                    diagnostic and self.queue.qsize() >= self.queue.maxsize // 2):
+                self.gap.set()
+                return
+            try:
+                self.queue.put_nowait((method, args, size))
+            except queue.Full:
+                self.gap.set()
+            else:
+                self.pending_bytes += size
+
+    def run(self):
+        try:
+            while not self.stopping.is_set() or not self.queue.empty():
+                try:
+                    method, args, size = self.queue.get(timeout=.05)
+                except queue.Empty:
+                    continue
+                try:
+                    getattr(self.recorder, method)(*args)
+                finally:
+                    with self.lock:
+                        self.pending_bytes -= size
+                if self.gap.is_set():
+                    self.gap.clear()
+                    self.recorder.emit('diagnostic', 'Observer backlog: some display events omitted; execution continues.')
+        except Exception:
+            # Telemetry exceptions cannot stop lifecycle collection or the CLI.
+            self.stopping.set()
+
+    def close(self):
+        self.stopping.set()
+        self.worker.join(timeout=.2)
+
+
 def communicate(process, payload, timeout, recorder):
     """Drain both pipes while running; retain only lifecycle JSON for the caller.
 
@@ -178,16 +245,20 @@ def communicate(process, payload, timeout, recorder):
     """
     lifecycle, stderr_tail = deque(maxlen=128), bytearray()
     first_thread = []
+    observer = OutputObserver(recorder)
+
+    def diagnostic(text):
+        observer.submit('emit', ('diagnostic', text), len(text.encode()))
 
     def line(raw, source):
         if source == 'stderr':
             if recorder.phase != 'exam':
-                recorder.emit('diagnostic', raw.decode(errors='replace'))
+                diagnostic(raw.decode(errors='replace'))
             return
         try:
             event = json.loads(raw)
         except (ValueError, UnicodeError):
-            recorder.emit('diagnostic', 'Unrecognized executor event (content omitted)')
+            diagnostic('Unrecognized executor event (content omitted)')
             return
         if isinstance(event, dict) and event.get('type') in (
                 'thread.started', 'turn.completed', 'error', 'turn.failed'):
@@ -195,7 +266,7 @@ def communicate(process, payload, timeout, recorder):
                 first_thread.append(bytes(raw))
             else:
                 lifecycle.append(bytes(raw))
-        recorder.event(event)
+        observer.submit('event', (event,), len(raw))
 
     def read(pipe, source):
         pending = bytearray()
@@ -215,11 +286,11 @@ def communicate(process, payload, timeout, recorder):
                 if len(pending) > MAX_LINE:
                     pending.clear()
                     dropping = True
-                    recorder.emit('diagnostic', 'Oversized executor event omitted')
+                    diagnostic('Oversized executor event omitted')
             if pending and not dropping:
                 line(pending, source)
         except (OSError, ValueError):
-            recorder.emit('diagnostic', 'Executor output stream closed')
+            diagnostic('Executor output stream closed')
         finally:
             pipe.close()
 
@@ -252,6 +323,7 @@ def communicate(process, payload, timeout, recorder):
         for reader in readers:
             reader.join(timeout=2)
         writer.join(timeout=2)
+        observer.close()
     out, err = b'\n'.join([*first_thread, *lifecycle]), bytes(stderr_tail)
     if expired:
         expired.output, expired.stderr = out, err

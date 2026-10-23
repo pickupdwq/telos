@@ -1,5 +1,9 @@
 # Plan implementation and projects
 
+## Discuss before freezing implementation
+
+For a new requirement, follow [multi-executor meetings](meetings.md) first. The supervisor selects a variable participant count and concrete roles, receives parallel independent opinions, resolves material disagreements, then freezes the public plan. Pass its `meeting_id` to the implementation open call. Meetings have no default token, round or job cap; existing implementation budgets and acceptance gates remain independent. A concrete `skip_meeting_reason` records a trivial or explicitly requested direct-work exception.
+
 ## Choose a reviewable unit
 
 Use `telos_open` for a concentrated change whose behavior and code are best reviewed together. Use `telos_project_open` when the goal has separately reviewable parts or needs integrated acceptance. Choose single, parallel or phased project execution after examining dependencies and shared files; explain the decision instead of asking the user to select a mode without context. Respect explicit user choices and the connected runtime's concurrency limits.
@@ -19,6 +23,8 @@ Prepare two separate bodies of material:
 
 Base questions and checks on the user's requirements and inspected system. Ask about decisions and boundaries that matter to the result. Prefer a reproduction, relevant existing regression suite or observable output over checking whether files merely exist. Do not invent facts about an implementation that has not been written. Do not add irrelevant trivia or an exhaustive test suite for a small change.
 
+Settle known business choices with the user before freezing the contract. The executor should check material ambiguity before changing affected code and return a structured question if it cannot resolve a missing decision from the public brief or scoped code. For a trivial, clear task, record the direct-work exception rather than requiring a ceremonial discussion. Later clarification must stay within the frozen scope and acceptance criteria.
+
 For a small repair, include the relevant symbols/files, the reproduced symptom and a verified **public** test command with its cwd and interpreter. Keep private check implementations separate. Request bounded excerpts instead of repeated whole-file/diff reads; after a meaningful edit, run the targeted command and report the result. Investigate a concrete environment failure narrowly using the preflight interpreter rather than replacing PATH or exploring the host. Split unrelated changes into separate reviewable tasks before dispatch.
 
 Plan for the entire work → final reply → checks → exam sequence. Use measured successful tasks when available; label provisional caps and headroom as supervisor choices. Where supported, freeze `exam_reserve_requests` / `exam_reserve_tokens` inside the task budget, and leave at least one work request for a factual final reply. Work and repairs cannot spend the exam reserve, and neither phase can exceed the original request cap. Token thresholds may overshoot; reservations do not guarantee success. Check the per-execution `job_timeout` as well as any whole-experiment time limit. A stopped/incomplete work turn still needs proper completion and cannot skip into grading.
@@ -31,7 +37,7 @@ The entire verification snapshot is read-only, including new paths and parent di
 
 Initial task/context, public audit boundaries and retrieved experience use the same private-material guard as later messages. Project creation checks child briefs before saving the project; additions and reassignment are checked too. This guard detects known reference/check text and private-field labels, not all possible paraphrases. Keep public requirements and private answers separate when drafting them.
 
-Create the contract with `telos_open` or `telos_project_open`; creation does not itself call the execution model. Start standalone work with `telos_send` or eligible project tasks with `telos_project_start`. Follow tool results and [acceptance](acceptance.md).
+Create the contract with `telos_open` or `telos_project_open`, passing the concluded `meeting_id` (or explicit `skip_meeting_reason`); creation does not itself call the execution model. Start standalone work with `telos_send` or eligible project tasks with `telos_project_start`. Follow tool results and [acceptance](acceptance.md).
 
 ## Project completion
 

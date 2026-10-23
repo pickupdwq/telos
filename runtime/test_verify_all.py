@@ -37,6 +37,8 @@ EXPECTED_MODULES = [
     'test_compact',
     'test_mcp_contract',
     'test_integrity',
+    'test_clarification',
+    'test_meetings',
     'test_comparison',
     'test_watch',
     'test_reasoning',

@@ -1,4 +1,6 @@
 import json
+import concurrent.futures
+import threading
 from pathlib import Path
 import unittest
 from unittest.mock import patch, Mock
@@ -84,7 +86,8 @@ class CallbackTests(unittest.TestCase):
         return [p for m, p in self.db["calls"] if m == "thread/queue/add"]
 
     def test_metadata_binds_original_caller_and_rejects_override(self):
-        data = {"repo": str(self.repo), "task": "addition", "questions": self.q, "checks": self.checks}
+        data = {"repo": str(self.repo), "task": "addition", "questions": self.q, "checks": self.checks,
+                "skip_meeting_reason": "Direct callback ownership fixture."}
         out = b.call_tool("telos_open", data, {"threadId": OWNER})
         self.assertEqual(out["return_channel"]["owner_thread_id"], OWNER)
         with self.assertRaises(b.GateError):
@@ -180,6 +183,111 @@ class CallbackTests(unittest.TestCase):
             b.return_control(sid, "resume")
         self.assertFalse(b.deliver_once(sid))
         self.assertEqual(len(self.added()), 0)
+
+    def test_cancel_does_not_wait_for_callback_rpc_or_enqueue_after_stop(self):
+        for method in ('thread/read', 'thread/queue/add'):
+            with self.subTest(method=method):
+                sid, eid = self.event()
+                entered, release = threading.Event(), threading.Event()
+                database = self.db
+                class SlowRPC(FakeRPC):
+                    def call(self, name, params):
+                        if name == method:
+                            entered.set()
+                            if not release.wait(5):
+                                raise AssertionError('Test did not release callback')
+                        return super().call(name, params)
+                before = len(self.added())
+                with patch.object(b, 'owner_rpc', side_effect=lambda owner: SlowRPC(database)):
+                    with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                        delivery = pool.submit(b.deliver_once, sid)
+                        try:
+                            self.assertTrue(entered.wait(2))
+                            result = pool.submit(b.return_control, sid, 'cancel').result(timeout=.5)
+                            self.assertEqual(result['continuation'], 'cancelled')
+                            self.assertEqual(self.state(sid)['continuation'], 'cancelled')
+                        finally:
+                            release.set()
+                        delivery.result(timeout=2)
+                self.assertEqual(self.state(sid)['events'][eid]['status'], 'cancelled')
+                self.assertFalse(self.db['queue'])
+                self.assertEqual(len(self.added()) - before, int(method == 'thread/queue/add'))
+
+    def test_pause_resume_invalidates_inflight_preparation(self):
+        sid, eid = self.event()
+        entered, release = threading.Event(), threading.Event()
+        database = self.db
+        class SlowRPC(FakeRPC):
+            def call(self, method, params):
+                if method == 'thread/read':
+                    entered.set()
+                    release.wait(5)
+                return super().call(method, params)
+        with patch.object(b, 'owner_rpc', side_effect=lambda owner: SlowRPC(database)):
+            with concurrent.futures.ThreadPoolExecutor() as pool:
+                future = pool.submit(b.deliver_once, sid)
+                try:
+                    self.assertTrue(entered.wait(2))
+                    b.return_control(sid, 'pause')
+                    b.return_control(sid, 'resume')
+                finally:
+                    release.set()
+                future.result(timeout=2)
+        self.assertFalse(self.added())
+        b.deliver_once(sid)
+        self.assertEqual(len(self.added()), 1)
+
+    def test_failed_late_queue_cleanup_survives_cancel_and_recovers(self):
+        sid, eid = self.event()
+        database = self.db
+        class CancellingRPC(FakeRPC):
+            def call(self, method, params):
+                if method == 'thread/queue/add':
+                    b.return_control(sid, 'cancel')
+                return super().call(method, params)
+        self.db['delete_error'] = True
+        with patch.object(b, 'owner_rpc', side_effect=lambda owner: CancellingRPC(database)):
+            b.deliver_once(sid)
+        self.assertTrue(self.state(sid)['events'][eid]['queue_cleanup_pending'])
+        self.db['delete_error'] = False
+        b.recover_events()
+        self.assertFalse(self.db['queue'])
+        self.assertFalse(self.state(sid)['events'][eid]['queue_cleanup_pending'])
+        self.assertEqual(self.state(sid)['continuation'], 'cancelled')
+
+    def test_cancel_during_uncertain_queue_reconciliation_withdraws_found_message(self):
+        sid, eid = self.event()
+        self.db['uncertain'] = True
+        b.deliver_once(sid)
+        self.db['uncertain'] = False
+        database = self.db
+        class CancellingRPC(FakeRPC):
+            def call(self, method, params):
+                if method == 'thread/queue/list':
+                    b.return_control(sid, 'cancel')
+                return super().call(method, params)
+        with patch.object(b, 'owner_rpc', side_effect=lambda owner: CancellingRPC(database)):
+            b.deliver_once(sid)
+        self.assertFalse(self.db['queue'])
+        self.assertEqual(len(self.added()), 1)
+        self.assertEqual(self.state(sid)['events'][eid]['status'], 'cancelled')
+
+    def test_receipt_during_enqueue_is_not_overwritten(self):
+        sid, eid = self.event()
+        database = self.db
+        class ReceivingRPC(FakeRPC):
+            def call(self, method, params):
+                result = super().call(method, params)
+                if method == 'thread/queue/add':
+                    self.db['queue'] = []  # Owner consumed the queued message.
+                    self.db['receipt'] = b.receive_event(sid, eid)
+                return result
+        with patch.object(b, 'owner_rpc', side_effect=lambda owner: ReceivingRPC(database)):
+            b.deliver_once(sid)
+        self.assertTrue(self.db['receipt']['proceed'])
+        self.assertEqual(self.state(sid)['events'][eid]['status'], 'received')
+        self.assertFalse(b.deliver_once(sid))
+        self.assertEqual(len(self.added()), 1)
 
     def test_interrupted_original_turn_pauses_callback(self):
         sid, eid = self.event()

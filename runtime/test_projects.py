@@ -680,9 +680,9 @@ class ProjectReadTests(ProjectTests):
                 result = manager.status(pid, detail=detail)
             child_reads = Counter(Path(call.args[0]).name for call in reads.call_args_list
                                   if Path(call.args[0]).parent == root)
-            self.assertLessEqual(child_reads['state.json'], 3)
-            self.assertLessEqual(child_reads['contract.json'], 3)
-            self.assertLessEqual(usage.call_count, 2)
+            self.assertEqual(child_reads['state.json'], 1)
+            self.assertEqual(child_reads['contract.json'], 1)
+            self.assertEqual(usage.call_count, 1)
             self.assertEqual(result['usage']['requests'], count)
             self.assertEqual(result['usage']['total_tokens'], count * 10)
             self.assertEqual(result['tasks'][0]['usage']['totals']['requests'], count)

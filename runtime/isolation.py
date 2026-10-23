@@ -166,49 +166,40 @@ def _work_budget_content(seconds, requests):
     return None
 
 
-def prepare_work_request(raw, *, seconds_remaining=None, requests_remaining=None):
-    """Append one advisory developer message while preserving the request body."""
-    seconds = _budget_seconds(seconds_remaining)
-    requests = _budget_requests(requests_remaining)
-    content = _work_budget_content(seconds, requests)
-    if content is None:
-        return raw
-    try:
-        request = json.loads(raw)
-    except (TypeError, ValueError):
-        return raw
-    if not isinstance(request, dict):
-        return raw
+def _append_work_guidance(request, content):
+    if not isinstance(request, dict) or content is None:
+        return False
     history = request.get('input')
     if isinstance(history, str):
         history = [{'role': 'user', 'content': history}]
     elif isinstance(history, list):
         history = list(history)
     else:
-        return raw
-    history.append({'role': 'developer', 'content': content})
-    updated = dict(request)
-    updated['input'] = history
-    return json.dumps(updated, ensure_ascii=False, separators=(',', ':')).encode()
-
-
-def _work_request_supported(raw):
-    try:
-        request = json.loads(raw)
-    except (TypeError, ValueError):
         return False
-    return isinstance(request, dict) and isinstance(request.get('input'), (list, str))
+    history.append({'role': 'developer', 'content': content})
+    request['input'] = history
+    return True
+
+
+def _guide_work_object(request, *, usage_ledger, request_id, closeout):
+    if not isinstance(request, dict) or not isinstance(request.get('input'), (list, str)):
+        return False
+    remaining = None
+    if usage_ledger is not None and request_id is not None:
+        remaining = _work_requests_remaining(usage_ledger.snapshot())
+    return _append_work_guidance(request, _work_budget_content(
+        _budget_seconds(closeout.admission_remaining()), _budget_requests(remaining)))
 
 
 def _apply_work_guidance(raw, *, usage_ledger, request_id, closeout):
-    """Add advisory values only when the request can accept a developer message."""
-    if not _work_request_supported(raw):
+    """Parse once; preserve original bytes when no advisory can be added."""
+    try:
+        request = json.loads(raw)
+    except (TypeError, ValueError):
         return raw
-    requests_remaining = None
-    if usage_ledger is not None and request_id is not None:
-        requests_remaining = _work_requests_remaining(usage_ledger.snapshot())
-    return prepare_work_request(raw, seconds_remaining=closeout.admission_remaining(),
-                                requests_remaining=requests_remaining)
+    if not _guide_work_object(request, usage_ledger=usage_ledger, request_id=request_id, closeout=closeout):
+        return raw
+    return json.dumps(request, ensure_ascii=False, separators=(',', ':')).encode()
 
 
 def _work_requests_remaining(snapshot):
@@ -501,14 +492,8 @@ def _terminal(status, outcome):
     return status, None
 
 
-def _bailian_request(raw, binding):
-    """Pair historical tool results as required by Bailian's Responses API.
-
-    Codex can retain [call1, call2, result1, result2] even when the catalogue
-    disables parallel tools. Only reorder a complete, contiguous tool batch;
-    never move results across messages or discard ambiguous history.
-    """
-    request = json.loads(raw)
+def _normalize_bailian_request(request, binding):
+    """Normalize an already parsed request, before admission or paid calls."""
     if request.get('model') != binding['model']:
         raise ValueError('Bailian request changed the frozen model')
     request['parallel_tool_calls'] = False
@@ -550,7 +535,6 @@ def _bailian_request(raw, binding):
             for call in calls:
                 ordered.extend((call, outputs[call['call_id']]))
         request['input'] = ordered
-    return json.dumps(request, ensure_ascii=False).encode()
 
 
 @contextlib.contextmanager
@@ -641,9 +625,14 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                 if not 0 < length <= 16 * 1024 * 1024:
                     self.send_error(413); return
                 body = self.rfile.read(length)
+                body_object = None
                 if bailian:
-                    body = _bailian_request(body, binding)
+                    body_object = json.loads(body)
+                    _normalize_bailian_request(body_object, binding)
                 if policy:
+                    if body_object is not None:
+                        body = json.dumps(body_object, ensure_ascii=False).encode()
+                        body_object = None
                     body = policy.prepare(body)
                 suffix = self.path.removeprefix('/v1')
                 chat_request = None
@@ -687,7 +676,12 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                             budget_failure['snapshot'] = None
                         self.send_error(400, 'Usage accounting failed; no upstream request was sent')
                         return
-                if work_guidance and self.path == '/v1/responses':
+                if body_object is not None:
+                    if work_guidance and self.path == '/v1/responses':
+                        _guide_work_object(body_object, usage_ledger=usage_ledger,
+                                           request_id=request_id, closeout=closeout)
+                    body = json.dumps(body_object, ensure_ascii=False, separators=(',', ':')).encode()
+                elif work_guidance and self.path == '/v1/responses':
                     body = _apply_work_guidance(
                         body, usage_ledger=usage_ledger, request_id=request_id, closeout=closeout)
                 headers = {'Content-Type': 'application/json'}

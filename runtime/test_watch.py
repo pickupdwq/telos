@@ -11,6 +11,7 @@ import shutil
 import subprocess
 import sys
 import tempfile
+import threading
 import time
 from types import SimpleNamespace
 import unittest
@@ -134,6 +135,102 @@ class ActivityTests(unittest.TestCase):
             activity.communicate(p, b'x' * 1000000, .3, self.recorder)
         self.assertIsNotNone(p.poll())
         self.assertIn(b'retain', caught.exception.output)
+
+    def test_locked_observer_log_does_not_timeout_executor(self):
+        code = ('import json,sys\nsys.stdin.read()\n'
+                'print(json.dumps({"type":"thread.started","thread_id":"retained"}),flush=True)\n'
+                'event=json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"x"*1024}})\n'
+                'for i in range(512): print(event,flush=True)\n'
+                'print(json.dumps({"type":"turn.completed","usage":{"input_tokens":7}}),flush=True)\n')
+        with self.log.open('a+b') as locked:
+            fcntl.flock(locked, fcntl.LOCK_EX)
+            process = self.launch(code)
+            stdout, _ = activity.communicate(process, b'work', 1.5, self.recorder)
+        self.assertEqual(process.returncode, 0)
+        self.assertIn(b'retained', stdout)
+        self.assertIn(b'turn.completed', stdout)
+        self.assertTrue((self.root / 'activity-unavailable').exists())
+
+    def test_stalled_display_queue_is_bounded_and_lifecycle_survives(self):
+        release = threading.Event()
+        entered = threading.Event()
+        original = self.recorder.event
+        def stalled(event):
+            entered.set()
+            release.wait(5)
+            original(event)
+        code = ('import json,sys\nsys.stdin.read()\n'
+                'print(json.dumps({"type":"thread.started","thread_id":"retained"}),flush=True)\n'
+                'for i in range(200): print(json.dumps({"type":"item.completed","item":{"type":"agent_message","text":"x"*40000}}),flush=True)\n'
+                'print(json.dumps({"type":"turn.completed"}),flush=True)\n')
+        observer = activity.OutputObserver(self.recorder)
+        with patch.object(self.recorder, 'event', side_effect=stalled), \
+                patch.object(activity, 'OutputObserver', return_value=observer):
+            try:
+                process = self.launch(code)
+                stdout, _ = activity.communicate(process, b'work', 2, self.recorder)
+                self.assertTrue(entered.is_set())
+                self.assertEqual(process.returncode, 0)
+                self.assertIn(b'turn.completed', stdout)
+            finally:
+                release.set()
+                # communicate deliberately returns before slow display drains.
+                # Finish this fixture's writer before deleting its directory.
+                observer.worker.join(timeout=5)
+                self.assertFalse(observer.worker.is_alive())
+        wait_for(lambda: self.log.exists() and 'Observer backlog' in self.log.read_text())
+
+    def test_observer_budget_and_exception_do_not_escape_to_producer(self):
+        entered, release = threading.Event(), threading.Event()
+        class BrokenRecorder:
+            def event(self, event):
+                entered.set()
+                release.wait(3)
+                raise RuntimeError('display only')
+        observer = activity.OutputObserver(BrokenRecorder())
+        try:
+            observer.submit('event', ({},), observer.MAX_BYTES)
+            self.assertTrue(entered.wait(2))
+            observer.submit('event', ({},), 1)
+            self.assertTrue(observer.gap.is_set())
+            self.assertEqual(observer.pending_bytes, observer.MAX_BYTES)
+        finally:
+            release.set()
+            observer.close()
+        self.assertTrue(observer.stopping.is_set())
+
+    def test_diagnostic_flood_leaves_room_for_live_executor_events(self):
+        for text in ('diagnostic', 'x' * (activity.OutputObserver.MAX_BYTES // 16)):
+            with self.subTest(diagnostic_bytes=len(text)):
+                entered, release = threading.Event(), threading.Event()
+                seen = []
+
+                class Recorder:
+                    def event(self, event):
+                        entered.set()
+                        release.wait(5)
+                        seen.append(event.split(':', 1)[0])
+
+                    def emit(self, *args):
+                        pass
+
+                observer = activity.OutputObserver(Recorder())
+                try:
+                    observer.submit('event', ('started',), 7)
+                    self.assertTrue(entered.wait(2))
+                    for _ in range(100):
+                        observer.submit('emit', ('diagnostic', text), len(text))
+                    live = 'LIVE_NOW:' + ('x' * (observer.MAX_BYTES // 8) if len(text) > 10 else '')
+                    observer.submit('event', (live,), len(live))
+                    observer.submit('event', ('completed',), 9)
+                    self.assertTrue(observer.gap.is_set())
+                    self.assertLessEqual(observer.pending_bytes, observer.MAX_BYTES)
+                finally:
+                    release.set()
+                    observer.close()
+                    observer.worker.join(timeout=5)
+                self.assertFalse(observer.worker.is_alive())
+                self.assertEqual(seen, ['started', 'LIVE_NOW', 'completed'])
 
     def test_io_failure_does_not_fail_executor_and_symlinks_are_not_followed(self):
         target = self.root / 'keep'

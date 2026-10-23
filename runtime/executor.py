@@ -7,6 +7,7 @@ import signal
 import subprocess
 import uuid
 import activity
+from delivery import WORK_REPLY_GUIDANCE
 import preflight
 import providers
 from identity import data_path
@@ -120,6 +121,9 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
     if phase not in ("work", "exam"):
         raise b.GateError("Unknown executor phase")
     exam = phase == "exam"
+    discussion = contract.get('task_type') == 'discussion'
+    if discussion and exam:
+        raise b.GateError('Design discussions have no code acceptance exam')
     if exam and not state.get("thread_id"):
         raise b.GateError("An exam cannot create a new executor conversation")
     HOME, CACHE, INSTALL = b.HOME, b.CACHE, b.INSTALL
@@ -138,6 +142,8 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
     env.update(CODEX_HOME=str(peer_home), HOME=str(peer_home), TMPDIR=str(temp),
                TMPPREFIX=str(temp / 'zsh'), PYTHONDONTWRITEBYTECODE='1',
                NO_PROXY='127.0.0.1,localhost', no_proxy='127.0.0.1,localhost')
+    if discussion:
+        env['TELOS_DISCUSSION_SCRATCH'] = str(temp)
     env[key_env] = key
     # Apple's /usr/bin/git is an xcrun shim whose cache write is blocked by the
     # sandbox. Give the worker the already-installed Git binary directly.
@@ -225,9 +231,7 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
     initial = (f"You are an independent coding session using {binding['model']}, communicating with the GPT supervisor through a local MCP bridge. "
                "Work only on the specified task in this isolated git worktree. Do not use subagents, OMX team, MCP, "
                "or read reviewer materials. Leave your changes for the bridge to snapshot; do not push, merge, or deploy. "
-               "End work turns with a compact JSON delivery object: summary (string), changed_files, "
-               "checks_performed and remaining_issues (arrays of strings). Include failures and unfinished work; "
-               "these are your claims for supervisor verification. Never claim final acceptance.\n"
+               "Report your work to the supervisor for independent verification.\n"
                + "Task:\n" + contract["task"] + "\nPublic context:\n" + contract["context"] + "\n")
     if contract.get('allowed_paths'):
         initial += "Allowed change paths (enforced at submission): " + encoded(contract['allowed_paths']) + "\n"
@@ -238,6 +242,9 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
     readable_cache = [peer_home] if exam else [state["worktree"], peer_home, common_git]
     writable = [peer_home] if exam else [state['worktree'], peer_home]
     protected = [p for p in (common_git, Path(state['worktree']) / '.git') if p is not None]
+    if discussion:
+        writable = [peer_home]
+        protected.append(state['worktree'])
     audit_sources = []
     if probe:
         audit_sources = audit.source_paths(state, contract['audit'])
@@ -256,7 +263,12 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
         evidence = preflight.run(b, cli, cwd, env, profile,
                                  check_repo=(probe is None and contract.get('task_type') != 'audit'),
                                  secrets=(key,))
-        guidance = _work_guidance(evidence, contract, state, artifact_root=artifact_root if probe else None)
+        if discussion:
+            from meetings import GUIDANCE
+            guidance = (GUIDANCE + 'Verified source cwd: ' + str(cwd) + '; interpreter: '
+                        + evidence['interpreter'] + '. Source and Git metadata are read-only.\n')
+        else:
+            guidance = WORK_REPLY_GUIDANCE + _work_guidance(evidence, contract, state, artifact_root=artifact_root if probe else None)
         guidance += _execution_guidance(b, state, contract, binding)
     prompt = (initial if not state.get("thread_id") else "") + guidance + "Codex message:\n" + message
     command = ["/usr/bin/sandbox-exec", "-p", profile, *args]

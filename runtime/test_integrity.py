@@ -11,6 +11,29 @@ from test_projects import ProjectTests
 from test_callbacks import OWNER, OTHER
 
 
+class SerializationTests(unittest.TestCase):
+    def test_frozen_unicode_contract_keeps_its_encoding_and_hash(self):
+        import closed_book
+        import comparison
+        import serialization
+
+        contract = {'task': '校验合同编码',
+                    'questions': [{'id': 'q1', 'points': 100, 'reference': '值保持不变'}],
+                    'checks': [], 'nested': {'b': 2, 'a': 1},
+                    'flags': [True, False, None, -1, 0.5]}
+        expected = ('{"checks":[],"flags":[true,false,null,-1,0.5],"nested":{"a":1,"b":2},'
+                    '"questions":[{"id":"q1","points":100,"reference":"值保持不变"}],"task":"校验合同编码"}')
+        self.assertEqual(serialization.encoded(contract), expected)
+        self.assertEqual(b.encoded(contract), expected)
+        reordered = dict(reversed(list(contract.items())))
+        reordered['nested'] = {'a': 1, 'b': 2}
+        for digest in (serialization.digest, b.digest, comparison.digest, closed_book.fingerprint):
+            for value in (contract, reordered):
+                with self.subTest(module=digest.__module__, value=value):
+                    self.assertEqual(digest(value),
+                                     '3a0bc0cfa758787818ae89a30cf0288392e7df5973dc078ed4f4ec002389e174')
+
+
 class IntegrityTests(unittest.TestCase):
     setUp = BridgeTests.setUp
     tearDown = BridgeTests.tearDown

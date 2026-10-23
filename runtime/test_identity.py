@@ -37,7 +37,7 @@ class IdentityTests(unittest.TestCase):
         replies = {x['id']: x['result'] for x in map(json.loads, result.stdout.splitlines())}
         self.assertEqual(replies[1]['serverInfo'], {'name': 'telos', 'title': 'TELOS', 'version': VERSION})
         names = {t['name'] for t in replies[2]['tools']}
-        self.assertEqual(len(names), 25)
+        self.assertEqual(len(names), 28)
         self.assertIn('telos_audit_probe', names)
         self.assertTrue(all(name.startswith('telos_') for name in names))
         self.assertIn('telos_project_open', names)
@@ -81,6 +81,7 @@ class IdentityTests(unittest.TestCase):
 
     def test_legacy_project_alias_uses_current_contract_gate(self):
         args = {'repo': str(self.repo), 'task': 'Complete addition', 'tasks': [self.task('a')],
+                'skip_meeting_reason': 'Direct legacy alias compatibility fixture.',
                 'questions': self.q, 'checks': self.checks, 'decision_reason': 'One independent task',
                 'notify': False}
         result = b.call_tool('exam_project_open', args)

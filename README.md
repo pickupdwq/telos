@@ -277,6 +277,10 @@ The supervisor may use your Codex login. The OpenAI **executor** uses a separate
 
 ## How acceptance works
 
+New requirements first use a multi-executor planning meeting. The supervisor chooses the number and roles from complexity, domains and risk; first opinions run in parallel and follow-ups target unresolved disagreements in the original conversations. Additional experts may join or retire. Current capacity is three simultaneous jobs, with additional participants queued.
+
+Meetings have no default token, turn or job cap; timeouts, pause/cancel and usage accounting remain. Source/Git are read-only and experiments use isolated scratch space. Once requirements, implementation, work ownership and verification are clear, freeze the public conclusion and create a separate implementation contract. Trivial or explicitly directed work can record a direct-work exception. Discussion remains `accepted=false`. See the [meeting workflow](skills/telos/references/meetings.md).
+
 [![Telos execution protocol: frozen contract, work, executable checks, same-thread exam, supervisor grading and acceptance or repair](docs/assets/lifecycle-en.png)](docs/assets/lifecycle-en.png)
 
 [Full-size PNG](docs/assets/lifecycle-en.png) · [Vector SVG](docs/assets/lifecycle-en.svg)

@@ -13,6 +13,7 @@ import urllib.error
 import urllib.request
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from unittest.mock import patch
+from types import SimpleNamespace
 from test_telos import b, BridgeTests
 from test_projects import ProjectTests
 import providers as p
@@ -328,6 +329,38 @@ class BailianRelayTests(unittest.TestCase):
                     self.send(url, token, {**self.payload, 'model': 'other-model'})
             self.assertEqual(ledger.snapshot()['totals']['requests'], 0)
         self.assertEqual(self.captured, [])
+
+    def test_work_relay_decodes_and_encodes_history_once_with_fresh_budget(self):
+        from usage import UsageLedger
+        from isolation import WORK_BUDGET_PREFIX
+        counts = {'loads': 0, 'dumps': 0}
+        def loads(raw, *args, **kwargs):
+            value = json.loads(raw, *args, **kwargs)
+            if isinstance(value, dict) and 'input' in value:
+                counts['loads'] += 1
+            return value
+        def dumps(value, *args, **kwargs):
+            if isinstance(value, dict) and 'input' in value:
+                counts['dumps'] += 1
+            return json.dumps(value, *args, **kwargs)
+        payload = {**self.payload, 'input': [
+            {'role': 'user', 'content': 'history ' * 131072}, self.call, self.result]}
+        with tempfile.TemporaryDirectory() as folder:
+            ledger = UsageLedger(Path(folder) / 'usage.json', {'max_requests': 3})
+            with patch('isolation.json', SimpleNamespace(loads=loads, dumps=dumps)):
+                with model_relay(self.endpoint, '', binding=self.binding, usage_ledger=ledger,
+                                 usage_context={'phase': 'work'}) as (url, token, _):
+                    self.send(url, token, payload)
+            self.assertEqual(ledger.snapshot()['totals']['requests'], 1)
+        self.assertEqual(counts, {'loads': 1, 'dumps': 1})
+        forwarded = self.captured[0]
+        self.assertEqual(forwarded['input'][:-1], payload['input'])
+        advisory = forwarded['input'][-1]
+        self.assertEqual(advisory['role'], 'developer')
+        budget = json.loads(advisory['content'].removeprefix(WORK_BUDGET_PREFIX))
+        self.assertEqual(budget['further_work_requests_remaining'], 2)
+        self.assertIs(forwarded['parallel_tool_calls'], False)
+        self.assertEqual(forwarded['reasoning'], payload['reasoning'])
 
     def test_other_cloud_history_is_not_rewritten(self):
         with model_relay(self.endpoint, '', binding={'provider': 'ark'}) as (url, token, _):

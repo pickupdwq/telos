@@ -1,4 +1,5 @@
 {
+  "planning_mode": "multi_executor",
   "default_executor_profile": "deepseek_official",
   "local_executor": {
     "active": null,

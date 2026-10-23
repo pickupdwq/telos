@@ -328,6 +328,12 @@ def _worker():
                 # status() has just verified the packet/verdict/commit binding.
                 # review_packet intentionally permits only awaiting_review.
                 'evidence': b.read_json(b.run_dir(sid) / f'attempt-{state["rounds"]}.json') if status.get('accepted') else None}
+    if operation == 'telos_open':
+        schema = next(tool['inputSchema'] for tool in b.TOOLS if tool['name'] == operation)
+        if 'skip_meeting_reason' in schema['properties']:
+            # This explicit experiment compares the same frozen single-executor
+            # cases on both releases; planning calls would change its subject.
+            args['skip_meeting_reason'] = 'Controlled comparison uses the preplanned frozen case on both releases.'
     return b.call_tool(operation, args)
 
 

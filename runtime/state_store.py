@@ -8,7 +8,7 @@ import math
 import re
 
 
-PHASES = {'ready', 'running', 'responded', 'awaiting_review', 'not_accepted',
+PHASES = {'ready', 'running', 'responded', 'needs_clarification', 'discussion_result', 'awaiting_review', 'not_accepted',
           'accepted', 'error', 'project_update'}
 
 
@@ -25,7 +25,7 @@ def validate(state, sid):
     for key in ('job_started', 'job_finished', 'next_retry_at'):
         if key in state and (type(state[key]) not in (int, float) or not math.isfinite(state[key])):
             raise ValueError('invalid timestamp: ' + key)
-    for key in ('events', 'acceptance', 'delivery'):
+    for key in ('events', 'acceptance', 'delivery', 'clarification'):
         if key in state and state[key] is not None and not isinstance(state[key], dict):
             raise ValueError('invalid object: ' + key)
     if not isinstance(state.get('events', {}), dict) or any(not isinstance(v, dict) for v in state.get('events', {}).values()):

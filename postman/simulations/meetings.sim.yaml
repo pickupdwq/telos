@@ -1,0 +1,5 @@
+simulation: telos-meetings
+routing: path
+mocks:
+  - routeKey: meetings
+    path: ../mocks/meetings/default.js

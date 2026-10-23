@@ -43,6 +43,14 @@ If the original Codex conversation uses a locally named OpenAI provider such as 
 
 Only add an alias after checking that its effective Codex configuration uses the intended OpenAI endpoint and authentication. Aliases are local trust decisions, not inferred from a GPT model name or a provider-name prefix. Unlisted providers and models remain rejected, and Telos preserves and rechecks the original conversation's actual identity before grading. Omit `provider_aliases` to accept only `openai`.
 
+## Planning meetings
+
+`planning_mode` defaults to `multi_executor`, including upgrades whose preserved config omits this key. New MCP implementation/project creation requires a concluded `meeting_id`, or a concrete `skip_meeting_reason` for a trivial or explicitly directed exception. Set `planning_mode: "direct"` only to opt out globally. Existing frozen tasks continue unchanged.
+
+The supervisor chooses the participant count and roles. `telos_meeting_open` defaults to multiple independent participants; `max_parallel` defaults to 3 and may be 1–3. Additional participants queue (up to 30 registered roles per meeting); the shared provider concurrency limit still applies. Follow-ups preserve the original conversations and can add or retire roles.
+
+Meetings do not inherit `task_budget` and have no default token, turn or job limit. They retain request usage, per-call `job_timeout`, pause/cancel and original-owner callbacks. Source and Git are read-only; temporary experiments use the isolated scratch directory. A hashed public conclusion enters the later implementation contract, whose normal budgets, checks and acceptance remain separate. See the [supervisor meeting workflow](../skills/telos/references/meetings.md).
+
 ## Credentials
 
 | Provider | Endpoint | Environment variable | Interactive setup |
@@ -162,7 +170,7 @@ Merge these entries into the existing configuration; replace the example endpoin
 | `exam_format_attempts` | 3 | Bounded answer-format attempts; no private feedback |
 | `experience_enabled` | true | Enable verified experience injection |
 | Project `max_parallel` | up to 3 | Concurrent model jobs, including exams |
-| Project `max_jobs` | 40 | Job budget, not a token/dollar cap |
+| Implementation project `max_jobs` | 40 | Job budget, not a token/dollar cap |
 | `task_budget` | unset | Optional default frozen usage budget for new tasks |
 
 Profiles may override `http_timeout`, `job_timeout`, `exam_max_tokens`, `exam_format_attempts` and `credential_provider`. A task's `use_experience=false` disables experience injection for that task.

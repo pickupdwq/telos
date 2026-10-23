@@ -163,7 +163,7 @@ class Projects:
 
     def create(self, repo, task, tasks, questions, checks, decision_reason,
                execution_mode='auto', strategy='single', max_parallel=3,
-               max_jobs=40, context='', notify=True, caller=None, use_experience=True, dependency_paths=None):
+               max_jobs=40, context='', notify=True, caller=None, use_experience=True, dependency_paths=None, _planning=None):
         if execution_mode not in ('auto', 'single', 'parallel') or strategy not in ('single', 'parallel', 'phased'):
             raise self.b.GateError('Invalid execution mode or supervisor strategy')
         if not isinstance(decision_reason, str) or not decision_reason.strip():
@@ -173,6 +173,9 @@ class Projects:
         if type(max_jobs) is not int or not 1 <= max_jobs <= 200:
             raise self.b.GateError('max_jobs must be 1-200')
         tasks = self.validate_tasks(tasks)
+        if _planning and _planning.get('meeting_id'):
+            for t in tasks:
+                t['context'] = context + '\nTask context:\n' + t['context']
         b = self.b
         dependency_paths = b.validate_dependencies([] if dependency_paths is None else dependency_paths)
         b.validate_exam(questions, checks, 90, 5)
@@ -189,6 +192,8 @@ class Projects:
         pid = uuid.uuid4().hex
         contract = {'task': task, 'context': context, 'questions': questions, 'checks': checks,
                     'threshold': 90, 'max_rounds': 5, 'dependency_paths': dependency_paths}
+        if _planning is not None:
+            contract['planning'] = _planning
         p = {'project_id': pid, 'repo': str(repo), 'base_commit': b.git(repo, 'rev-parse', 'HEAD'),
              'owner': owner, 'execution_mode': execution_mode, 'strategy': strategy,
              'decision_reason': decision_reason, 'max_parallel': max_parallel, 'max_jobs': max_jobs,
@@ -197,13 +202,19 @@ class Projects:
              'check_timing': {'observed_seconds': 0.0, 'completed_runs': 0, 'complete': True}}
         for t in tasks:
             t.update(session_id=uuid.uuid4().hex, phase='pending', revision=1)
+        return self.initialize(p)
+
+    def initialize(self, p, *, courier_model='project'):
+        """Persist a coordinator and its notification courier under the same lock."""
+        b = self.b
+        pid = p['project_id']
         with self.lock():
             # A project has one notification courier; child events stay durable in
             # their own sessions and are acknowledged by project_receive.
             courier = {'session_id': pid, 'project_id': pid, 'notification_only': True,
-                       'contract_hash': b.digest(contract), 'phase': 'project_update', 'owner': owner,
-                       'continuation': 'active', 'events': {}, 'model': 'project', 'turns': 0, 'rounds': 0}
-            b.write_json(b.run_dir(pid) / 'contract.json', contract)
+                       'contract_hash': p['contract_hash'], 'phase': 'project_update', 'owner': p['owner'],
+                       'continuation': 'active', 'events': {}, 'model': courier_model, 'turns': 0, 'rounds': 0}
+            b.write_json(b.run_dir(pid) / 'contract.json', p['contract'])
             b.write_json(b.run_dir(pid) / 'state.json', courier)
             self.save(p)
         return self.status(pid)
@@ -222,17 +233,20 @@ class Projects:
         t.pop('start_error', None)
         t.update(phase='quarantined', error=str(error)[:500], accepted_commit=None, event_id=None)
 
-    def refresh(self, p):
+    def refresh(self, p, observations=None):
         for t in p['tasks']:
             try:
-                s = self.child(t)
-                stat = self.b.status(t['session_id']) if s else None
+                unstarted = (t.get('phase') in ('pending', 'starting', 'setup_error')
+                             and not (self.b.run_dir(t['session_id']) / 'state.json').exists())
+                stat = None if unstarted else self.b.status(t['session_id'])
             except (self.b.GateError, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
                 self.isolate(t, error)
                 continue
-            if s:
+            if stat:
+                if observations is not None:
+                    observations[t['session_id']] = stat
                 t['phase'] = stat['phase']
-                if t['phase'] != 'ready':
+                if t['phase'] != 'ready' and not t.get('discussion_pending'):
                     t.pop('start_error', None)
                 # A rejected start never reaches the child's execution state.
                 # Retain its diagnostic until that child actually advances.
@@ -241,8 +255,8 @@ class Projects:
                     t['error'] = t['start_error']['message']
                 t['accepted_commit'] = stat.get('acceptance', {}).get('commit') if stat.get('accepted') else None
                 t['event_id'] = stat.get('return_channel', {}).get('event', {}).get('id') if stat.get('return_channel', {}).get('event') else None
-                if s.get('base_commit'):
-                    t['base_commit'] = s['base_commit']
+                if stat.get('base_commit'):
+                    t['base_commit'] = stat['base_commit']
             elif t['phase'] == 'starting':
                 t.update(phase='setup_error', error='Interrupted task setup; inspect workspace, then replace this unstarted task')
         return p
@@ -332,11 +346,15 @@ class Projects:
         totals['request_latency'] = timing.merge_latency(latencies)
         return totals
 
-    def view(self, p, detail='full'):
+    def view(self, p, detail='full', observations=None):
         import timing
         result = {k: p[k] for k in ('project_id', 'phase', 'continuation', 'execution_mode', 'strategy',
                                    'decision_reason', 'max_parallel', 'max_jobs', 'jobs_started', 'base_commit')}
         result['contract_hash'] = p.get('contract_hash')
+        if p.get('kind') == 'discussion':
+            from meetings import Meetings
+            result['discussion'] = Meetings(self.b).view(p)
+            result['kind'] = 'discussion'
         result['effective_parallel'] = self.limit(p)
         tasks = []
         # Reuse only this view's observations. New views and acceptance paths
@@ -347,10 +365,24 @@ class Projects:
                                            'executor_profile', 'workflow_version', 'reasoning_effort',
                                            'session_id', 'phase', 'accepted_commit', 'event_id', 'error',
                                            'budget', 'revision')}
+            if p.get('kind') == 'discussion':
+                item.update(role=t['role'], active=t.get('active', True), queued_followup=bool(t.get('discussion_pending')))
             try:
-                session = self._child_session(t)
-                if session:
+                observed = (observations or {}).get(t['session_id'])
+                if observed is not None:
+                    if observed.get('clarification'):
+                        item['clarification'] = observed['clarification']
+                    item['budget'] = observed['budget']
+                    item['usage'] = observed['usage']
+                    snapshots[t['session_id']] = item['usage']
+                    item['timing'] = observed['timing']
+                    if observed.get('delivery'):
+                        from delivery import summary
+                        item['delivery'] = summary(observed['delivery'])
+                elif (session := self._child_session(t)):
                     child, contract = session
+                    if child.get('clarification'):
+                        item['clarification'] = child['clarification']
                     item['budget'] = contract.get('budget')
                     item['usage'] = self.b.usage_snapshot(child, contract)
                     snapshots[t['session_id']] = item['usage']
@@ -360,6 +392,8 @@ class Projects:
                         item['delivery'] = summary(child['delivery'])
             except (self.b.GateError, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
                 self.isolate(item, error)
+            if item['phase'] == 'needs_clarification':
+                item['next_action'] = ('answer_clarification_then_send' if p['continuation'] == 'active' else None)
             if t.get('start_error') and item['phase'] in ('pending', 'ready', 'starting', 'setup_error'):
                 item['start_error'] = t['start_error']
                 item['next_action'] = (t['start_error']['next_action']
@@ -418,7 +452,8 @@ class Projects:
         if detail not in ('summary', 'full'):
             raise self.b.GateError('detail must be summary or full')
         with self.lock():
-            p = self.refresh(self.load(pid))
+            observations = {}
+            p = self.refresh(self.load(pid), observations)
             if p['phase'] == 'accepted':
                 integ = p['integration']
                 code_ok = self.b.storage_manager().archived_commit(p, integ['worktree'], integ['commit']) or (self.b.git(integ['worktree'], 'rev-parse', 'HEAD') == integ['commit'] and not self.b.git(integ['worktree'], 'status', '--porcelain'))
@@ -429,7 +464,7 @@ class Projects:
                     if self.b.digest(packet) != integ['packet_id']:
                         raise self.b.GateError('Project review evidence changed')
             self.save(p)
-            return self.view(p, detail)
+            return self.view(p, detail, observations)
 
     def limit(self, p):
         if p['execution_mode'] == 'single' or (p['execution_mode'] == 'auto' and p['strategy'] == 'single'):
@@ -457,17 +492,18 @@ class Projects:
             return False
         if sum(s.get('capacity_unknown') or s.get('active_provider', s.get('provider', 'ark')) == provider for s in running) >= self.b.config().get('provider_max_parallel', 3):
             return False
-        if p is not None and p['jobs_started'] >= p['max_jobs']:
+        if p is not None and p.get('max_jobs') is not None and p['jobs_started'] >= p['max_jobs']:
             raise self.b.GateError('Project job budget exhausted; no more model jobs')
         return True
 
-    def launch(self, p, sid, kind, message='', event_id=None):
+    def launch(self, p, sid, kind, message='', event_id=None, discussion_request_id=None):
         """Reserve before spawning; refund only when no new job was persisted."""
         before = self.b.read_json(self.b.run_dir(sid) / 'state.json')
         p['jobs_started'] += 1
         self.save(p)
         try:
-            result = self.b._start_job(sid, kind, message, event_id)
+            extra = {'_discussion_request_id': discussion_request_id} if discussion_request_id is not None else {}
+            result = self.b._start_job(sid, kind, message, event_id, **extra)
         except Exception:
             # Validation and definite spawn failure leave the old job identity.
             # A new identity (or unreadable state) is ambiguous: retain the slot.
@@ -537,6 +573,18 @@ class Projects:
                 self.save(p); return self.view(p)
             p['phase'] = 'running'
             for t in p['tasks']:
+                if p.get('kind') == 'discussion':
+                    if not t.get('active', True):
+                        continue
+                    if t.get('discussion_pending'):
+                        try:
+                            from meetings import Meetings
+                            Meetings(b).launch_pending(p, t)
+                            t.pop('start_error', None)
+                        except Exception as error:
+                            t['start_error'] = errors.payload(error)['error']
+                        self.save(p)
+                        continue
                 if t['phase'] not in ('pending', 'ready'):
                     continue
                 if any(next(x for x in p['tasks'] if x['id'] == dep)['phase'] != 'accepted' for dep in t['depends_on']):
@@ -566,6 +614,7 @@ class Projects:
                                          _usage_id=t.get('usage_id'), _budget=t.get('budget'),
                                          _allowed_paths=t['allowed_paths'], _dependency_pins=pins,
                                          _workflow_version=t.get('workflow_version', 2),
+                                         **({'_discussion': True} if p.get('kind') == 'discussion' else {}),
                                          _executor=t.get('executor'),
                                          _backends=None if t.get('workflow_version') == 3 else self.b.backend_bindings(t))
                         t.update(phase='ready', base_commit=base)
@@ -596,6 +645,8 @@ class Projects:
             p = self.refresh(self.load(s['project_id'])) if s.get('project_id') else None
             if p is not None:
                 self.active(p)
+                if p.get('kind') == 'discussion':
+                    raise b.GateError('Use telos_meeting_round for durable targeted follow-up; meetings cannot run implementation or exams')
                 s = b.read_json(b.run_dir(sid) / 'state.json')
             # Idempotency must be checked before reserving another budget slot.
             replay = b.event_action(s, event_id, kind, {'message': message})
@@ -663,7 +714,7 @@ class Projects:
                     'next_action': 'telos_project_receive',
                     'instruction': 'No stored receipt. Receive with detail="summary" to acknowledge this event.'}, detail)
             p = self.refresh(p)
-            if p['continuation'] != 'active' or p['phase'] == 'accepted':
+            if p['continuation'] != 'active' or p['phase'] in ('accepted', 'discussed'):
                 return self._receive_result({'proceed': False, 'event_id': event_id, 'events': [], 'project': self.view(p), 'project_id': pid}, detail)
             if p.get('owner'):
                 receipt = b.receive_event(pid, event_id)
@@ -681,7 +732,11 @@ class Projects:
                     if r['proceed']:
                         events.append({'task_id': t['id'], **r})
             full = {'proceed': True, 'events': events, 'project': self.view(p), 'project_id': pid,
-                    'instruction': 'Supervisor reviews every child via existing evaluate/review/grade tools; integrate then check/review/finish the project. Never treat child acceptance as project acceptance.'}
+                    'instruction': 'Follow each child next_action. Answer needs_clarification through telos_send before evaluation; ask the user for unresolved business choices. Review submitted work via evaluate/review/grade; integrate then check/review/finish the project. Never treat child acceptance as project acceptance.'}
+            if p.get('kind') == 'discussion':
+                full['instruction'] = ('Review independent meeting reports and evidence. Resolve business questions with the user. '
+                                       'Use telos_meeting_round for targeted follow-up, or telos_meeting_conclude when ready. '
+                                       'Do not evaluate/grade discussion participants as implementation.')
             if event_id and event_id not in (p.get('receipts') or {}):
                 p.setdefault('receipts', {})[event_id] = copy.deepcopy({
                     'proceed': full['proceed'], 'event_id': event_id, 'project_id': pid,
@@ -719,6 +774,8 @@ class Projects:
     def update(self, pid, decision_reason, strategy=None, max_parallel=None, add_tasks=None):
         with self.lock():
             p = self.refresh(self.load(pid)); self.active(p)
+            if p.get('kind') == 'discussion':
+                raise self.b.GateError('Use telos_meeting_round to change meeting participants')
             if p['phase'] == 'verifying':
                 raise self.b.GateError('Wait for current integration checks before revising the plan')
             if not isinstance(decision_reason, str) or not decision_reason.strip():
@@ -756,6 +813,8 @@ class Projects:
                  executor_profile=None, reasoning_effort=None):
         with self.lock():
             p = self.refresh(self.load(pid)); self.active(p)
+            if p.get('kind') == 'discussion':
+                raise self.b.GateError('Use telos_meeting_round to retire/add discussion participants')
             if not decision_reason.strip() or p['phase'] == 'verifying':
                 raise self.b.GateError('Explain reassignment and wait for integration checks')
             t = next((x for x in p['tasks'] if x['id'] == task_id), None)

@@ -169,7 +169,7 @@ def _run(b, sid, request, job_id=None):
             project = b.project_manager().load(state['project_id'])
             if project['continuation'] != 'active':
                 raise GateError('Project is paused/cancelled')
-        allowed = state['phase'] in ('ready', 'responded', 'not_accepted')
+        allowed = state['phase'] in ('ready', 'responded', 'needs_clarification', 'not_accepted')
         if job_id:
             allowed = state['phase'] == 'running' and state.get('job_kind') == 'send' and state.get('job_id') == job_id
         if not allowed:

@@ -64,7 +64,7 @@ class MCPErrorTests(unittest.TestCase):
                      'pause/cancel', 'accepted=true', 'project acceptance', 'merge/deploy'):
             self.assertIn(rule, instructions)
         tools = self.transport({'id': 2, 'method': 'tools/list'})['tools']
-        self.assertEqual(len(tools), 25)
+        self.assertEqual(len(tools), 28)
 
     def test_invalid_initialize_keeps_request_loop_alive(self):
         for params in (None, [], 42, 'PRIVATE_INPUT', {'protocolVersion': None},
@@ -84,7 +84,7 @@ class MCPErrorTests(unittest.TestCase):
                 self.assertEqual([r['id'] for r in replies], [1, 2, 3, 4])
                 self.assertEqual(replies[0]['error']['code'], -32602)
                 self.assertEqual(replies[1]['result'], {})
-                self.assertEqual(len(replies[2]['result']['tools']), 25)
+                self.assertEqual(len(replies[2]['result']['tools']), 28)
                 self.assertEqual(replies[3]['result']['serverInfo']['name'], 'telos')
                 self.assertNotIn('PRIVATE_INPUT', output.getvalue())
 
@@ -155,7 +155,7 @@ class MCPBoundaryTests(unittest.TestCase):
     scores = test_telos.BridgeTests.scores
 
     def open_with_budget(self, budget=None):
-        args = {'repo': str(self.repo), 'task': 'Implement addition.', 'questions': self.q,
+        args = {'repo': str(self.repo), 'task': 'Implement addition.', 'skip_meeting_reason': 'Direct API compatibility fixture.', 'questions': self.q,
                 'checks': self.checks, 'notify': False}
         if budget is not None:
             args['budget'] = budget
@@ -163,12 +163,12 @@ class MCPBoundaryTests(unittest.TestCase):
 
     def test_null_options_and_default_project_strategy_remain_compatible(self):
         self.assertEqual(b.call_tool('telos_cache_manage', {})['tasks'], [])
-        result = b.call_tool('telos_open', {'repo': str(self.repo), 'task': 'Implement addition.',
+        result = b.call_tool('telos_open', {'repo': str(self.repo), 'task': 'Implement addition.', 'skip_meeting_reason': 'Direct API compatibility fixture.',
             'questions': self.q, 'checks': self.checks, 'notify': False,
             'budget': None, 'executor_profile': None, 'dependency_paths': None})
         _, contract = b.load_session(b.run_dir(result['session_id']))
         self.assertIsNone(contract.get('budget'))
-        project = b.call_tool('telos_project_open', {'repo': str(self.repo), 'task': 'Example project',
+        project = b.call_tool('telos_project_open', {'repo': str(self.repo), 'task': 'Example project', 'skip_meeting_reason': 'Direct project compatibility fixture.',
             'tasks': [{'id': 'a', 'task': 'Implement a', 'message': 'Complete the assigned change',
                        'allowed_paths': ['a.py'], 'questions': self.q, 'checks': self.checks, 'budget': None}],
             'questions': self.q, 'checks': self.checks, 'decision_reason': 'One independent task', 'notify': False})

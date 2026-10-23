@@ -85,7 +85,11 @@ class Storage:
     def safe(self, project, sessions, paths):
         b = self.b
         owner = project or sessions[0]
-        if owner.get('phase') != 'accepted' and owner.get('continuation') != 'cancelled':
+        discussion_done = (project and project.get('kind') == 'discussion' and project.get('phase') == 'discussed')
+        if discussion_done:
+            from meetings import Meetings
+            Meetings(b).validated_conclusion(project)
+        if owner.get('phase') != 'accepted' and owner.get('continuation') != 'cancelled' and not discussion_done:
             raise b.GateError('Archive/cleanup requires accepted or explicitly cancelled task; pause alone is insufficient')
         if project and project['phase'] == 'verifying' or any(s['phase'] in ('running', 'stale') for s in sessions):
             raise b.GateError('Running work cannot be archived or cleaned')

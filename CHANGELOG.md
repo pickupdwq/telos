@@ -1,5 +1,40 @@
 # Changelog / 更新记录
 
+## 3.8.1 — 2026-10-23
+
+- Share canonical JSON encoding, hashing and reads across runtime and closed-book evidence; preserve serialized bytes, existing hashes and module entry points.
+- Share project/meeting courier initialization under the existing coordinator lock. Remove unused wrappers/constants and test work guidance through the production relay entry point.
+- Define each core tool description once and restore the pending-clarification instruction previously overwritten in `telos_evaluate`. Tool parameters, defaults, scheduling, budgets, acceptance and legacy-contract behavior remain unchanged.
+- Reserve observer queue capacity for structured executor events so a stderr diagnostic flood cannot consume the entire display buffer. Keep pipe draining, lifecycle collection and acceptance independent of the observer.
+
+合并重复的 JSON 哈希与项目/会议初始化逻辑，删除已确认无调用的代码，让预算提示测试直接覆盖生产入口；集中维护工具说明，补回被覆盖的需求澄清提示。观察队列为执行事件预留容量，避免大量 stderr 日志挤掉实时输出。保留核心执行、并发、预算、验收与旧合同兼容规则。
+
+## 3.8.0 — 2026-10-23
+
+- Default new requirements to multi-executor design meetings before implementation contracts. The supervisor chooses participant count and roles, receives parallel independent opinions, targets follow-ups to the original conversations and can add or retire experts. Explicit direct-work exceptions remain available.
+- Keep meeting source and Git metadata read-only with writable scratch experiments. Persist per-job reports, question resolutions and a hashed public conclusion; bind the later implementation contract to the same reviewed source. Discussion never grants code acceptance.
+- Reuse project concurrency, durable queues, original-supervisor callbacks, pause/cancel, timeouts and usage recording. Meetings have no default token, turn or job cap. Preserve implementation budgets and acceptance checks.
+
+默认由大总管按需求难度选择多个执行者先讨论，再冻结实施合同。首轮并行、分歧定向追问，支持动态增减角色；讨论源码只读，实验使用临时目录。会议没有默认 token、讨论轮数或作业数上限，保留并发限制、超时、暂停取消与用量记录。讨论结论不等于代码验收，后续实现仍须通过独立检查和原大总管审核。
+
+
+## 3.7.10 — 2026-10-23
+
+- Add durable `needs_clarification` replies with structured executor questions. Return questions to the original supervisor through standalone/project receipts, status views and reminders; resume the same executor conversation with `telos_send` answers.
+- Block checks/exams while clarification is pending, without spending an exam round. Require explicit structured completion to clear outstanding questions; retain legacy replies, budgets, pause/cancel, receipt idempotency and frozen acceptance contracts.
+- Guide executors to ask about material ambiguity before affected implementation and supervisors to resolve technical facts or ask the user about business choices. Independent project children continue while dependents wait.
+
+执行者遇到关键需求歧义时正式进入“需求待澄清”，大总管通过原会话回答；问题未解决时禁止验收，问题、回执和后续讨论保留原预算与验收边界。
+
+## 3.7.9 — 2026-10-23
+
+- Drain executor output independently of observer writes through a bounded display queue. Limit observer log-lock waits and preserve lifecycle events when display output stalls or overflows.
+- Release session locks during callback delivery RPCs. Revalidate control revisions and event state before publishing results; withdraw late queued callbacks and retain failed cleanup for recovery.
+- Reuse child status observations within each project status query: one state/contract read and one usage aggregation per healthy child, with fresh observations on subsequent queries.
+- Parse and serialize Bailian work-request history once while preserving tool pairing, frozen-model validation, post-reservation budget guidance and closed-book exam preparation.
+
+隔离观察日志对执行管道的阻塞，回调 RPC 等待期间允许暂停或取消及时落盘；项目状态查询复用单次子任务快照，百炼工作请求减少重复 JSON 编解码。保留执行、预算和验收规则。
+
 ## 3.7.8 — 2026-10-21
 
 - Retain structured project child start errors across status refreshes, including exhausted reassignment budgets. Expose the reason and next action in full and summary views; clear stale start diagnostics when execution advances or the assignment changes. Preserve scheduling eligibility, capacity, budget accounting and acceptance gates.

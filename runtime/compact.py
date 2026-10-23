@@ -140,8 +140,8 @@ def status(full):
         'session_id', 'phase', 'accepted', 'model', 'worktree', 'base_commit',
         'submitted_commit', 'packet_id', 'contract_hash', 'turns', 'rounds',
         'job_id', 'job_kind', 'infra_failures', 'next_retry_at', 'last_failure_kind',
-        'project_id', 'task_type', 'version', 'workflow', 'executor', 'budget', 'usage', 'timing',
-        'next_action', 'archived', 'audit_artifacts', 'audit_report', 'message') if key in full}
+        'project_id', 'task_type', 'discussion_complete', 'version', 'workflow', 'executor', 'budget', 'usage', 'timing',
+        'next_action', 'clarification', 'archived', 'audit_artifacts', 'audit_report', 'message') if key in full}
     if 'last_error' in full:
         result['last_error'] = _text(full.get('last_error'), 1200)
     if 'acceptance' in full:
@@ -208,8 +208,8 @@ def _project_task(task):
     result = {key: task.get(key) for key in (
         'id', 'phase', 'depends_on', 'allowed_paths', 'provider', 'model', 'executor_profile',
         'workflow_version', 'reasoning_effort', 'session_id', 'event_id', 'accepted_commit',
-        'base_commit', 'budget', 'usage', 'timing', 'revision', 'delivery',
-        'start_error', 'next_action') if key in task}
+        'base_commit', 'budget', 'usage', 'timing', 'revision', 'delivery', 'clarification',
+        'start_error', 'next_action', 'role', 'active', 'queued_followup') if key in task}
     if 'error' in task:
         result['error'] = _text(task.get('error'), 1200)
     return result
@@ -225,7 +225,7 @@ def project(full):
     result = {key: full.get(key) for key in (
         'project_id', 'phase', 'accepted', 'continuation', 'execution_mode', 'strategy',
         'effective_parallel', 'max_parallel', 'max_jobs', 'jobs_started', 'base_commit',
-        'decision_reason', 'return_health', 'return_error', 'usage', 'timing', 'contract_hash') if key in full}
+        'decision_reason', 'return_health', 'return_error', 'usage', 'timing', 'contract_hash', 'kind', 'discussion') if key in full}
     result['return_event'] = _return_event(full.get('return_event'))
     result['tasks'] = [_project_task(task) for task in full.get('tasks') or []]
     if 'integration' in full:
