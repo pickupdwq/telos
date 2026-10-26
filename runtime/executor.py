@@ -10,6 +10,7 @@ import activity
 from delivery import WORK_REPLY_GUIDANCE
 import preflight
 import providers
+from processes import terminate_and_drain
 from identity import data_path
 
 
@@ -289,8 +290,7 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
             out, err = expired.output or b'', expired.stderr or b''
             recorder.emit('error', 'Execution timed out; no acceptance')
         else:
-            os.killpg(p.pid, signal.SIGKILL)
-            out, err = p.communicate()
+            out, err, _ = terminate_and_drain(p, expired)
         detail = err.decode(errors='replace')[-1800:] + out.decode(errors='replace')[-1200:]
         if key:
             detail = detail.replace(key, '[REDACTED]')

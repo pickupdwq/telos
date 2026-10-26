@@ -5,6 +5,7 @@ import re
 import time
 import uuid
 import effort_policy
+import progress_guard
 
 
 GUIDANCE = (
@@ -129,14 +130,46 @@ class Meetings:
 
     def view(self, p):
         reports, questions = self.observations(p)
+        blockers = [{'participant_id': t['id'], 'session_id': t['session_id'], 'progress_guard': t['progress_guard']}
+                    for t in p['tasks'] if t.get('active', True) and (t.get('progress_guard') or {}).get('blocked')]
         return {'meeting_id': p['project_id'], 'rounds': p.get('discussion_rounds', []),
+                'progress_guard': progress_guard.view(p),
+                'blockers': blockers,
                 'reports': reports, 'questions': questions, 'conclusion': p.get('conclusion'),
                 'discussion_complete': p['phase'] == 'discussed',
                 'next_action': ('create_implementation_contract' if p['phase'] == 'discussed' else
                                 'telos_project_start' if p['phase'] == 'planned' else
+                                'conclude_or_replan_meeting' if progress_guard.blocked(p) else
+                                'conclude_or_replan_blocked_participants' if blockers else
                                 'await_participant_callbacks' if any(t['phase'] in ('pending', 'ready', 'running') or t.get('discussion_pending') for t in p['tasks'] if t.get('active', True)) else
                                 'review_opinions_then_round_or_conclude'),
-                'note': 'Discussion is not code acceptance. No default token, round or job cap; existing provider concurrency and per-call timeouts apply.'}
+                'note': 'Discussion is not code acceptance. No default token, round or job cap; repeated reports trigger the durable no-progress guard. Existing provider concurrency and per-call timeouts apply.'}
+
+    def observe_progress(self, p):
+        """Count settled rounds, not callbacks, participants or scheduler polls."""
+        if 'progress_guard' not in p:
+            return
+        by_id = {t['id']: t for t in p['tasks']}
+        for row in p['discussion_rounds']:
+            observation = 'round:' + row['request_id']
+            if observation in p['progress_guard']['observed']:
+                continue
+            targets = [by_id[m['participant_id']] for m in row['messages']]
+            targets += [by_id[t['id']] for t in row['add_participants']]
+            if not targets:
+                continue  # Retirement is administrative, not a model attempt.
+            if any(t.get('discussion_pending') or t['phase'] in ('pending', 'ready', 'starting', 'running') for t in targets):
+                continue
+            facts = []
+            for t in targets:
+                try:
+                    s, _ = self.b.load_session(self.b.run_dir(t['session_id']))
+                except (self.b.GateError, OSError, ValueError):
+                    continue
+                if s['phase'] == 'discussion_result':
+                    facts.extend(progress_guard.discussion_facts(s.get('delivery') or {}))
+            progress_guard.observe(p, 'discussion', observation, facts,
+                                  'Compared round proposals, risks, questions and evidence across participants; opinions remain claims.')
 
     def validated_conclusion(self, p):
         conclusion = self.b.read_json(self.projects.path(p['project_id']).parent / 'discussion-conclusion.json')
@@ -164,6 +197,8 @@ class Meetings:
                             'next_action': 'telos_project_status'}
             if p['phase'] == 'discussed':
                 raise b.GateError('Meeting concluded; create implementation from its plan')
+            if messages or add_participants:
+                progress_guard.check(p)
             new = self.participants(add_participants or [], p['tasks'])
             by_id = {t['id']: t for t in p['tasks']}
             retiring = retire_participants or []
@@ -183,6 +218,7 @@ class Meetings:
                 if ident in retiring:
                     raise b.GateError('Cannot follow up and retire the same participant')
                 state, contract = b.load_session(b.run_dir(t['session_id']))
+                progress_guard.check(state)
                 effort_policy.select(contract, state, msg.get('reasoning_effort'), msg.get('reasoning_reason'))
                 selected.add(ident)
             for ident in retiring:
@@ -190,6 +226,21 @@ class Meetings:
                     raise b.GateError('Retire only known participants whose work has stopped')
             if not messages and not new and not retiring:
                 raise b.GateError('Round must address a disagreement, add expertise or retire a participant')
+            if 'progress_guard' not in p:
+                reports, _ = self.observations(p)
+                initial = set(f for report in reports for f in progress_guard.discussion_facts(report))
+                progress_guard.guard(p)['streams']['discussion'] = {'seen': sorted(initial), 'streak': 0}
+                # Old rounds are historical evidence, never retroactive failures.
+                p['progress_guard']['observed'] = ['round:' + r['request_id'] for r in p['discussion_rounds']]
+            trial = p['progress_guard'].get('trial')
+            if trial:
+                plan = next(x for x in p['progress_guard']['plans'] if x['request_id'] == trial)
+                messages = [{**msg, 'message': msg['message'] + '\nSupervisor adjusted plan:\n' + b.encoded(plan['fields'])}
+                            for msg in messages]
+                for t in new:
+                    t['message'] += '\nSupervisor adjusted plan:\n' + b.encoded(plan['fields'])
+            if messages or new:
+                progress_guard.consume(p)
             row = {'round': len(p['discussion_rounds']) + 1, 'request_id': request_id,
                    'arguments_hash': b.digest(args), **args, 'at': time.time()}
             p['discussion_rounds'].append(row)
@@ -225,7 +276,8 @@ class Meetings:
                 raise b.GateError('Meeting participant receipt is not actionable')
         # Marker and running job are persisted together by _start_job.
         self.projects.launch(p, t['session_id'], 'send', pending['message'], eid, discussion_request_id=marker,
-                             reasoning_effort=pending.get('reasoning_effort'), reasoning_reason=pending.get('reasoning_reason'))
+                             reasoning_effort=pending.get('reasoning_effort'), reasoning_reason=pending.get('reasoning_reason'),
+                             automatic=True)
         t.pop('discussion_pending', None)
 
     def conclude(self, meeting_id, plan, answers, rationale):

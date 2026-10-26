@@ -10,14 +10,14 @@ def process_info(pid):
     if type(pid) is not int or pid <= 0:
         return None
     try:
-        with Popen(['/bin/ps', '-p', str(pid), '-o', 'stat=', '-o', 'lstart='],
-                   stdout=PIPE, stderr=DEVNULL, env={'LC_ALL': 'C', 'PATH': '/usr/bin:/bin'}) as probe:
-            try:
-                output, _ = probe.communicate(timeout=5)
-            except TimeoutExpired:
-                probe.kill()
-                probe.communicate()
-                return None
+        probe = Popen(['/bin/ps', '-p', str(pid), '-o', 'stat=', '-o', 'lstart='],
+                      stdout=PIPE, stderr=DEVNULL, env={'LC_ALL': 'C', 'PATH': '/usr/bin:/bin'})
+        try:
+            output, _ = probe.communicate(timeout=5)
+        except TimeoutExpired as error:
+            probe.kill()
+            drain_killed(probe, error)
+            return None
         fields = output.decode('ascii', errors='replace').strip().split(None, 1)
         return tuple(fields) if probe.returncode == 0 and len(fields) == 2 else None
     except OSError:
@@ -60,6 +60,36 @@ def reap_background(process):
     # Keep the Popen handle alive and reap promptly, even after a successful job
     # stops appearing in the running-task scan. Daemon exit never kills the child.
     threading.Thread(target=process.wait, name='telos-child-wait', daemon=True).start()
+
+
+def wait_killed(process, timeout=0.5):
+    """Never make foreground completion depend on kernel reaping latency."""
+    try:
+        process.wait(timeout=timeout)
+    except TimeoutExpired:
+        reap_background(process)
+
+
+def drain_killed(process, expired=None, timeout=0.5):
+    """Bound pipe draining even when an orphan retains a writer. No reader threads."""
+    try:
+        out, err = process.communicate(timeout=timeout)
+        return out or b'', err or b'', False
+    except TimeoutExpired as error:
+        out = error.output or getattr(expired, 'output', None) or b''
+        err = error.stderr or getattr(expired, 'stderr', None) or b''
+        # communicate uses nonblocking pipe I/O on supported POSIX hosts; no
+        # competing buffered reader holds these stream locks.
+        for pipe in (process.stdin, process.stdout, process.stderr):
+            if pipe is not None:
+                pipe.close()
+        wait_killed(process, timeout)
+        return out, err, True
+
+
+def terminate_and_drain(process, expired=None):
+    kill_process_tree(process)
+    return drain_killed(process, expired)
 
 
 def _process_table():

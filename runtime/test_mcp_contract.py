@@ -64,7 +64,7 @@ class MCPErrorTests(unittest.TestCase):
                      'pause/cancel', 'accepted=true', 'project acceptance', 'merge/deploy'):
             self.assertIn(rule, instructions)
         tools = self.transport({'id': 2, 'method': 'tools/list'})['tools']
-        self.assertEqual(len(tools), 28)
+        self.assertEqual(len(tools), 29)
 
     def test_invalid_initialize_keeps_request_loop_alive(self):
         for params in (None, [], 42, 'PRIVATE_INPUT', {'protocolVersion': None},
@@ -84,7 +84,7 @@ class MCPErrorTests(unittest.TestCase):
                 self.assertEqual([r['id'] for r in replies], [1, 2, 3, 4])
                 self.assertEqual(replies[0]['error']['code'], -32602)
                 self.assertEqual(replies[1]['result'], {})
-                self.assertEqual(len(replies[2]['result']['tools']), 28)
+                self.assertEqual(len(replies[2]['result']['tools']), 29)
                 self.assertEqual(replies[3]['result']['serverInfo']['name'], 'telos')
                 self.assertNotIn('PRIVATE_INPUT', output.getvalue())
 

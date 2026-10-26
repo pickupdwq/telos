@@ -310,6 +310,10 @@ class ExecutorPreflightOrderTests(unittest.TestCase):
     def test_timeout_keeps_cli_thread_identity_without_successful_submission(self):
         class TimedOut:
             pid = 1234
+            returncode = None
+
+            def kill(self):
+                self.returncode = -9
 
             def communicate(self, payload=None, timeout=None):
                 if payload is not None:
@@ -320,6 +324,7 @@ class ExecutorPreflightOrderTests(unittest.TestCase):
         with patch.object(preflight, 'git_executable', return_value=sys.executable), \
                 patch.object(preflight, 'run', return_value=evidence), \
                 patch.object(executor.subprocess, 'Popen', return_value=TimedOut()), \
+                patch('processes._process_table', return_value={}), \
                 patch.object(executor.os, 'killpg') as kill:
             with self.assertRaises(providers.ExecutionTimeout) as caught:
                 executor._run(self.bridge, self.state, self.contract, 'message',

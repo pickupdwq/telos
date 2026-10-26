@@ -20,6 +20,7 @@ from processes import process_start, process_running, reap_background
 from identity import canonical_tool_name
 from usage import TOKEN_FIELDS, resolve_task_budget
 import effort_policy
+import progress_guard
 
 
 class Projects:
@@ -249,6 +250,7 @@ class Projects:
                 if observations is not None:
                     observations[t['session_id']] = stat
                 t['phase'] = stat['phase']
+                t['progress_guard'] = stat.get('progress_guard')
                 if t['phase'] != 'ready' and not t.get('discussion_pending'):
                     t.pop('start_error', None)
                 # A rejected start never reaches the child's execution state.
@@ -262,6 +264,9 @@ class Projects:
                     t['base_commit'] = stat['base_commit']
             elif t['phase'] == 'starting':
                 t.update(phase='setup_error', error='Interrupted task setup; inspect workspace, then replace this unstarted task')
+        if p.get('kind') == 'discussion':
+            from meetings import Meetings
+            Meetings(self.b).observe_progress(p)
         return p
 
     def _usage(self, p, snapshots=None):
@@ -368,6 +373,7 @@ class Projects:
                                            'executor_profile', 'workflow_version', 'reasoning_effort',
                                            'session_id', 'phase', 'accepted_commit', 'event_id', 'error',
                                            'budget', 'revision', 'reasoning_policy')}
+            item['progress_guard'] = t.get('progress_guard')
             if p.get('kind') == 'discussion':
                 item.update(role=t['role'], active=t.get('active', True), queued_followup=bool(t.get('discussion_pending')))
             try:
@@ -405,6 +411,8 @@ class Projects:
                 item['start_error'] = t['start_error']
                 item['next_action'] = (t['start_error']['next_action']
                                        if p['continuation'] == 'active' else None)
+            if (item.get('progress_guard') or {}).get('blocked'):
+                item['next_action'] = item['progress_guard']['next_action'] if p['continuation'] == 'active' else None
             tasks.append(item)
         result['tasks'] = tasks
         result['usage'] = self._usage(p, snapshots)
@@ -504,7 +512,7 @@ class Projects:
         return True
 
     def launch(self, p, sid, kind, message='', event_id=None, discussion_request_id=None,
-               reasoning_effort=None, reasoning_reason=None):
+               reasoning_effort=None, reasoning_reason=None, automatic=False):
         """Reserve before spawning; refund only when no new job was persisted."""
         before = self.b.read_json(self.b.run_dir(sid) / 'state.json')
         p['jobs_started'] += 1
@@ -514,7 +522,7 @@ class Projects:
             if reasoning_effort is not None or reasoning_reason is not None:
                 extra.update(reasoning_effort=reasoning_effort, reasoning_reason=reasoning_reason)
             result = self.b._start_job(sid, kind, message, event_id, **extra)
-        except Exception:
+        except Exception as error:
             # Validation and definite spawn failure leave the old job identity.
             # A new identity (or unreadable state) is ambiguous: retain the slot.
             try:
@@ -525,6 +533,14 @@ class Projects:
                 if current.get('job_id') == before.get('job_id'):
                     p['jobs_started'] -= 1
                     self.save(p)
+                    if (automatic and current.get('progress_guard') == before.get('progress_guard') and
+                            getattr(error, 'code', None) not in ('no_progress', 'retry_backoff', 'job_running', 'continuation_stopped')):
+                        with self.b.locked(sid) as root:
+                            current, _ = self.b.load_session(root)
+                            progress_guard.consume(current)
+                            progress_guard.startup_failure(current, 'startup:' + uuid.uuid4().hex,
+                                                           errors.payload(error)['error']['message'])
+                            self.b.write_json(root / 'state.json', current)
             raise
         if result.get('duplicate'):
             p['jobs_started'] -= 1
@@ -583,6 +599,10 @@ class Projects:
                 self.save(p); return self.view(p)
             p['phase'] = 'running'
             for t in p['tasks']:
+                convergence = t.get('progress_guard') or {}
+                if (convergence.get('blocked') and not convergence.get('attempt_allowed') or
+                        time.time() < convergence.get('retry_at', 0)):
+                    continue
                 if p.get('kind') == 'discussion':
                     if not t.get('active', True):
                         continue
@@ -630,7 +650,7 @@ class Projects:
                                          _backends=None if t.get('workflow_version') == 3 else self.b.backend_bindings(t))
                         t.update(phase='ready', base_commit=base)
                         self.save(p)
-                    self.launch(p, t['session_id'], 'send', t['message'])
+                    self.launch(p, t['session_id'], 'send', t['message'], automatic=True)
                     t['phase'] = 'running'
                     t.pop('start_error', None)
                 except Exception as e:
@@ -675,7 +695,8 @@ class Projects:
         b = self.b
         if not p.get('owner'):
             return
-        signature = b.digest({'phase': p['phase'], 'tasks': [(t['id'], t['phase'], t.get('event_id'), t.get('error')) for t in p['tasks']],
+        signature = b.digest({'phase': p['phase'], 'tasks': [(t['id'], t['phase'], t.get('event_id'), t.get('error'),
+                                                          (t.get('progress_guard') or {}).get('blocked')) for t in p['tasks']],
                               'integration': p.get('integration', {}).get('packet_id')})
         if signature == p.get('notice_signature'):
             return

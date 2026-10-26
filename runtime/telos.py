@@ -34,8 +34,10 @@ import errors
 import watch as watch_runtime
 import providers
 import effort_policy
+import progress_guard
 from providers import ProviderError as GateError
 from processes import process_start, process_running, reap_background, kill_process_tree
+from processes import terminate_and_drain
 from identity import VERSION, canonical_tool_name, credential_path, legacy_callback_text, runtime_path
 from usage import BudgetExceeded, UsageLedger, validate_budget, resolve_task_budget
 from serialization import encoded, digest, read_json
@@ -422,6 +424,7 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
         state['workflow_version'] = 3
     if task_type == 'audit':
         audit_runtime.initialize(bridge_services(), state, frozen)
+    progress_guard.seed(bridge_services(), state, frozen)
     timing.initialize(state, state['created_at'])
     write_json(root / "state.json", state)
     activity.status(bridge_services(), state)
@@ -497,6 +500,12 @@ def event_message(sid, event):
                 "The original supervisor owns all task allocation, reviews and final acceptance. "
                 "Receive the batch, review each completed task, then start eligible tasks. "
                 "Only project accepted=true means completion. If paused/cancelled, do not continue.")
+    if event.get('no_progress'):
+        return (f"[TELOS_EVENT {event['id']}] Repeated attempts produced no new observable evidence. "
+                f"Call telos_receive with session_id={sid}, event_id={event['id']}. "
+                "Report the blocker and retained artifacts, follow progress_guard.next_action, and adjust the plan. "
+                "Do not repeat send/evaluate, raise effort alone, or open a replacement to bypass the guard. "
+                "Acceptance and user pause/cancel still apply.")
     # Keep the event content stable; reconciliation also accepts the old branding.
     if event.get('phase') == 'discussion_result':
         return (f"[TELOS_EVENT {event['id']}] Design opinion is ready; this is not implementation or acceptance. "
@@ -529,6 +538,7 @@ def record_event(state):
                 previous["status"] = "superseded"
         events[eid] = {"id": eid, "job_id": eid, "phase": state["phase"], "created_at": time.time(),
                        "status": "pending", "attempts": 0, "actions": {}, "model": state["model"],
+                       'no_progress': progress_guard.blocked(state),
                        "project_id": state.get("project_id") if state.get("notification_only") else None}
     state["last_event_id"] = eid
     timing.transition(state, timing.waiting_stage(state))
@@ -595,6 +605,8 @@ def receive_event(sid, event_id, detail='full'):
     full = {"proceed": proceed, "event_id": event_id, "session_id": sid,
             "next_action": next_action_for(phase) if proceed else None,
             "result": status(sid) if proceed else None}
+    if proceed:
+        full['next_action'] = full['result']['next_action']
     if detail == 'summary':
         return compact_views.receive(full)
     full['detail'] = 'full'
@@ -1114,6 +1126,11 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
         if state["phase"] == "running":
             raise GateError("A job is already running; poll telos_status",
                             code='job_running', next_action='await_completion')
+        progress_guard.check(state)
+        retry_at = state.get('progress_guard', {}).get('retry_at', 0)
+        if time.time() < retry_at:
+            raise GateError('Startup retry backoff active', code='retry_backoff', retryable=True,
+                            next_action='retry_after_backoff', retry_after_seconds=retry_at - time.time())
         if kind == 'evaluate' and (state['phase'] == 'needs_clarification' or state.get('clarification')):
             raise GateError('Resolve the executor questions through telos_send before evaluation',
                             code='clarification_required', next_action='answer_clarification_then_send')
@@ -1163,6 +1180,13 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
         else:
             raise GateError("Invalid job kind")
         job = uuid.uuid4().hex
+        progress_guard.seed(bridge_services(), state, contract)
+        trial = state['progress_guard'].get('trial')
+        if trial and kind == 'send':
+            plan = next(p for p in state['progress_guard']['plans'] if p['request_id'] == trial)
+            message += '\nSupervisor adjusted plan (public):\n' + encoded(plan['fields'])
+        # Roll back a spawn failure without refunding an explicitly granted trial.
+        progress_guard.consume(state)
         if reasoning_decision is not None:
             reasoning_decision.update(job_id=job, kind=kind, contract_hash=state['contract_hash'], at=time.time())
             state['reasoning_decision'] = reasoning_decision
@@ -1187,12 +1211,16 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
                                  start_new_session=True, close_fds=True)
         except OSError:
             before_start["last_error"] = "Background process could not start; counters and phase restored"
+            before_start['progress_guard'] = state['progress_guard']
+            progress_guard.startup_failure(before_start, 'startup:' + job, before_start['last_error'])
             write_json(root / "state.json", before_start)
             activity.status(bridge_services(), before_start, before_start["last_error"])
             (root / f"job-{job}.json").unlink(missing_ok=True)
             (root / 'job-lease.json').unlink(missing_ok=True)
+            progress_guard.check(before_start)
             raise GateError(before_start["last_error"])
         state["job_pid"] = p.pid
+        progress_guard.started(state)
         state['job_process_start'] = process_start(p.pid)
         state_store.lease(bridge_services(), root, state)
         reap_background(p)
@@ -1487,21 +1515,8 @@ def _executable_checks(contract, target, temp, dependencies, env):
             out, err = p.communicate(timeout=check.get("timeout_seconds", 60))
             status = "passed" if p.returncode == 0 else "failed"
             code = p.returncode
-        except subprocess.TimeoutExpired:
-            kill_process_tree(p)
-            try:
-                out, err = p.communicate(timeout=0.5)
-            except subprocess.TimeoutExpired as interrupted:
-                # An already-orphaned descendant can retain the pipe even after
-                # the check's group is gone. Never wait for its EOF indefinitely.
-                out, err = interrupted.output or b'', interrupted.stderr or b''
-                output_incomplete = True
-                p.stdout.close()
-                p.stderr.close()
-                try:
-                    p.wait(timeout=0.5)
-                except subprocess.TimeoutExpired:
-                    reap_background(p)
+        except subprocess.TimeoutExpired as expired:
+            out, err, output_incomplete = terminate_and_drain(p, expired)
             status, code = "timeout", None
         results.append({"id": check["id"], "status": status, "returncode": code,
                         "source_read_only": True,
@@ -1651,6 +1666,7 @@ def background_job(sid, job):
         current, _ = load_session(root)
         if current.get("job_id") == job:
             current.update(update, job_finished=time.time())
+            progress_guard.completed(bridge_services(), current, contract, request)
             import state_store
             state_store.lease(bridge_services(), root, current)
             record_event(current)
@@ -1700,6 +1716,8 @@ def status(sid, detail='full'):
                 if state.get('job_kind') == 'evaluate' and request.get('reserved_round') == state['rounds']:
                     state.update(rounds=max(0, state['rounds'] - 1), infra_failures=state.get('infra_failures', 0) + 1,
                                  last_failure_kind='infrastructure')
+                progress_guard.completed(bridge_services(), state, contract,
+                                         {'kind': state.get('job_kind', 'send')})
                 record_event(state)
                 write_json(root / "state.json", state)
                 activity.status(bridge_services(), state)
@@ -1722,6 +1740,10 @@ def status(sid, detail='full'):
                       timing=timing.snapshot(state),
                       next_action=next_action_for(state['phase']))
         result['task_type'] = contract.get('task_type', 'implementation')
+        result['progress_guard'] = progress_guard.view(state)
+        if progress_guard.blocked(state) and state['phase'] not in ('accepted', 'awaiting_review'):
+            result['next_action'] = (result['progress_guard']['next_action']
+                                     if not result['progress_guard']['attempt_allowed'] else 'retry_once_with_adjusted_plan')
         if state.get('discussion_complete'):
             result.update(discussion_complete=True, next_action=None)
         if contract.get('task_type') == 'audit':
@@ -2133,11 +2155,18 @@ for name in ('telos_send', 'telos_repair', 'telos_evaluate'):
     tool['description'] += (' For tasks with reasoning_policy, select the next job effort with reasoning_effort and a concise reasoning_reason. '
                             'Omission retains the prior choice; only allowed model-supported levels apply. Running jobs and legacy fixed tasks cannot change effort. '
                             'The original supervisor chooses from task complexity and observed failures; quality gates stay unchanged.')
+    tool['description'] += (' Repeated attempts without new observable evidence stop with no_progress. Inspect progress_guard in status, '
+                            'report the blocker and use telos_replan for one adjusted trial; changing effort or wording does not clear history.')
 next(t for t in TOOLS if t['name'] == 'telos_meeting_round')['inputSchema']['properties']['messages']['items'] = obj({
     'participant_id': STR, 'message': STR, 'reasoning_effort': {'enum': list(providers.EFFORTS)}, 'reasoning_reason': STR}, ['participant_id', 'message'])
 OPEN_TOOL['description'] += (' Optional reasoning_policy.allowed_efforts freezes a supervisor-adjustable range from verified provider/model/protocol capabilities. '
                            'dynamic_reasoning_enabled config opts new supported tasks in by default. Status exposes canonical levels, aliases and per-job decisions; '
                            'unknown capabilities remain fixed unless explicitly configured locally. No token cap is required.')
+
+TOOLS += [
+    {"name": "telos_replan", "description": ("After no_progress, report the concrete blocker and retained artifacts, then record a different approach, supporting evidence and observable success criterion. Grants one retry in the SAME session; does not dispatch, accept, reset history, change frozen scope or resume user-paused work. Stable request_id is idempotent. Two adjusted trials without new observable evidence require reporting the blocker to the user. A new request ID, cosmetic summary, or higher reasoning effort alone is not progress."),
+     "inputSchema": obj({**SID, "request_id": STR, "blocker": STR, "approach": STR, "evidence": STR, "success_criterion": STR})},
+]
 
 SERVER_INSTRUCTIONS = (
     'Use the telos skill. Only the original supervisor accepts; keep references/checks private. '
@@ -2242,7 +2271,8 @@ def call_tool(name, args, meta=None):
                                 code='owner_mismatch', next_action='use_original_supervisor')
             if name == 'telos_return_control' and state.get('project_id'):
                 raise GateError('Use telos_project_control for project-owned sessions')
-    functions = {"telos_open": create_session, "telos_send": lambda session_id, message, event_id=None, reasoning_effort=None, reasoning_reason=None: start_job(session_id, "send", message, event_id, reasoning_effort, reasoning_reason),
+    functions = {"telos_replan": lambda session_id, **kw: progress_guard.replan(bridge_services(), session_id, **kw),
+                 "telos_open": create_session, "telos_send": lambda session_id, message, event_id=None, reasoning_effort=None, reasoning_reason=None: start_job(session_id, "send", message, event_id, reasoning_effort, reasoning_reason),
                  "telos_repair": lambda session_id, feedback, event_id=None, reasoning_effort=None, reasoning_reason=None: repair_feedback(session_id, feedback, event_id, reasoning_effort, reasoning_reason),
                  "telos_status": lambda sid, detail='full': status(sid, detail),
                  "telos_evaluate": lambda session_id, event_id=None, reasoning_effort=None, reasoning_reason=None: start_job(session_id, "evaluate", event_id=event_id, reasoning_effort=reasoning_effort, reasoning_reason=reasoning_reason),

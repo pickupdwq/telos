@@ -89,9 +89,17 @@ class EvaluationTests(BridgeTests):
         sid = self.create()
         with patch.object(b, 'config', return_value={**b.config(), 'infra_backoff_seconds': 0}):
             for index in range(5):
+                if b.progress_guard.blocked(self.state(sid)):
+                    b.progress_guard.replan(b.bridge_services(), sid, 'retry-' + str(index),
+                        'Exam transport timed out with unchanged passing checks.',
+                        'Retry after examining service availability.', 'Service diagnostics reviewed.',
+                        'The same-thread exam returns valid answers.')
                 self.evaluate(sid, TimeoutError('fixture timeout'))
                 self.assertEqual(self.state(sid)['rounds'], 0)
                 self.assertEqual(self.state(sid)['infra_failures'], index + 1)
+            b.progress_guard.replan(b.bridge_services(), sid, 'repair-plan',
+                'Repeated exam transport failure.', 'Repair the public implementation before any more evaluation.',
+                'Retained check evidence reviewed.', 'A new implementation artifact is produced.')
             with self.assertRaisesRegex(b.GateError, 'Infrastructure retry budget'):
                 b.start_job(sid, 'evaluate')
         with patch.object(b.subprocess, 'Popen', return_value=Mock(pid=os.getpid())):

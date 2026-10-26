@@ -223,13 +223,16 @@ class SchedulingTests(ProjectTests):
         pid = self.create([self.task('a')], max_jobs=2)
         self.start(pid)
         state = self.returned(pid)
-        for _ in range(2):
-            with patch.object(b.subprocess, 'Popen', side_effect=OSError('spawn unavailable')):
+        now = time.time()
+        for i in range(2):
+            with patch.object(b.subprocess, 'Popen', side_effect=OSError('spawn unavailable')), \
+                    patch('time.time', return_value=now + i * 100):
                 with self.assertRaisesRegex(b.GateError, 'could not start'):
                     b.start_job(state['session_id'], 'send', 'Continue implementation')
         self.assertEqual(self.state(pid)['jobs_started'], 1)
         self.assertEqual(self.child(pid, 'a')['turns'], 1)
-        with patch.object(b.subprocess, 'Popen', return_value=Mock(pid=os.getpid())):
+        with patch.object(b.subprocess, 'Popen', return_value=Mock(pid=os.getpid())), \
+                patch('time.time', return_value=now + 300):
             b.start_job(state['session_id'], 'send', 'Continue implementation')
         self.assertEqual(self.state(pid)['jobs_started'], 2)
 
@@ -244,7 +247,8 @@ class SchedulingTests(ProjectTests):
                 b.project_manager().tick(pid)
         self.assertEqual(self.state(pid)['jobs_started'], 0)
         self.assertEqual(self.child(pid, 'a')['turns'], 0)
-        self.start(pid)
+        with patch('time.time', return_value=time.time() + 100):
+            self.start(pid)
         self.assertEqual(self.state(pid)['jobs_started'], 1)
 
     def test_uncertain_spawn_keeps_reservation(self):

@@ -79,6 +79,16 @@ The supervisor chooses the participant count and roles. `telos_meeting_open` def
 
 Meetings do not inherit `task_budget` and have no default token, turn or job limit. They retain request usage, per-call `job_timeout`, pause/cancel and original-owner callbacks. Source and Git are read-only; temporary experiments use the isolated scratch directory. A hashed public conclusion enters the later implementation contract, whose normal budgets, checks and acceptance remain separate. See the [supervisor meeting workflow](../skills/telos/references/meetings.md).
 
+### Stop repeated attempts without progress
+
+The durable convergence guard stops a stream after **3 consecutive attempts without new observable evidence**. Work compares Git-visible file contents (or the canonical audit report), evaluation compares newly passing check IDs, and meetings compare proposals, risks, questions and evidence across completed rounds and participants. Revisited content, new job/request IDs, changed summaries, timing/log noise and reasoning-effort changes do not reset the counter. Explicit requirement-clarification waits do not count as failed work. Existing sessions initialize observations lazily; historical attempts are not retroactively counted.
+
+Project startup failures use a 10/20/40-second backoff and the same three-failure stop, including failures that refund the job reservation. Recovery scans do not restart blocked work. Status, compact receipts and meeting views retain `progress_guard` and the required next action. No artifacts are discarded and no task is marked accepted, paused or cancelled by this guard.
+
+The original supervisor reports the blocker, then calls `telos_replan` with `session_id`, stable `request_id`, `blocker`, a different `approach`, supporting `evidence`, and `success_criterion`. A meeting-wide replan uses its meeting ID as `session_id`. Replanning permits one trial and retains the history; successful dispatch alone is not substantive work. After two adjusted trials without new evidence, automatic retries remain blocked and the supervisor must report the blocker for a user decision. Concluding a meeting and grading an already available review packet remain available. No token cap is introduced.
+
+These are observable convergence signals, not a semantic proof of useful work: code churn or genuinely new but incorrect opinions still require supervisor review and the frozen acceptance checks. File evidence scans are bounded (256 MiB and 5 seconds after the Git listing); unavailable evidence is reported rather than treated as progress. Browser, executor and check timeout cleanup bounds process reaping and pipe draining, including retained pipes from detached/orphaned descendants. Unattributable orphan processes cannot be safely killed by ancestry alone; incomplete drain is reported instead of waiting indefinitely.
+
 ## Credentials
 
 | Provider | Endpoint | Environment variable | Interactive setup |

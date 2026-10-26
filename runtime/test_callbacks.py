@@ -389,7 +389,8 @@ class CallbackTests(unittest.TestCase):
         self.assertEqual(state["rounds"], 0)
         self.assertEqual(state["phase"], "responded")
         self.assertEqual(state["events"][eid]["actions"], {})
-        with patch.object(b.subprocess, "Popen", return_value=Mock(pid=123)):
+        with patch.object(b.subprocess, "Popen", return_value=Mock(pid=123)), \
+                patch('time.time', return_value=b.time.time() + 100):
             b.start_job(sid, "evaluate", event_id=eid)
             self.assertTrue(b.start_job(sid, "evaluate", event_id=eid)["duplicate"])
         self.assertEqual(self.state(sid)["rounds"], 1)

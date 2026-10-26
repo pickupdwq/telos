@@ -27,6 +27,7 @@ EXPECTED_MODULES = [
     'test_providers',
     'test_closed_book',
     'test_maintenance',
+    'test_progress_guard',
     'test_hardening',
     'test_identity',
     'test_audit',

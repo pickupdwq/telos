@@ -24,6 +24,7 @@ import urllib.request
 import audit
 from isolation import NoRedirect
 from providers import ProviderError as GateError
+from processes import terminate_and_drain
 
 
 HELP = {
@@ -141,8 +142,10 @@ def browser_probe(b, policy, request, folder):
                          env=env, cwd=folder, start_new_session=True)
     try:
         out, err = p.communicate(json.dumps(payload).encode(), timeout=policy['limits']['probe_timeout_seconds'] + 10)
-    except subprocess.TimeoutExpired:
-        os.killpg(p.pid, signal.SIGKILL); p.communicate()
+    except subprocess.TimeoutExpired as expired:
+        out, err, incomplete = terminate_and_drain(p, expired)
+        b.write_json(folder / 'timeout.json', {'kind': 'browser_timeout',
+                     'output_incomplete': incomplete, 'accepted': False})
         raise GateError('Browser probe timed out; inspect evidence before retrying') from None
     if p.returncode:
         raise GateError('Browser adapter failed: ' + err.decode(errors='replace')[-1000:])

@@ -623,11 +623,12 @@ class ProjectReadTests(ProjectTests):
                 self.assertEqual(blocked['tasks'][0]['phase'], 'ready')
                 self.assertEqual(blocked['tasks'][0]['start_error']['code'], 'internal_error')
                 self.assertNotIn('PRIVATE_PROVIDER_BODY', json.dumps(blocked))
-                if direct:
-                    with patch.object(b.subprocess, 'Popen', return_value=Mock(pid=os.getpid())):
-                        b.start_job(blocked['tasks'][0]['session_id'], 'send', 'Continue implementation')
-                else:
-                    self.start(pid)
+                with patch('time.time', return_value=time.time() + 100):
+                    if direct:
+                        with patch.object(b.subprocess, 'Popen', return_value=Mock(pid=os.getpid())):
+                            b.start_job(blocked['tasks'][0]['session_id'], 'send', 'Continue implementation')
+                    else:
+                        self.start(pid)
                 result = b.project_manager().status(pid, detail='summary')
                 self.assertEqual(result['jobs_started'], 1)
                 self.assertEqual(result['tasks'][0]['phase'], 'running')

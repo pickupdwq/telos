@@ -83,7 +83,7 @@ python3 runtime/verify.py --install-dir "$PWD/.artifacts/installed" \
 python3 .artifacts/installed/verify_all.py .artifacts/installed-regression.json
 ```
 
-The explicit Skill directory keeps this smoke test separate from your real global Skill. It does not register MCP or change your current installation. Use fresh targets each time: the installer deliberately refuses implicit overwrites. The verification includes a stdio MCP handshake and 28-tool catalog, rejection of untrusted ownership, callback/repair regressions, a real local Codex app-server with a stub model and a worker credential-environment probe.
+The explicit Skill directory keeps this smoke test separate from your real global Skill. It does not register MCP or change your current installation. Use fresh targets each time: the installer deliberately refuses implicit overwrites. The verification includes a stdio MCP handshake and 29-tool catalog, rejection of untrusted ownership, callback/repair regressions, a real local Codex app-server with a stub model and a worker credential-environment probe.
 
 The installed suite includes the meeting model fixture at `fixtures/meetings/default.js`, tracked by the installation manifest. Source tests use the original file under `postman/mocks/meetings/`; installed tests use only the bundled copy and report its path if it is missing. Installer regressions start that fixture after both fresh installation and upgrade, without relying on the source checkout.
 

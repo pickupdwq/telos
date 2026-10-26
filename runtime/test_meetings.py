@@ -228,6 +228,10 @@ class MeetingTests(unittest.TestCase):
         self.assertEqual(p['tasks'][0]['error'], 'Fixture spawn unavailable')
         self.assertIn('discussion_pending', p['tasks'][0])
         with self.no_workers(): b.project_manager().tick(mid)
+        self.assertEqual(self.child(mid, 'p0')['phase'], 'discussion_result')
+        import time
+        with self.no_workers(), patch('time.time', return_value=time.time() + 30):
+            b.project_manager().tick(mid)
         self.assertEqual(self.child(mid, 'p0')['phase'], 'running')
         self.assertEqual(self.project(mid)['jobs_started'], 3)
 

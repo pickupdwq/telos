@@ -21,6 +21,8 @@ For a trivial, clear change or explicit direct-work instruction, provide a concr
 
 Meetings have no default token, turn or job cap, even when a configured implementation `task_budget` exists. Usage still records actual requests/tokens. Per-call timeouts, concurrency, original-owner controls and pause/cancel remain enforced. Use `telos_project_control` immediately for a pause or cancellation request. An executor returns its report instead of waiting inside its process.
 
+Three settled follow-up rounds without new proposals, risks, questions or evidence stop further discussion attempts across participants. Read `discussion.progress_guard`, report the unresolved blocker, and either conclude from sufficient existing evidence or call `telos_replan` with the meeting ID as `session_id` and one concrete new approach. Changing summary text, request IDs or participants does not clear the history. Two adjusted rounds without new evidence require a user decision; do not keep expanding the meeting.
+
 ## Source, context and acceptance
 
 Participants inspect isolated worktrees pinned to the same source commit. Source and Git metadata are read-only; experiments may write only to `TELOS_DISCUSSION_SCRATCH`/the isolated executor home. Do not grant network or implementation writes through a meeting. Participants cannot create subordinate agents or call MCP. Keep private checks, reference answers and evaluation material out of meeting context.

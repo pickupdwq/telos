@@ -2,9 +2,9 @@
 
 [English README](../README.md) · [中文 README](../README.zh-CN.md)
 
-Generated from `runtime/telos.py`. These 28 tools are intended for the original Codex supervisor; task ownership requires trusted MCP thread metadata. See [machine-readable schemas](tools.schema.json) for all fields.
+Generated from `runtime/telos.py`. These 29 tools are intended for the original Codex supervisor; task ownership requires trusted MCP thread metadata. See [machine-readable schemas](tools.schema.json) for all fields.
 
-由运行时自动生成，共 28 个工具，供原始 Codex 大总管使用；任务绑定依赖可信会话元数据。完整参数见 JSON schema。
+由运行时自动生成，共 29 个工具，供原始 Codex 大总管使用；任务绑定依赖可信会话元数据。完整参数见 JSON schema。
 
 ## `telos_open`
 
@@ -14,7 +14,7 @@ Required / 必填：`repo`, `task`, `questions`, `checks`
 
 ## `telos_send`
 
-Send a concise task, clarification answer, or repair message to the independent persistent execution-model session. For needs_clarification, read clarification.questions, resolve technical facts or ask the user about business choices, then answer in this same session with the received event_id. Returns immediately; with automatic return enabled you may yield and a completion event will resume THIS Codex thread. Do not poll repeatedly. Send paths/requirements, never private references or check code. For repair include the received event_id, making retries idempotent. A reply is not acceptance. For tasks with reasoning_policy, select the next job effort with reasoning_effort and a concise reasoning_reason. Omission retains the prior choice; only allowed model-supported levels apply. Running jobs and legacy fixed tasks cannot change effort. The original supervisor chooses from task complexity and observed failures; quality gates stay unchanged.
+Send a concise task, clarification answer, or repair message to the independent persistent execution-model session. For needs_clarification, read clarification.questions, resolve technical facts or ask the user about business choices, then answer in this same session with the received event_id. Returns immediately; with automatic return enabled you may yield and a completion event will resume THIS Codex thread. Do not poll repeatedly. Send paths/requirements, never private references or check code. For repair include the received event_id, making retries idempotent. A reply is not acceptance. For tasks with reasoning_policy, select the next job effort with reasoning_effort and a concise reasoning_reason. Omission retains the prior choice; only allowed model-supported levels apply. Running jobs and legacy fixed tasks cannot change effort. The original supervisor chooses from task complexity and observed failures; quality gates stay unchanged. Repeated attempts without new observable evidence stop with no_progress. Inspect progress_guard in status, report the blocker and use telos_replan for one adjusted trial; changing effort or wording does not clear history.
 
 Required / 必填：`session_id`, `message`
 
@@ -26,7 +26,7 @@ Required / 必填：`session_id`
 
 ## `telos_evaluate`
 
-Snapshot code and run private executable checks first. Failures return for public repair. When checks pass, resume the SAME executor thread for a closed-book questionnaire. The relay disables all tools, rejects tool outputs, and the exam process cannot read project source. Only question IDs and prompts are appended to the existing work conversation. The original GPT supervisor reviews and grades. Historical sessions retain their frozen legacy workflow. Infrastructure retries never imply acceptance. Source is read-only throughout checks, including project final checks; use TELOS_CHECK_OUTPUT for build outputs. Each review packet binds the executor delivery summary to its submitted commit. Pending clarification blocks evaluation; answer through telos_send and wait for explicit executor resolution first. For tasks with reasoning_policy, select the next job effort with reasoning_effort and a concise reasoning_reason. Omission retains the prior choice; only allowed model-supported levels apply. Running jobs and legacy fixed tasks cannot change effort. The original supervisor chooses from task complexity and observed failures; quality gates stay unchanged.
+Snapshot code and run private executable checks first. Failures return for public repair. When checks pass, resume the SAME executor thread for a closed-book questionnaire. The relay disables all tools, rejects tool outputs, and the exam process cannot read project source. Only question IDs and prompts are appended to the existing work conversation. The original GPT supervisor reviews and grades. Historical sessions retain their frozen legacy workflow. Infrastructure retries never imply acceptance. Source is read-only throughout checks, including project final checks; use TELOS_CHECK_OUTPUT for build outputs. Each review packet binds the executor delivery summary to its submitted commit. Pending clarification blocks evaluation; answer through telos_send and wait for explicit executor resolution first. For tasks with reasoning_policy, select the next job effort with reasoning_effort and a concise reasoning_reason. Omission retains the prior choice; only allowed model-supported levels apply. Running jobs and legacy fixed tasks cannot change effort. The original supervisor chooses from task complexity and observed failures; quality gates stay unchanged. Repeated attempts without new observable evidence stop with no_progress. Inspect progress_guard in status, report the blocker and use telos_replan for one adjusted trial; changing effort or wording does not clear history.
 
 Required / 必填：`session_id`
 
@@ -140,7 +140,7 @@ Required / 必填：`experience_id`
 
 ## `telos_repair`
 
-Send structured PUBLIC repair feedback: symptoms, public requirements, code locations. No private reference/check fields. Same action idempotency and budgets as send. For tasks with reasoning_policy, select the next job effort with reasoning_effort and a concise reasoning_reason. Omission retains the prior choice; only allowed model-supported levels apply. Running jobs and legacy fixed tasks cannot change effort. The original supervisor chooses from task complexity and observed failures; quality gates stay unchanged.
+Send structured PUBLIC repair feedback: symptoms, public requirements, code locations. No private reference/check fields. Same action idempotency and budgets as send. For tasks with reasoning_policy, select the next job effort with reasoning_effort and a concise reasoning_reason. Omission retains the prior choice; only allowed model-supported levels apply. Running jobs and legacy fixed tasks cannot change effort. The original supervisor chooses from task complexity and observed failures; quality gates stay unchanged. Repeated attempts without new observable evidence stop with no_progress. Inspect progress_guard in status, report the blocker and use telos_replan for one adjusted trial; changing effort or wording does not clear history.
 
 Required / 必填：`session_id`, `feedback`
 
@@ -167,6 +167,12 @@ Required / 必填：`meeting_id`, `request_id`, `messages`, `decision_reason`
 Original supervisor freezes the public implementation plan after reviewing independent opinions and evidence. Resolve every recorded question by its ID; ask the user for unresolved business decisions. Requires all active participants to have returned valid reports, no running/queued rounds, and multiple contributors unless a single-executor exception was recorded. Discussion completion is not code acceptance. Then call telos_project_open or telos_open with meeting_id and newly frozen private checks/questions.
 
 Required / 必填：`meeting_id`, `plan`, `rationale`, `answers`
+
+## `telos_replan`
+
+After no_progress, report the concrete blocker and retained artifacts, then record a different approach, supporting evidence and observable success criterion. Grants one retry in the SAME session; does not dispatch, accept, reset history, change frozen scope or resume user-paused work. Stable request_id is idempotent. Two adjusted trials without new observable evidence require reporting the blocker to the user. A new request ID, cosmetic summary, or higher reasoning effort alone is not progress.
+
+Required / 必填：`session_id`, `request_id`, `blocker`, `approach`, `evidence`, `success_criterion`
 
 ## `telos_audit_probe`
 

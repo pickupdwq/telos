@@ -246,6 +246,8 @@ def communicate(process, payload, timeout, recorder):
     lifecycle, stderr_tail = deque(maxlen=128), bytearray()
     first_thread = []
     observer = OutputObserver(recorder)
+    import select
+    stopping = threading.Event()
 
     def diagnostic(text):
         observer.submit('emit', ('diagnostic', text), len(text.encode()))
@@ -272,7 +274,17 @@ def communicate(process, payload, timeout, recorder):
         pending = bytearray()
         dropping = False
         try:
-            while chunk := pipe.read1(65536):
+            fd = pipe.fileno()
+            os.set_blocking(fd, False)
+            while not stopping.is_set():
+                if not select.select([fd], [], [], .1)[0]:
+                    continue
+                try:
+                    chunk = os.read(fd, 65536)
+                except BlockingIOError:
+                    continue
+                if not chunk:
+                    break
                 if source == 'stderr':
                     stderr_tail.extend(chunk)
                     del stderr_tail[:-16000]
@@ -296,7 +308,15 @@ def communicate(process, payload, timeout, recorder):
 
     def write():
         try:
-            process.stdin.write(payload)
+            fd, offset = process.stdin.fileno(), 0
+            os.set_blocking(fd, False)
+            while offset < len(payload) and not stopping.is_set():
+                if not select.select([], [fd], [], .1)[1]:
+                    continue
+                try:
+                    offset += os.write(fd, payload[offset:offset + 65536])
+                except BlockingIOError:
+                    continue
         except (OSError, ValueError):
             pass
         finally:
@@ -314,15 +334,16 @@ def communicate(process, payload, timeout, recorder):
         process.wait(timeout=timeout)
     except subprocess.TimeoutExpired as error:
         expired = error
-        try:
-            os.killpg(process.pid, signal.SIGKILL)
-        except ProcessLookupError:
-            pass
-        process.wait()
+        from processes import kill_process_tree, wait_killed
+        kill_process_tree(process)
+        wait_killed(process)
     finally:
+        deadline = time.monotonic() + 2
         for reader in readers:
-            reader.join(timeout=2)
-        writer.join(timeout=2)
+            reader.join(timeout=max(0, deadline - time.monotonic()))
+        stopping.set()
+        for thread in [*readers, writer]:
+            thread.join(timeout=.2)
         observer.close()
     out, err = b'\n'.join([*first_thread, *lifecycle]), bytes(stderr_tail)
     if expired:

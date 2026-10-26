@@ -98,10 +98,12 @@ class JobTests(unittest.TestCase):
         self.assertIsNone(contract['budget'])
         b.write_json(b.CONFIG, {**config(), 'dynamic_reasoning_enabled': False,
                                'reasoning_capabilities': {ep.capability_key(contract['executor']): {}}})
-        for effort, effective in [('high', 'high'), ('max', 'max'), ('minimal', 'low'), (None, 'low')]:
+        for index, (effort, effective) in enumerate([('high', 'high'), ('max', 'max'), ('minimal', 'low'), (None, 'low')]):
             result = self.start(sid, effort, 'Scope and evidence justify this level.' if effort else None)
             state, current = self.load(sid)
             self.assertEqual(b.execution_binding(state, current)['reasoning_effort'], effective)
+            (Path(state['worktree']) / 'test_signed.py').write_text(
+                f'from calc import add\nassert add({index}, -{index}) == 0\n')
             self.finish(sid, result['job_id'])
             self.assertEqual(self.load(sid)[0]['thread_id'], OTHER)
         state, current = self.load(sid)

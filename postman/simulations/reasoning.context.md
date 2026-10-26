@@ -10,6 +10,7 @@ Created 2026-10-26 from the repository's Bailian Responses fixture and official 
 
 1. `postman simulation run postman/simulations/reasoning.sim.yaml --port auto --no-history --output ndjson > reasoning.ndjson 2> reasoning.err`
 2. Read the listening event's port, then run `python3 -B runtime/verify_reasoning_simulation.py --base-url http://127.0.0.1:<port>/reasoning/compatible-mode/v1`.
+   Add `--liveness` to verify three unchanged turns, a blocked dispatch with no upstream call, one adjusted plan, and acceptance in the same CLI thread.
 3. Inspect the verifier result and simulation request events; stop the simulation process with SIGINT.
 
 ## Assumptions
@@ -20,5 +21,6 @@ Created 2026-10-26 from the repository's Bailian Responses fixture and official 
 ## Observations
 
 <!-- begin:observations -->
+2026-10-26: the liveness run served three work POSTs, one exam POST and one evidence GET (all 200). The intervening blocked attempt sent no upstream request; replanning completed real checks and grading with accepted=true.
 2026-10-26: the reasoning member served native CLI work, resumed work and the same-thread closed-book exam. The verifier observed each selected effort upstream and completed actual checks and grading with accepted=true; no provider inference was called.
 <!-- end:observations -->
