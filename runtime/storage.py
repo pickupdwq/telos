@@ -8,6 +8,10 @@ import os
 from pathlib import Path
 import shutil
 import time
+import state_store
+
+
+RECORD_ERRORS = (OSError, ValueError, TypeError, KeyError, AttributeError, OverflowError)
 
 
 def file_hash(path):
@@ -32,16 +36,37 @@ class Storage:
     def __init__(self, bridge):
         self.b = bridge
 
-    def scope(self, ident):
+    @staticmethod
+    def diagnostic(path, error):
+        # Do not copy arbitrary corrupt contents into a public tool result.
+        return {'target_id': path.parent.name, 'path': str(path),
+                'error_type': type(error).__name__,
+                'message': 'Unreadable or invalid record; inventory is incomplete. Preserve the record for recovery.'}
+
+    def session_records(self, diagnostics=None):
+        records = []
+        for path in (self.b.STATE / 'runs').glob('*/state.json'):
+            try:
+                records.append(state_store.validate(self.b.read_json(path), path.parent.name))
+            except RECORD_ERRORS as error:
+                if diagnostics is None:
+                    # Unknown project membership must never authorize deletion.
+                    raise self.b.GateError('Storage scope is unknown due to an unreadable session record: '
+                                           + str(path)) from error
+                diagnostics.append(self.diagnostic(path, error))
+        return records
+
+    def scope(self, ident, *, diagnostics=None, records=None):
         b = self.b
         b.run_dir(ident)
         project_path = b.project_manager().path(ident)
         if project_path.exists():
             project = b.project_manager().load(ident)
-            sessions = [b.read_json(p) for p in (b.STATE / 'runs').glob('*/state.json')
-                        if b.read_json(p).get('project_id') == ident and not b.read_json(p).get('notification_only')]
+            if records is None:
+                records = self.session_records(diagnostics)
+            sessions = [s for s in records if s.get('project_id') == ident and not s.get('notification_only')]
             return project, sessions
-        state = b.read_json(b.run_dir(ident) / 'state.json')
+        state = state_store.validate(b.read_json(b.run_dir(ident) / 'state.json'), ident)
         if state.get('project_id'):
             raise b.GateError('Manage the whole parent project, including dependencies and earlier assignments')
         return None, [state]
@@ -70,16 +95,33 @@ class Storage:
 
     def inventory(self, ident=None):
         b = self.b
-        if ident is None:
-            ids = [p.parent.name for p in (b.STATE / 'projects').glob('*/project.json')]
-            ids += [p.parent.name for p in (b.STATE / 'runs').glob('*/state.json') if not b.read_json(p).get('project_id')]
-            return {'tasks': [self.inventory(i) for i in sorted(ids)], 'cache_root': str(b.CACHE)}
-        project, sessions = self.scope(ident)
+        if ident is not None:
+            return self._inventory(ident)
+        scan_diagnostics = []
+        records = self.session_records(scan_diagnostics)
+        project_ids = {p.parent.name for p in (b.STATE / 'projects').glob('*/project.json')}
+        ids = project_ids | {s['session_id'] for s in records if not s.get('project_id')}
+        tasks, diagnostics = [], list(scan_diagnostics)
+        for target in sorted(ids):
+            try:
+                tasks.append(self._inventory(target, records, scan_diagnostics))
+            except (*RECORD_ERRORS, b.GateError) as error:
+                path = (b.STATE / 'projects' / target / 'project.json' if target in project_ids
+                        else b.STATE / 'runs' / target / 'state.json')
+                diagnostics.append(self.diagnostic(path, error))
+        return {'tasks': tasks, 'cache_root': str(b.CACHE),
+                'complete': not diagnostics, 'diagnostics': diagnostics}
+
+    def _inventory(self, ident, records=None, scan_diagnostics=()):
+        b = self.b
+        diagnostics = list(scan_diagnostics) if b.project_manager().path(ident).exists() else []
+        project, sessions = self.scope(ident, diagnostics=diagnostics, records=records)
         paths = self.targets(ident, project, sessions)
         items = [{'path': str(p), 'bytes': size(p)} for p in paths]
         return {'target_id': ident, 'phase': (project or sessions[0])['phase'],
                 'bytes': sum(item['bytes'] for item in items), 'paths': items,
                 'archive': str(b.STATE / 'archives' / ident),
+                'complete': not diagnostics, 'diagnostics': diagnostics,
                 'note': 'Read-only inventory. Cleanup requires a clean terminal task and verified archive.'}
 
     def safe(self, project, sessions, paths):

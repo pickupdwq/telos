@@ -260,7 +260,10 @@ def resolve_executor(cfg, *, executor_profile=None, provider=None, model=None, r
 def public_contract(contract, cfg):
     bindings = contract_bindings(contract, cfg)
     if contract.get('workflow_version') == 3:
-        return {'workflow': 'supervisor_executor_closed_book', 'executor': public_binding(bindings['executor'])}
+        result = {'workflow': 'supervisor_executor_closed_book', 'executor': public_binding(bindings['executor'])}
+        if contract.get('reasoning_policy'):
+            result['reasoning_policy'] = copy.deepcopy(contract['reasoning_policy'])
+        return result
     return {'workflow': 'legacy_independent_exam',
             'backends': {k: public_binding(v) for k, v in bindings.items()}}
 

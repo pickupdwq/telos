@@ -2,6 +2,8 @@
 
 New delegated requirements default to a meeting before implementation contracts. The original conversation remains the supervisor and makes the final technical decision. Optimize for elapsed time and quality; do not impose a token-saving debate cap.
 
+When dynamic reasoning is enabled/authorized, choose each participant's initial effort and allowed range from its role's difficulty. Targeted follow-up messages can select a new `reasoning_effort` with a concrete `reasoning_reason`; the queued selection survives retries and resumes the original thread. Follow [executor guidance](executors.md#choose-effort-before-each-job). Meeting opinions and effort levels never substitute for implementation acceptance.
+
 ## Choose participants
 
 Inspect the requirement and scoped repository, then choose a variable number of concrete perspectives from affected domains, uncertainty, dependencies and risk. Use at least two independent participants by default. Do not always create three or split identical prompts into redundant roles. A cross-domain change may need more participants than the concurrency limit. Record the allocation in `decision_reason` and reuse configured executor profiles unless the user requests overrides.

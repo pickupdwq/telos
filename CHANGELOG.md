@@ -1,5 +1,15 @@
 # Changelog / 更新记录
 
+## 3.9.0 — 2026-10-26
+
+- Add supervisor-selected reasoning effort before each work, repair, meeting follow-up and evaluation job. Freeze supported provider/model/protocol levels and allowed ranges, record requested/effective effort and reasons, enforce the selection at the relay, and bind exam evidence to the evaluation job. Existing tasks remain fixed; executor identity, conversation, ownership and acceptance gates are preserved.
+- Add an opt-in dynamic policy for Bailian DeepSeek V4.1 Flash 1017 with canonical `low/high/max` levels and explicit aliases, including `medium → high`. Unknown capabilities remain fixed until declared locally. Guide supervisors to select effort from task complexity and observed evidence; local simulations do not establish live-model speed or quality gains.
+- Add `task_token_limits_enabled=false` for new tasks to discard token caps while retaining usage accounting and any explicit request/time limits. Preserve previously frozen budgets, including queued project tasks.
+- Package the native meeting fixture with managed installations. Bound check timeout cleanup when descendants retain output pipes, preserve whitespace in scoped Git filenames, and isolate malformed storage records without deleting them or presenting partial inventory as complete.
+- Cover dynamic reasoning with real CLI resume, HTTP forwarding, adapters, queued jobs, control/idempotency, rollback and final acceptance regressions, plus a reproducible Postman simulation.
+
+大总管现在可以在每轮启动前按任务需要选择思考强度，并保留理由与实际档位；执行中的请求不能改档，旧任务合同、同一执行者会话及验收标准保持不变。百炼动态档位为 `low/high/max`，`medium` 明确映射到 `high`。新增新任务关闭 Token 上限的配置，同时修复安装后会议验证、超时清理、含空白文件名的范围检查与损坏状态盘点。验证覆盖真实 CLI、本地 HTTP 模拟和最终验收，不宣称已测得真实模型提速。
+
 ## 3.8.1 — 2026-10-23
 
 - Share canonical JSON encoding, hashing and reads across runtime and closed-book evidence; preserve serialized bytes, existing hashes and module entry points.

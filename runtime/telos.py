@@ -33,10 +33,11 @@ import timing
 import errors
 import watch as watch_runtime
 import providers
+import effort_policy
 from providers import ProviderError as GateError
-from processes import process_start, process_running, reap_background
+from processes import process_start, process_running, reap_background, kill_process_tree
 from identity import VERSION, canonical_tool_name, credential_path, legacy_callback_text, runtime_path
-from usage import BudgetExceeded, UsageLedger, validate_budget
+from usage import BudgetExceeded, UsageLedger, validate_budget, resolve_task_budget
 from serialization import encoded, digest, read_json
 
 HOME = Path.home()
@@ -51,7 +52,8 @@ DEFAULT = {"model": "deepseek-v4-1-flash-260910", "base_url": "https://ark.cn-be
            "callback_retry_seconds": 10, "callback_retry_window": 1800,
            "callback_recovery_seconds": 30, "progress_timeout_seconds": 180,
            "progress_reminder_limit": 3, "infra_retry_limit": 5, "infra_backoff_seconds": 10,
-           "review_max_bytes": 200000, "task_budget": None, "planning_mode": "multi_executor"}
+           "review_max_bytes": 200000, "task_budget": None, "task_token_limits_enabled": True,
+           "planning_mode": "multi_executor", "dynamic_reasoning_enabled": False}
 _BUDGET_UNSET = object()
 WATCH_EVENTS = ("pending", "sending", "uncertain", "queued", "delivered")
 
@@ -115,17 +117,17 @@ def locked(sid):
         yield root
 
 
-def cmd(argv, cwd=None, timeout=30, env=None):
+def cmd(argv, cwd=None, timeout=30, env=None, raw=False):
     p = subprocess.run(argv, cwd=cwd, env=env, capture_output=True, timeout=timeout)
     if p.returncode:
         raise GateError(f"{Path(argv[0]).name} failed ({p.returncode}): " + p.stderr.decode(errors="replace")[-1200:])
-    return p.stdout.decode(errors="replace").strip()
+    return p.stdout if raw else p.stdout.decode(errors="replace").strip()
 
 
-def git(repo, *args):
+def git(repo, *args, raw=False):
     env = {**os.environ, "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": "/dev/null"}
     return cmd(["git", "-c", "core.fsmonitor=false", "-c", "core.hooksPath=/dev/null",
-                "-C", str(repo), *args], env=env)
+                "-C", str(repo), *args], env=env, raw=raw)
 
 
 def credential(binding=None):
@@ -139,6 +141,27 @@ def resolve_backends(**kwargs):
 
 def backend_bindings(contract):
     return providers.contract_bindings(contract, config())
+
+
+def execution_binding(state, contract, job_id=None):
+    """Resolve a committed job decision, never mutable defaults or worker input."""
+    binding = backend_bindings(contract)['executor']
+    if not contract.get('reasoning_policy'):
+        return binding
+    policy = effort_policy.validate(contract['reasoning_policy'], binding)
+    ident = job_id or state.get('job_id')
+    if ident is None:
+        return {**binding, 'reasoning_effort': policy['initial_effort']}
+    if not isinstance(ident, str) or not re.fullmatch(r'[a-f0-9]{32}', ident):
+        raise GateError('Invalid reasoning job identity')
+    request = read_json(run_dir(state['session_id']) / f'job-{ident}.json')
+    decision = effort_policy.validate_decision(request.get('reasoning_decision'), policy)
+    if (decision.get('job_id') != ident or decision.get('kind') != request.get('kind')
+            or decision.get('contract_hash') != state['contract_hash']):
+        raise GateError('Reasoning decision does not match this job and contract')
+    if job_id is None and state.get('reasoning_decision') != decision:
+        raise GateError('Current reasoning decision differs from its persisted job')
+    return {**binding, 'reasoning_effort': decision['effective_effort']}
 
 
 def configure_credential(provider):
@@ -263,9 +286,9 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
                    assessment_mode="closed_book", review_paths=None, dependency_paths=None, command_network=False,
                    executor_profile=None, exam_profile=None, reasoning_effort=None, exam_reasoning_effort=None,
                    task_type='implementation', audit=None, repair_of=None, allowed_paths=None,
-                   budget=None,
+                   budget=None, reasoning_policy=None,
                    _session_id=None, _base_commit=None, _project_id=None, _allowed_paths=None, _dependency_pins=None,
-                   _usage_id=None, _budget=_BUDGET_UNSET,
+                   _usage_id=None, _budget=_BUDGET_UNSET, _reasoning_policy=_BUDGET_UNSET,
                    _backends=None, _executor=None, _workflow_version=3, _discussion=False, _planning=None):
     cfg = config()
     import audit as audit_runtime
@@ -302,6 +325,11 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
                     reasoning_effort=reasoning_effort, exam_reasoning_effort=exam_reasoning_effort))
     else:
         raise GateError('Unsupported workflow version')
+    if _workflow_version == 3:
+        reasoning_policy = (effort_policy.validate(_reasoning_policy, executor) if _reasoning_policy is not None else None
+                            ) if _reasoning_policy is not _BUDGET_UNSET else effort_policy.freeze(executor, cfg, reasoning_policy)
+    elif reasoning_policy is not None:
+        raise GateError('Dynamic reasoning requires the current executor workflow')
     provider, model = backends['executor']['provider'], backends['executor']['model']
     exam_provider, exam_model = backends['exam']['provider'], backends['exam']['model']
     threshold = cfg["threshold"] if threshold is None else threshold
@@ -311,9 +339,8 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
     try:
         # Project children pass an explicit frozen value (including None) so a
         # later configuration default cannot retroactively add a budget.
-        effective_budget = _budget if _budget is not _BUDGET_UNSET else (
-            budget if budget is not None else cfg.get('task_budget'))
-        budget = validate_budget(effective_budget)
+        budget = (validate_budget(_budget) if _budget is not _BUDGET_UNSET else
+                  resolve_task_budget(budget if budget is not None else cfg.get('task_budget'), cfg))
         if budget and budget.get('closeout_reserve_seconds', 0) >= backends['executor']['job_timeout']:
             raise ValueError('closeout_reserve_seconds must be smaller than the executor job_timeout')
     except ValueError as error:
@@ -372,6 +399,8 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
         for key in ('backends', 'exam_provider', 'exam_model', 'review_paths'):
             frozen.pop(key)
         frozen.update(workflow_version=3, executor=executor)
+        if reasoning_policy is not None:
+            frozen['reasoning_policy'] = reasoning_policy
     if task_type == 'audit':
         frozen.update(task_type='audit', audit=audit)
     elif task_type == 'discussion':
@@ -1050,25 +1079,27 @@ def validate_dependencies(paths):
     return result
 
 
-def repair_feedback(sid, feedback, event_id=None):
+def repair_feedback(sid, feedback, event_id=None, reasoning_effort=None, reasoning_reason=None):
     if not isinstance(feedback, dict) or set(feedback) - {'symptoms', 'requirements', 'locations'}:
         raise GateError("Feedback allows only symptoms, requirements and locations")
     if not feedback or not all(isinstance(v, list) and v and all(isinstance(x, str) and x.strip() for x in v) for v in feedback.values()):
         raise GateError("Feedback fields must be nonempty arrays of public strings")
     message = '\n'.join(k + ':\n' + '\n'.join(v) for k, v in sorted(feedback.items()))
-    return start_job(sid, 'send', message, event_id)
+    return start_job(sid, 'send', message, event_id, reasoning_effort, reasoning_reason)
 
 
-def start_job(sid, kind, message="", event_id=None):
-    return project_manager().start_child(sid, kind, message, event_id)
+def start_job(sid, kind, message="", event_id=None, reasoning_effort=None, reasoning_reason=None):
+    return project_manager().start_child(sid, kind, message, event_id, reasoning_effort, reasoning_reason)
 
 
-def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None):
+def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None,
+               reasoning_effort=None, reasoning_reason=None):
     with locked(sid) as root:
         state, contract = load_session(root)
         if state.get('archived'):
             raise GateError('Archived task is terminal; restore its bundle into a new task if needed')
-        replay = event_action(state, event_id, kind, {"message": message})
+        arguments = effort_policy.arguments(message, reasoning_effort, reasoning_reason)
+        replay = event_action(state, event_id, kind, arguments)
         if replay:
             return replay
         if state["phase"] == "accepted":
@@ -1089,6 +1120,7 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
         if state["phase"] == "awaiting_review":
             raise GateError("Grade the pending exam before sending more work",
                             code='review_required', next_action='telos_review_then_grade')
+        reasoning_decision = effort_policy.select(contract, state, reasoning_effort, reasoning_reason)
         from local_executor import assert_active
         assert_active(bridge_services(), backend_bindings(contract)['executor'])
         if not discussion and state["rounds"] >= contract["max_rounds"]:
@@ -1131,6 +1163,10 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
         else:
             raise GateError("Invalid job kind")
         job = uuid.uuid4().hex
+        if reasoning_decision is not None:
+            reasoning_decision.update(job_id=job, kind=kind, contract_hash=state['contract_hash'], at=time.time())
+            state['reasoning_decision'] = reasoning_decision
+            state.setdefault('reasoning_history', []).append(reasoning_decision)
         state.pop('job_pid', None)
         state.pop('job_process_start', None)
         state.update(phase="running", job_id=job, job_kind=kind, job_started=time.time(), last_error=None,
@@ -1140,7 +1176,8 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
         timing.transition(state, 'work' if kind == 'send' else 'checks')
         watch_runtime.prepare(bridge_services(), state)
         state.pop("acceptance", None)
-        write_json(root / f"job-{job}.json", {"kind": kind, "message": message, "reserved_round": state['rounds'] if kind == 'evaluate' else None})
+        write_json(root / f"job-{job}.json", {"kind": kind, "message": message, "reserved_round": state['rounds'] if kind == 'evaluate' else None,
+                   **({'reasoning_decision': reasoning_decision} if reasoning_decision is not None else {})})
         write_json(root / "state.json", state)
         import state_store
         state_store.lease(bridge_services(), root, state)
@@ -1161,7 +1198,9 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
         reap_background(p)
         result = {"session_id": sid, "job_id": job, "phase": "running",
                   "return": "automatic completion event" if state.get("owner") else "poll telos_status"}
-        record_action(state, event_id, kind, {"message": message}, result)
+        if reasoning_decision is not None:
+            result['reasoning_decision'] = reasoning_decision
+        record_action(state, event_id, kind, arguments, result)
         write_json(root / "state.json", state)
         activity.status(bridge_services(), state)
         watch_runtime.after_start(bridge_services(), state)
@@ -1174,7 +1213,7 @@ def minimal_env():
 
 def peer_turn(state, contract, message, phase="work", policy=None):
     from isolation import model_relay, RelayCloseout
-    binding = backend_bindings(contract)['executor']
+    binding = execution_binding(state, contract)
     key, _ = provider_credential(binding['provider'], binding)
     from local_executor import lease, assert_active
     local = binding['provider'] == 'local'
@@ -1182,8 +1221,9 @@ def peer_turn(state, contract, message, phase="work", policy=None):
     budget_failure = {}
     ledger = usage_ledger(state, contract)
     usage_context = {'phase': phase, 'provider': binding['provider'], 'model': binding['model'],
-                     'job': state.get('job_id')}
-    options = {'binding': binding, 'diagnostics': diagnostics} if local or binding['provider'] == 'bailian' else {}
+                     'job': state.get('job_id'),
+                     **({'reasoning_effort': binding['reasoning_effort']} if contract.get('reasoning_policy') else {})}
+    options = {'binding': binding, 'diagnostics': diagnostics} if local or binding['provider'] == 'bailian' or contract.get('reasoning_policy') else {}
     if local:
         options['validate'] = lambda: assert_active(bridge_services(), binding)
     # New work admission uses an explicit frozen reserve. Historical contracts
@@ -1195,6 +1235,7 @@ def peer_turn(state, contract, message, phase="work", policy=None):
             model_relay(binding['base_url'], key, binding['http_timeout'], policy=policy,
                         usage_ledger=ledger, usage_context=usage_context, budget_failure=budget_failure,
                         closeout=closeout,
+                        reasoning_effort=binding['reasoning_effort'] if contract.get('reasoning_policy') else None,
                         activity_recorder=activity.for_state(bridge_services(), state, phase, secrets=(key,)),
                         **options) as (endpoint, token, port):
         try:
@@ -1378,8 +1419,11 @@ def snapshot(state, number):
             raise GateError('Audit source changed; audits may only write separate evidence artifacts')
     if contract.get('allowed_paths') is not None and contract.get('task_type') != 'audit' and not state.get('notification_only'):
         contract = read_json(run_dir(state['session_id']) / 'contract.json')
-        changed_paths = set(git(worktree, 'diff', '--name-only', '--no-renames', '-z', state['base_commit']).split('\0'))
-        changed_paths.update(git(worktree, 'ls-files', '--others', '--exclude-standard', '-z').split('\0'))
+        # Git's NUL-delimited names are bytes, not whitespace-trimmable text.
+        # fsdecode also preserves names that are not valid UTF-8.
+        changed_paths = {os.fsdecode(path) for path in (
+            git(worktree, 'diff', '--name-only', '--no-renames', '-z', state['base_commit'], raw=True).split(b'\0')
+            + git(worktree, 'ls-files', '--others', '--exclude-standard', '-z', raw=True).split(b'\0')) if path}
         allowed = contract['allowed_paths']
         bad = [p for p in changed_paths if p and not any(a == '.' or p == a or p.startswith(a + '/') for a in allowed)]
         if bad:
@@ -1437,19 +1481,33 @@ def _executable_checks(contract, target, temp, dependencies, env):
         command = ["/usr/bin/sandbox-exec", "-p", sandbox_profile(check.get("network", False), writable=[temp],
                    readable=[target, *dependencies], protected=[target, *dependency_roots]), *argv]
         started = time.time()
+        output_incomplete = False
         p = subprocess.Popen(command, cwd=target, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         try:
             out, err = p.communicate(timeout=check.get("timeout_seconds", 60))
             status = "passed" if p.returncode == 0 else "failed"
             code = p.returncode
         except subprocess.TimeoutExpired:
-            os.killpg(p.pid, signal.SIGKILL)
-            out, err = p.communicate()
+            kill_process_tree(p)
+            try:
+                out, err = p.communicate(timeout=0.5)
+            except subprocess.TimeoutExpired as interrupted:
+                # An already-orphaned descendant can retain the pipe even after
+                # the check's group is gone. Never wait for its EOF indefinitely.
+                out, err = interrupted.output or b'', interrupted.stderr or b''
+                output_incomplete = True
+                p.stdout.close()
+                p.stderr.close()
+                try:
+                    p.wait(timeout=0.5)
+                except subprocess.TimeoutExpired:
+                    reap_background(p)
             status, code = "timeout", None
         results.append({"id": check["id"], "status": status, "returncode": code,
                         "source_read_only": True,
                         "seconds": round(time.time() - started, 3),
-                        "stdout": out.decode(errors="replace")[-6000:], "stderr": err.decode(errors="replace")[-6000:]})
+                        "stdout": out.decode(errors="replace")[-6000:], "stderr": err.decode(errors="replace")[-6000:],
+                        **({'output_incomplete': True} if output_incomplete else {})})
     return results
 
 
@@ -1529,6 +1587,8 @@ def background_job(sid, job):
                     exam = answer_exam({**contract, '_submission': submission})
             packet = {"session_id": sid, "round": state["rounds"], "commit": commit,
                       "contract_hash": state["contract_hash"], "checks": checks, "exam": exam}
+            if contract.get('reasoning_policy'):
+                packet.update(job_id=job, reasoning_decision=state['reasoning_decision'])
             import delivery
             packet['delivery'] = delivery.bind(bridge_services(), state, commit)
             write_json(root / f'delivery-{commit}-{state["rounds"]}.json', packet['delivery'])
@@ -1671,6 +1731,10 @@ def status(sid, detail='full'):
                 result['audit_report'] = str(root / ('audit-report-' + str(state['rounds']) + '.md'))
         if not state.get('notification_only'):
             result.update(providers.public_contract(contract, config()))
+        if contract.get('reasoning_policy'):
+            result['reasoning_decision'] = state.get('reasoning_decision')
+            if detail == 'full':
+                result['reasoning_history'] = state.get('reasoning_history', [])
         event = state.get("events", {}).get(state.get("last_event_id"))
         result["return_channel"] = {"enabled": bool(state.get("owner")),
             "health": return_health(state),
@@ -1920,14 +1984,15 @@ TOOLS = [
         "supervisor autonomously chooses single, parallel or phased execution. Verified repository experience is retrieved automatically for new"
         " sessions. Optional frozen budget: max_requests is a hard reservation limit; token thresholds stop the next request after observed "
         "spend reaches a limit; an in-flight response may overshoot. Unknown usage needed for a configured token limit stops further paid "
-        "requests. Omit budget for legacy unlimited behavior. Optional exam_reserve_requests and exam_reserve_tokens carve exam capacity out of "
+        "requests. When task_token_limits_enabled=false, new tasks discard token limits and exam_reserve_tokens while retaining request/time limits. "
+        "Omit budget for legacy unlimited behavior. Optional exam_reserve_requests and exam_reserve_tokens carve exam capacity out of "
         "max_requests and max_total_tokens respectively; each reserve must be smaller than its total limit. Work and repairs share the remaining"
         " work allocation; all phases still share the original total cap. Token reservations remain observed-spend thresholds. Optional "
         "closeout_reserve_seconds stops new work requests that many seconds before job_timeout; it must be smaller than job_timeout. No reserve "
         "is added to old contracts. The supervisor is the original GPT flagship conversation and alone grades/accepts. Select "
         "executor_profile=deepseek_official, ark_coding_plan or local, or a locally configured provider/model. Local tasks share one active "
-        "configured loopback endpoint; select it with telos local select. Every new task has one frozen executor binding, reasoning_effort=max "
-        "by default (local: none unless configured). Evaluation resumes that SAME execution conversation in closed-book mode: no tools, new "
+        "configured loopback endpoint; select it with telos local select. Every new task freezes executor identity and initial reasoning_effort=max "
+        "by default (local: none unless configured); an optional reasoning policy allows per-job selection. Evaluation resumes that SAME execution conversation in closed-book mode: no tools, new "
         "source, reference answers or check results. Switching executors requires a new task/session (project_reassign). Project command network"
         " is OFF; explicit dependency_paths grant read-only access during work and executable checks, never the closed-book exam. Initial "
         "task/context and retrieved experience pass the same private-material leak guard as send. Checks read an immutable source snapshot; "
@@ -2058,6 +2123,22 @@ for name in ('telos_open', 'telos_project_open'):
     tool = next(t for t in TOOLS if t['name'] == name)
     tool['inputSchema']['properties'].update({'meeting_id': STR, 'skip_meeting_reason': STR})
 
+REASONING_POLICY = obj({'allowed_efforts': {'type': 'array', 'items': {'enum': list(providers.EFFORTS)}}})
+OPEN_TOOL = next(t for t in TOOLS if t['name'] == 'telos_open')
+for schema in (OPEN_TOOL['inputSchema'], PROJECT_TASK, MEETING_PARTICIPANT):
+    schema['properties']['reasoning_policy'] = REASONING_POLICY
+for name in ('telos_send', 'telos_repair', 'telos_evaluate'):
+    tool = next(t for t in TOOLS if t['name'] == name)
+    tool['inputSchema']['properties'].update({'reasoning_effort': {'enum': list(providers.EFFORTS)}, 'reasoning_reason': STR})
+    tool['description'] += (' For tasks with reasoning_policy, select the next job effort with reasoning_effort and a concise reasoning_reason. '
+                            'Omission retains the prior choice; only allowed model-supported levels apply. Running jobs and legacy fixed tasks cannot change effort. '
+                            'The original supervisor chooses from task complexity and observed failures; quality gates stay unchanged.')
+next(t for t in TOOLS if t['name'] == 'telos_meeting_round')['inputSchema']['properties']['messages']['items'] = obj({
+    'participant_id': STR, 'message': STR, 'reasoning_effort': {'enum': list(providers.EFFORTS)}, 'reasoning_reason': STR}, ['participant_id', 'message'])
+OPEN_TOOL['description'] += (' Optional reasoning_policy.allowed_efforts freezes a supervisor-adjustable range from verified provider/model/protocol capabilities. '
+                           'dynamic_reasoning_enabled config opts new supported tasks in by default. Status exposes canonical levels, aliases and per-job decisions; '
+                           'unknown capabilities remain fixed unless explicitly configured locally. No token cap is required.')
+
 SERVER_INSTRUCTIONS = (
     'Use the telos skill. Only the original supervisor accepts; keep references/checks private. '
     'Follow proceed, next_action and returned event IDs; await callbacks. Honor pause/cancel. '
@@ -2161,10 +2242,10 @@ def call_tool(name, args, meta=None):
                                 code='owner_mismatch', next_action='use_original_supervisor')
             if name == 'telos_return_control' and state.get('project_id'):
                 raise GateError('Use telos_project_control for project-owned sessions')
-    functions = {"telos_open": create_session, "telos_send": lambda session_id, message, event_id=None: start_job(session_id, "send", message, event_id),
-                 "telos_repair": lambda session_id, feedback, event_id=None: repair_feedback(session_id, feedback, event_id),
+    functions = {"telos_open": create_session, "telos_send": lambda session_id, message, event_id=None, reasoning_effort=None, reasoning_reason=None: start_job(session_id, "send", message, event_id, reasoning_effort, reasoning_reason),
+                 "telos_repair": lambda session_id, feedback, event_id=None, reasoning_effort=None, reasoning_reason=None: repair_feedback(session_id, feedback, event_id, reasoning_effort, reasoning_reason),
                  "telos_status": lambda sid, detail='full': status(sid, detail),
-                 "telos_evaluate": lambda session_id, event_id=None: start_job(session_id, "evaluate", event_id=event_id),
+                 "telos_evaluate": lambda session_id, event_id=None, reasoning_effort=None, reasoning_reason=None: start_job(session_id, "evaluate", event_id=event_id, reasoning_effort=reasoning_effort, reasoning_reason=reasoning_reason),
                  "telos_review": lambda sid, detail='full': review_packet(sid, detail), "telos_grade": grade,
                  "telos_receive": lambda sid, event_id, detail='full': receive_event(sid, event_id, detail),
                  "telos_return_control": return_control}

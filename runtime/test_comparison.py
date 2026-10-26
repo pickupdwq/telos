@@ -100,6 +100,18 @@ class ComparisonTests(unittest.TestCase):
         self.assertFalse((trial_root / 'state/experience').exists())
         c.finish(self.root, reason='Isolated no-model test')
 
+    def test_disabled_token_limits_freeze_the_same_request_only_comparison_budget(self):
+        cfg = c.read(self.cfg)
+        cfg['task_token_limits_enabled'] = False
+        c.write(self.cfg, cfg)
+        self.initialize()
+        self.assertEqual(c.read(self.root / 'manifest.json')['budget'], {'max_requests': 10})
+        opened = c.start(self.root, live=True)
+        trial_root = self.root / 'trials' / opened['trial']['id']
+        frozen = c.read(trial_root / 'state/runs' / opened['session_id'] / 'contract.json')
+        self.assertEqual(frozen['budget'], {'max_requests': 10})
+        c.finish(self.root, reason='Isolated token-policy test; no model requests')
+
     def test_pause_resume_and_permanent_cancel(self):
         self.initialize(); c.start(self.root, live=True)
         self.assertEqual(c.control(self.root, 'pause')['continuation'], 'paused')

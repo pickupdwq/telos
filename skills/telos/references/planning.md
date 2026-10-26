@@ -29,6 +29,8 @@ For a small repair, include the relevant symbols/files, the reproduced symptom a
 
 Plan for the entire work → final reply → checks → exam sequence. Use measured successful tasks when available; label provisional caps and headroom as supervisor choices. Where supported, freeze `exam_reserve_requests` / `exam_reserve_tokens` inside the task budget, and leave at least one work request for a factual final reply. Work and repairs cannot spend the exam reserve, and neither phase can exceed the original request cap. Token thresholds may overshoot; reservations do not guarantee success. Check the per-execution `job_timeout` as well as any whole-experiment time limit. A stopped/incomplete work turn still needs proper completion and cannot skip into grading.
 
+When the operator sets `task_token_limits_enabled=false`, new task budgets omit cumulative token limits and `exam_reserve_tokens`, including limits supplied in tool arguments. Honor that preference; use the effective budget returned by the tool. Usage remains recorded, request/time limits remain available, and existing frozen contracts are unchanged.
+
 Where supported, freeze `closeout_reserve_seconds` from observed request latency so work stops launching calls before `job_timeout`. Record the evidence and any chosen headroom; do not insert a universal token or time threshold into existing contracts.
 
 The current check schema accepts `argv` as `['{python}', '-c', inline_code]`; that code may run appropriate project test commands in the verification snapshot. Verify the connected schema before constructing a contract. Resolve dependencies within the approved read-only paths. Command/check network access is off by default; a blocked dependency is not permission to relax isolation.
@@ -38,6 +40,8 @@ The entire verification snapshot is read-only, including new paths and parent di
 Initial task/context, public audit boundaries and retrieved experience use the same private-material guard as later messages. Project creation checks child briefs before saving the project; additions and reassignment are checked too. This guard detects known reference/check text and private-field labels, not all possible paraphrases. Keep public requirements and private answers separate when drafting them.
 
 Create the contract with `telos_open` or `telos_project_open`, passing the concluded `meeting_id` (or explicit `skip_meeting_reason`); creation does not itself call the execution model. Start standalone work with `telos_send` or eligible project tasks with `telos_project_start`. Follow tool results and [acceptance](acceptance.md).
+
+For enabled/authorized dynamic reasoning, choose the initial effort and allowed range before creation; project children can start at different levels. Follow [effort selection](executors.md#choose-effort-before-each-job). Freeze supported capabilities with the contract; later jobs can change effort inside that range without changing requirements, model, thread or acceptance criteria.
 
 ## Project completion
 

@@ -260,7 +260,12 @@ class NativeMeetingTests(unittest.TestCase):
                 raise ValueError('Only a local simulation is allowed')
             yield external.rstrip('/')
             return
-        fixture = Path(__file__).resolve().parents[1] / 'postman/mocks/meetings/default.js'
+        runtime = Path(__file__).resolve().parent
+        if (runtime / 'install-manifest.json').is_file():
+            fixture = runtime / 'fixtures/meetings/default.js'
+        else:
+            fixture = runtime.parent / 'postman/mocks/meetings/default.js'
+        self.assertTrue(fixture.is_file(), f'Missing local meeting fixture: {fixture}')
         process = subprocess.Popen(['node', str(fixture)], env={**os.environ, 'PORT': '0'},
                                    stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True)
         try:

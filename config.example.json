@@ -1,5 +1,7 @@
 {
   "planning_mode": "multi_executor",
+  "dynamic_reasoning_enabled": false,
+  "reasoning_capabilities": {},
   "default_executor_profile": "deepseek_official",
   "local_executor": {
     "active": null,
@@ -37,6 +39,7 @@
   "threshold": 90,
   "max_rounds": 5,
   "max_turns": 20,
+  "task_token_limits_enabled": true,
   "job_timeout": 600,
   "http_timeout": 180,
   "exam_max_tokens": 8192,

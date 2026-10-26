@@ -36,7 +36,7 @@ class InstallerTests(unittest.TestCase):
 
     def test_install_manifest_launchers_and_mcp_with_shell_metacharacters(self):
         result = install.install(self.prefix, self.bin_dir)
-        self.assertEqual(result["version"], "3.8.1")
+        self.assertEqual(result["version"], "3.9.0")
         self.assertTrue((self.prefix / 'audit_browser.cjs').is_file())
         self.assertTrue((self.prefix / 'local_executor.py').is_file())
         self.assertTrue((self.prefix / 'chat_adapter.py').is_file())
@@ -77,6 +77,29 @@ class InstallerTests(unittest.TestCase):
             install.install(self.prefix, self.bin_dir)
         self.assertEqual(sentinel.read_text(), "keep me")
         self.assertFalse(self.bin_dir.exists())
+
+    def test_installed_meeting_fixture_runs_without_source_checkout(self):
+        script = '''import json, sys, urllib.request
+sys.path.insert(0, sys.argv[1])
+from test_meetings import NativeMeetingTests
+with NativeMeetingTests().fixture() as base_url:
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+    with opener.open(base_url + '/fixture/evidence/installed-smoke', timeout=5) as response:
+        assert json.load(response) == {}
+'''
+        env = dict(os.environ, PYTHONDONTWRITEBYTECODE='1')
+        env.pop('TELOS_MEETING_SIMULATION_URL', None)
+        for upgrade in (False, True):
+            with self.subTest(upgrade=upgrade):
+                result = install.install(self.prefix, self.bin_dir, upgrade=upgrade)
+                probe = subprocess.run([sys.executable, '-c', script, str(self.prefix)],
+                                       cwd=self.home, env=env, capture_output=True,
+                                       text=True, timeout=15)
+                self.assertEqual(probe.returncode, 0, probe.stdout + probe.stderr)
+                relative = 'fixtures/meetings/default.js'
+                self.assertEqual(result['files'][relative], install.hashlib.sha256(
+                    (install.ROOT / 'postman/mocks/meetings/default.js').read_bytes()).hexdigest())
+                install.managed_tree(self.prefix, 'install-manifest.json', 'telos')
 
     def test_existing_launcher_and_dangling_symlink_are_preserved(self):
         self.bin_dir.mkdir()
@@ -206,14 +229,15 @@ class InstallerTests(unittest.TestCase):
         launcher = self.bin_dir / "telos"
         before = launcher.read_bytes()
         result = install.install(self.prefix, self.bin_dir, upgrade=True)
-        self.assertEqual(result["version"], "3.8.1")
+        self.assertEqual(result["version"], "3.9.0")
         self.assertEqual(launcher.read_bytes(), before)
         self.assertTrue((self.skill / "SKILL.md").is_file())
         self.assertEqual(set(result["backups"]), {"runtime"})
 
     def test_upgrade_refuses_local_runtime_skill_and_launcher_changes(self):
         install.install(self.prefix, self.bin_dir)
-        for path in (self.prefix / "telos.py", self.skill / "SKILL.md", self.bin_dir / "telos"):
+        for path in (self.prefix / "telos.py", self.prefix / 'fixtures/meetings/default.js',
+                     self.skill / "SKILL.md", self.bin_dir / "telos"):
             with self.subTest(path=path):
                 original = path.read_bytes()
                 path.write_bytes(original + b"\n# user change\n")

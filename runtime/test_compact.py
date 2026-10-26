@@ -64,6 +64,14 @@ def review_full():
 
 
 class CompactViewTests(unittest.TestCase):
+    def test_timeout_partial_output_marker_survives_review_summary(self):
+        full = review_full()
+        full['evidence']['checks'][1].update(status='timeout', returncode=None, output_incomplete=True)
+        check = compact.review(full)['evidence']['checks'][1]
+        self.assertEqual(check['status'], 'timeout')
+        self.assertTrue(check['output_incomplete'])
+        self.assertTrue(check['stderr'])
+
     def test_status_summary_keeps_identity_usage_failure_and_next_action(self):
         full = status_full()
         before = copy.deepcopy(full)

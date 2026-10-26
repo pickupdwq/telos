@@ -113,6 +113,18 @@ def _lock_for(path):
         return _LOCKS.setdefault(key, threading.RLock())
 
 
+def resolve_task_budget(budget, config):
+    """Apply the operator's token policy only when freezing a new task budget."""
+    enabled = config.get('task_token_limits_enabled', True)
+    if type(enabled) is not bool:
+        raise ValueError('task_token_limits_enabled must be boolean')
+    result = validate_budget(budget)
+    if result and not enabled:
+        token_fields = (*BUDGET_FIELDS[1:], 'exam_reserve_tokens')
+        result = {key: value for key, value in result.items() if key not in token_fields}
+    return result or None
+
+
 class UsageLedger:
     """Append-only reservations with atomic completion and budget enforcement.
 
@@ -295,7 +307,7 @@ class UsageLedger:
                                      + '; no further paid request may be sent', snapshot)
             return snapshot
 
-    def begin(self, phase, *, provider=None, model=None, job=None):
+    def begin(self, phase, *, provider=None, model=None, job=None, reasoning_effort=None):
         phase = self._phase(phase)
         with self._locked():
             data = self._read()
@@ -307,6 +319,11 @@ class UsageLedger:
                 'request_id': request_id, 'phase': phase, 'status': 'reserved',
                 'started_at': time.time(), 'provider': _bounded(provider, 64),
                 'model': _bounded(model, 120), 'job': _bounded(job, 64)}
+            if reasoning_effort is not None:
+                from providers import EFFORTS
+                if reasoning_effort not in EFFORTS:
+                    raise ValueError('Invalid reasoning effort for request accounting')
+                data['requests'][request_id]['reasoning_effort'] = reasoning_effort
             self._write(data)
             return request_id
 

@@ -1,6 +1,7 @@
 """Local background-process liveness and reaping; no task decisions or model calls."""
 import os
-from subprocess import DEVNULL, PIPE, Popen, TimeoutExpired
+import signal
+from subprocess import DEVNULL, PIPE, Popen, TimeoutExpired, run
 import threading
 
 
@@ -59,3 +60,58 @@ def reap_background(process):
     # Keep the Popen handle alive and reap promptly, even after a successful job
     # stops appearing in the running-task scan. Daemon exit never kills the child.
     threading.Thread(target=process.wait, name='telos-child-wait', daemon=True).start()
+
+
+def _process_table():
+    """Bounded, metadata-only process snapshot for descendant cleanup."""
+    try:
+        result = run(['/bin/ps', '-A', '-o', 'pid=', '-o', 'ppid=', '-o', 'lstart='],
+                     stdout=PIPE, stderr=DEVNULL, timeout=0.25,
+                     env={'LC_ALL': 'C', 'PATH': '/usr/bin:/bin'})
+        if result.returncode:
+            return {}
+        table = {}
+        for line in result.stdout.decode('ascii', errors='replace').splitlines():
+            fields = line.split(None, 2)
+            if len(fields) == 3 and fields[0].isdigit() and fields[1].isdigit():
+                table[int(fields[0])] = (int(fields[1]), fields[2])
+        return table
+    except (OSError, TimeoutExpired):
+        return {}
+
+
+def kill_process_tree(process):
+    """Best-effort cleanup, including descendants that created another group.
+
+    Reparented children may no longer be attributable to this check. Callers
+    must still bound pipe draining; process discovery is not an EOF guarantee.
+    """
+    table = _process_table()
+    children = {}
+    for pid, (parent, _) in table.items():
+        children.setdefault(parent, []).append(pid)
+    descendants, pending = [], [process.pid]
+    seen = {process.pid}
+    while pending:
+        for pid in children.get(pending.pop(), ()):
+            if pid not in seen:
+                seen.add(pid)
+                descendants.append(pid)
+                pending.append(pid)
+    # Recheck identity before signalling: never kill an unrelated reused PID.
+    current = _process_table() if descendants else {}
+    for pid in reversed(descendants):
+        if pid in current and current[pid][1] == table[pid][1]:
+            try:
+                os.kill(pid, signal.SIGKILL)
+            except (ProcessLookupError, PermissionError):
+                pass
+    if process.returncode is None:
+        try:
+            os.killpg(process.pid, signal.SIGKILL)
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            process.kill()
+        except ProcessLookupError:
+            pass

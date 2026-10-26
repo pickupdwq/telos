@@ -4,6 +4,7 @@ from pathlib import Path
 import re
 import time
 import uuid
+import effort_policy
 
 
 GUIDANCE = (
@@ -58,7 +59,7 @@ class Meetings:
             raise b.GateError('A meeting supports at most 30 participants; concurrency is separate')
         out = []
         for raw in values:
-            if not isinstance(raw, dict) or set(raw) - {'id', 'role', 'executor_profile', 'provider', 'model', 'reasoning_effort'}:
+            if not isinstance(raw, dict) or set(raw) - {'id', 'role', 'executor_profile', 'provider', 'model', 'reasoning_effort', 'reasoning_policy'}:
                 raise b.GateError('Invalid meeting participant fields')
             ident, role = raw.get('id'), raw.get('role')
             if (not isinstance(ident, str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', ident)
@@ -75,6 +76,7 @@ class Meetings:
                     'budget': None, 'usage_id': uuid.uuid4().hex,
                     'session_id': uuid.uuid4().hex, 'phase': 'pending', 'revision': 1, 'active': True}
             self.projects.backend_fields(task)
+            task['reasoning_policy'] = effort_policy.freeze(binding, b.config(), raw.get('reasoning_policy'))
             out.append(task)
         return out
 
@@ -169,7 +171,8 @@ class Meetings:
                 raise b.GateError('Provide participant messages and retirement IDs as lists')
             selected = set()
             for msg in messages:
-                if (not isinstance(msg, dict) or set(msg) != {'participant_id', 'message'}
+                if (not isinstance(msg, dict) or not {'participant_id', 'message'} <= set(msg)
+                        or set(msg) - {'participant_id', 'message', 'reasoning_effort', 'reasoning_reason'}
                         or not isinstance(msg['message'], str) or not msg['message'].strip()):
                     raise b.GateError('Each follow-up needs participant_id and a focused public message')
                 ident = msg['participant_id']
@@ -179,6 +182,8 @@ class Meetings:
                     raise b.GateError('Follow up once per returned active participant; wait for running work')
                 if ident in retiring:
                     raise b.GateError('Cannot follow up and retire the same participant')
+                state, contract = b.load_session(b.run_dir(t['session_id']))
+                effort_policy.select(contract, state, msg.get('reasoning_effort'), msg.get('reasoning_reason'))
                 selected.add(ident)
             for ident in retiring:
                 if ident not in by_id or by_id[ident]['phase'] in ('running', 'stale'):
@@ -190,7 +195,7 @@ class Meetings:
             p['discussion_rounds'].append(row)
             for msg in messages:
                 t = by_id[msg['participant_id']]
-                t['discussion_pending'] = {'request_id': request_id, 'message': msg['message']}
+                t['discussion_pending'] = {'request_id': request_id, **{k: v for k, v in msg.items() if k != 'participant_id'}}
             for ident in retiring:
                 by_id[ident]['active'] = False
                 by_id[ident].pop('discussion_pending', None)
@@ -219,7 +224,8 @@ class Meetings:
             if not b.receive_event(t['session_id'], eid)['proceed']:
                 raise b.GateError('Meeting participant receipt is not actionable')
         # Marker and running job are persisted together by _start_job.
-        self.projects.launch(p, t['session_id'], 'send', pending['message'], eid, discussion_request_id=marker)
+        self.projects.launch(p, t['session_id'], 'send', pending['message'], eid, discussion_request_id=marker,
+                             reasoning_effort=pending.get('reasoning_effort'), reasoning_reason=pending.get('reasoning_reason'))
         t.pop('discussion_pending', None)
 
     def conclude(self, meeting_id, plan, answers, rationale):

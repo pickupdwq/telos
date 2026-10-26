@@ -270,6 +270,70 @@ class MCPBoundaryTests(unittest.TestCase):
         with self.assertRaises(b.GateError):
             self.open_with_budget()
 
+    def test_disabled_token_limits_keep_usage_request_reserves_and_time_limits(self):
+        from usage import BudgetExceeded
+        config = b.config()
+        config['task_token_limits_enabled'] = False
+        b.write_json(b.CONFIG, config)
+        supplied = {'max_requests': 3, 'exam_reserve_requests': 1, 'closeout_reserve_seconds': 1,
+                    'max_input_tokens': 1, 'max_uncached_input_tokens': 1, 'max_output_tokens': 1,
+                    'max_total_tokens': 4, 'exam_reserve_tokens': 2}
+        opened = self.open_with_budget(supplied)
+        expected = {'max_requests': 3, 'exam_reserve_requests': 1, 'closeout_reserve_seconds': 1}
+        self.assertEqual(opened['budget'], expected)
+        state, contract = b.load_session(b.run_dir(opened['session_id']))
+        self.assertEqual(contract['budget'], expected)
+        ledger = b.usage_ledger(state, contract)
+        ledger.finish(ledger.begin('work'), {'input_tokens': 100, 'output_tokens': 20})
+        self.assertEqual(ledger.ensure_available('work')['totals']['total_tokens'], 120)
+        ledger.finish(ledger.begin('work'), None)
+        ledger.ensure_known()
+        with self.assertRaises(BudgetExceeded):
+            ledger.begin('work')
+        ledger.finish(ledger.begin('exam'), {'input_tokens': 200, 'output_tokens': 50})
+        with self.assertRaises(BudgetExceeded):
+            ledger.begin('exam')
+        self.assertEqual(ledger.snapshot()['totals']['total_tokens'], 370)
+        self.assertEqual(supplied['max_total_tokens'], 4)
+
+    def test_disabled_token_only_default_freezes_unlimited_budget(self):
+        config = b.config()
+        config.update(task_token_limits_enabled=False,
+                      task_budget={'max_total_tokens': 10, 'exam_reserve_tokens': 2})
+        b.write_json(b.CONFIG, config)
+        opened = self.open_with_budget()
+        self.assertIsNone(opened['budget'])
+        config.update(task_token_limits_enabled=True, task_budget={'max_total_tokens': 1})
+        b.write_json(b.CONFIG, config)
+        state, contract = b.load_session(b.run_dir(opened['session_id']))
+        self.assertIsNone(contract['budget'])
+        ledger = b.usage_ledger(state, contract)
+        ledger.finish(ledger.begin('work'), {'input_tokens': 100, 'output_tokens': 20})
+        self.assertEqual(ledger.ensure_available()['budget_state']['state'], 'unlimited')
+
+    def test_token_policy_does_not_rewrite_existing_frozen_budget(self):
+        from usage import BudgetExceeded
+        opened = self.open_with_budget({'max_total_tokens': 10})
+        config = b.config()
+        config['task_token_limits_enabled'] = False
+        b.write_json(b.CONFIG, config)
+        state, contract = b.load_session(b.run_dir(opened['session_id']))
+        self.assertEqual(contract['budget'], {'max_total_tokens': 10})
+        ledger = b.usage_ledger(state, contract)
+        ledger.finish(ledger.begin('work'), {'input_tokens': 10, 'output_tokens': 10})
+        with self.assertRaises(BudgetExceeded):
+            ledger.begin('work')
+        self.assertIsNone(self.open_with_budget({'max_total_tokens': 10})['budget'])
+
+    def test_token_limit_policy_requires_a_boolean(self):
+        for invalid in ('false', 0, None):
+            with self.subTest(invalid=invalid):
+                config = b.config()
+                config['task_token_limits_enabled'] = invalid
+                b.write_json(b.CONFIG, config)
+                with self.assertRaises(b.GateError):
+                    self.open_with_budget({'max_requests': 2})
+
     def test_exam_reserves_freeze_at_mcp_boundary_and_gate_work_only(self):
         budget = {'max_requests': 3, 'exam_reserve_requests': 1,
                   'max_total_tokens': 1000, 'exam_reserve_tokens': 200, 'closeout_reserve_seconds': 1}

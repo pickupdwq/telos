@@ -1,0 +1,5 @@
+simulation: telos-reasoning
+routing: path
+mocks:
+  - routeKey: reasoning
+    path: ../mocks/reasoning/default.js

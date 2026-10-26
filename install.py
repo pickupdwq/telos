@@ -278,11 +278,11 @@ def install(prefix: Path, bin_dir: Path, *, register: bool = False,
             if not upgrade or entry.get("command") != str(launcher) or entry.get("args") != ["serve"]:
                 raise RuntimeError("MCP server 'telos' is already registered; existing configuration was preserved.")
             already_registered = True
-    files = sorted((ROOT / "runtime").glob("*.py"))
-    files.append(ROOT / "runtime/deepseek_models.json")
-    files.append(ROOT / "runtime/bailian_models.json")
-    files.append(ROOT / 'runtime/audit_browser.cjs')
-    if not files or not all(p.is_file() and not p.is_symlink() for p in files):
+    files = {p.name: p for p in sorted((ROOT / "runtime").glob("*.py"))}
+    for name in ('deepseek_models.json', 'bailian_models.json', 'audit_browser.cjs'):
+        files[name] = ROOT / 'runtime' / name
+    files['fixtures/meetings/default.js'] = ROOT / 'postman/mocks/meetings/default.js'
+    if not files or not all(p.is_file() and not p.is_symlink() for p in files.values()):
         raise RuntimeError("Runtime source is missing or contains unexpected symlinks.")
     config_source = prefix / "config.json" if upgrade else ROOT / "config.example.json"
     config_bytes = config_source.read_bytes()
@@ -335,8 +335,10 @@ def install(prefix: Path, bin_dir: Path, *, register: bool = False,
             stages.append(stage)
             skill_stage = Path(tempfile.mkdtemp(prefix=".telos-skill-stage-", dir=skill.parent.parent))
             stages.append(skill_stage)
-            for source in files:
-                shutil.copyfile(source, stage / source.name)
+            for relative, source in files.items():
+                destination = stage / relative
+                destination.parent.mkdir(parents=True, exist_ok=True)
+                shutil.copyfile(source, destination)
             shutil.copy2(config_source, stage / "config.json")
             shutil.copyfile(ROOT / "LICENSE", stage / "LICENSE")
             (stage / "commands").mkdir()

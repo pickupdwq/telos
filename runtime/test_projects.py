@@ -189,6 +189,34 @@ class ProjectTests(unittest.TestCase):
             with self.subTest(invalid=invalid), self.assertRaises(b.GateError):
                 self.create([self.task('bad', budget=invalid)])
 
+    def test_token_policy_applies_to_new_tasks_and_survives_queued_start(self):
+        config = b.config()
+        config.update(task_token_limits_enabled=False, task_budget={'max_total_tokens': 10})
+        b.write_json(b.CONFIG, config)
+        pid = self.create([self.task('a'), self.task('b', budget={
+            'max_requests': 3, 'exam_reserve_requests': 1, 'max_total_tokens': 20,
+            'exam_reserve_tokens': 5, 'closeout_reserve_seconds': 1})])
+        expected = {'a': None, 'b': {'max_requests': 3, 'exam_reserve_requests': 1,
+                                     'closeout_reserve_seconds': 1}}
+        self.assertEqual({t['id']: t['budget'] for t in self.state(pid)['tasks']}, expected)
+        config['task_token_limits_enabled'] = True
+        b.write_json(b.CONFIG, config)
+        self.start(pid)
+        for ident, budget in expected.items():
+            state = self.child(pid, ident)
+            _, contract = b.load_session(b.run_dir(state['session_id']))
+            self.assertEqual(contract['budget'], budget)
+
+    def test_disabling_token_policy_preserves_already_frozen_project_budget(self):
+        pid = self.create([self.task('a', budget={'max_total_tokens': 20})])
+        config = b.config()
+        config['task_token_limits_enabled'] = False
+        b.write_json(b.CONFIG, config)
+        self.start(pid)
+        state = self.child(pid, 'a')
+        _, contract = b.load_session(b.run_dir(state['session_id']))
+        self.assertEqual(contract['budget'], {'max_total_tokens': 20})
+
     def test_full_project_gate_real_git_and_tests(self):
         pid = self.create(); self.start(pid)
         for name in 'abc':

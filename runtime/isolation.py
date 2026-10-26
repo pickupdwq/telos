@@ -539,8 +539,14 @@ def _normalize_bailian_request(request, binding):
 
 @contextlib.contextmanager
 def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=None, diagnostics=None,
-                usage_ledger=None, usage_context=None, budget_failure=None, closeout=None, activity_recorder=None):
+                usage_ledger=None, usage_context=None, budget_failure=None, closeout=None, activity_recorder=None,
+                reasoning_effort=None):
     """Only the bridge holds upstream credentials. No arbitrary URL/proxy methods."""
+    if reasoning_effort is not None:
+        from providers import EFFORTS
+        if (not isinstance(reasoning_effort, str) or reasoning_effort not in EFFORTS
+                or not binding or binding.get('reasoning_effort') != reasoning_effort):
+            raise ValueError('Relay reasoning must match the committed execution binding')
     token = secrets.token_urlsafe(48)
     local = binding is not None and binding.get('provider') == 'local'
     bailian = binding is not None and binding.get('provider') == 'bailian'
@@ -568,7 +574,7 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
         def do_POST(self):
             if not hmac.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + token):
                 self.send_error(403); return
-            allowed = ('/v1/responses',) if policy or local or bailian else ('/v1/responses', '/v1/responses/compact')
+            allowed = ('/v1/responses',) if policy or local or bailian or reasoning_effort is not None else ('/v1/responses', '/v1/responses/compact')
             if self.path not in allowed:
                 self.send_error(404); return
             if budget_failure and budget_failure.get('message'):
@@ -629,6 +635,18 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                 if bailian:
                     body_object = json.loads(body)
                     _normalize_bailian_request(body_object, binding)
+                if reasoning_effort is not None:
+                    # The worker's CLI/history cannot override the supervisor's
+                    # committed per-job selection. Normalize before all adapters.
+                    if body_object is None:
+                        body_object = json.loads(body)
+                    if not isinstance(body_object, dict) or body_object.get('model') != binding['model']:
+                        raise ValueError('Request changed the frozen model')
+                    reasoning = body_object.get('reasoning', {})
+                    if not isinstance(reasoning, dict):
+                        raise ValueError('Request reasoning must be an object')
+                    body_object['reasoning'] = {**reasoning, 'effort': reasoning_effort}
+                    body = json.dumps(body_object, ensure_ascii=False).encode()
                 if policy:
                     if body_object is not None:
                         body = json.dumps(body_object, ensure_ascii=False).encode()
@@ -637,6 +655,8 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                 suffix = self.path.removeprefix('/v1')
                 chat_request = None
                 if local:
+                    # Adapters own the serialized body from here onward.
+                    body_object = None
                     request = json.loads(body)
                     if request.get('model') != binding['model']:
                         raise ValueError('Local request changed the frozen model')
@@ -660,7 +680,8 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                         request_id = usage_ledger.begin(context.get('phase', 'work'),
                                                         provider=context.get('provider'),
                                                         model=context.get('model'),
-                                                        job=context.get('job'))
+                                                        job=context.get('job'),
+                                                        **({'reasoning_effort': reasoning_effort} if reasoning_effort is not None else {}))
                     except Exception as error:
                         from usage import BudgetExceeded
                         if isinstance(error, BudgetExceeded):

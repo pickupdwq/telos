@@ -2,7 +2,7 @@
 name: telos
 description: "Supervise Telos delegated development, scoped system audits (code, APIs, page interactions and visual evidence), and confirmed-bug repairs through MCP. Use for requests to use Telos, coordinate independent executors with evidence-based acceptance, or continue an existing TELOS_EVENT. Ordinary coding, general review and questions about Telos do not by themselves authorize starting an executor."
 metadata:
-  version: "3.8.1"
+  version: "3.9.0"
 ---
 
 # Telos
@@ -25,7 +25,7 @@ Read only the references relevant to this stage. Use the connected `telos_*` too
 2. Verify that the Telos MCP tools are available to this conversation. If unavailable, report the missing integration and the concrete loading/configuration step. Do not substitute an unrelated subagent, start a different supervisor, invent a callback identity, or silently switch to manual delivery.
 3. Inspect the target repository and relevant running environment before choosing checks. Telos requires a committed, clean source repository. Preserve existing edits: use an appropriate isolated clean checkout or explain the required preparation; never reset or commit unrelated changes to pass the gate. Telos also creates internal commits in its isolated worktree for acceptance. If the user prohibits commits, clarify this conflict before dispatch rather than assuming they meant only merge or push.
 4. Before freezing implementation, choose multiple meeting participants and roles from complexity, affected domains and risk. Record the reason; use a concrete direct-work exception only for a trivial task or explicit user choice. Conclude the meeting once requirements, implementation, ownership and verification are clear. Then choose single-task or project execution and freeze private acceptance separately. See [meetings](references/meetings.md).
-5. Honor configured defaults unless the user requests an override. Announce the selected execution channel/model/effort and scope briefly. Do not infer that an installed profile has working credentials or that every advertised model supports tools.
+5. Honor configured model/provider defaults unless the user requests an override. When dynamic reasoning is enabled or requested, choose effort within the frozen supported policy using [executor guidance](references/executors.md#choose-effort-before-each-job); otherwise retain fixed effort. Announce the selected channel/model/effort and scope briefly. Do not infer that an installed profile has working credentials or that every advertised model supports tools.
 
 ## Keep the boundary visible
 

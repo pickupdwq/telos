@@ -42,6 +42,7 @@ EXPECTED_MODULES = [
     'test_comparison',
     'test_watch',
     'test_reasoning',
+    'test_effort_policy',
     'test_verify_all',
 ]
 

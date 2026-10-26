@@ -176,6 +176,7 @@ class ExecutorPreflightOrderTests(unittest.TestCase):
             HOME=self.root / 'home', CACHE=self.root / 'cache', INSTALL=self.root / 'install',
             GateError=providers.ProviderError,
             backend_bindings=lambda contract: {'executor': binding()},
+            execution_binding=lambda state, contract: binding(),
             minimal_env=lambda: {'PATH': '/usr/bin:/bin'},
             git=lambda repo, *args: '/tmp/common.git',
             write_json=lambda *args, **kwargs: None,

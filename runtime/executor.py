@@ -128,9 +128,9 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
         raise b.GateError("An exam cannot create a new executor conversation")
     HOME, CACHE, INSTALL = b.HOME, b.CACHE, b.INSTALL
     GateError = b.GateError
-    backend_bindings, minimal_env, git = b.backend_bindings, b.minimal_env, b.git
+    minimal_env, git = b.minimal_env, b.git
     write_json, read_json, encoded, sandbox_profile = b.write_json, b.read_json, b.encoded, b.sandbox_profile
-    binding = backend_bindings(contract)['executor']
+    binding = b.execution_binding(state, contract)
     peer_home = CACHE / "homes" / state["session_id"]
     peer_home.mkdir(parents=True, exist_ok=True, mode=0o700)
     temp = peer_home / "tmp"
@@ -201,6 +201,8 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
     if binding['provider'] == 'local':
         settings += ['features.remote_compaction=false', 'model_reasoning_summary="none"',
                      'model_supports_reasoning_summaries=false']
+    if contract.get('reasoning_policy') and binding['provider'] not in ('local', 'bailian'):
+        settings += ['features.remote_compaction=false']
     local_config = Path(state["worktree"]) / ".codex/config.toml"
     if local_config.exists():
         raise GateError("Project .codex/config.toml requires explicit compatibility review before isolated peer execution")

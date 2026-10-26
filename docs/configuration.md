@@ -29,7 +29,35 @@ The bundled [supervisor Skill](skills.md) reuses this configuration. It contains
 
 `executor_profile` can be selected on `telos_open`, each project task or `telos_project_reassign`. Alternatively specify `provider` and `model` explicitly. An explicit provider must agree with a selected profile. Passing only `model` keeps the default profile's provider; use both fields when crossing providers. No separate examiner profile is accepted for new tasks.
 
-Executor model, provider and effort are frozen per task. Cloud bindings default to `max`; local endpoints default to `none` (omit upstream reasoning parameters). An explicit non-none effort is sent unchanged; provider support is not inferred. The supervisor's allowlist only checks its OpenAI identity and model; launch the supervisor with `model_reasoning_effort="max"` to set its effort.
+Executor model and provider are frozen per task. Effort stays fixed unless the new task freezes a supervisor-adjustable reasoning policy (below). Cloud bindings default to `max`; local endpoints default to `none` (omit upstream reasoning parameters). Fixed tasks preserve explicit effort values unchanged. The supervisor's allowlist only checks its OpenAI identity and model; launch the supervisor with `model_reasoning_effort="max"` to set its effort.
+
+## Supervisor-selected reasoning effort
+
+Set `dynamic_reasoning_enabled: true` in the installed configuration to enable dynamic reasoning for **new tasks whose exact provider/model/protocol capability is known**. The default is `false`; existing task contracts and queued project policies never change when this setting changes. No token limit is needed, and `task_token_limits_enabled` is independent. Global model/profile/initial-effort defaults are preserved.
+
+The supervisor may explicitly opt a new task in with `reasoning_policy: {"allowed_efforts": ["low", "high", "max"]}` on `telos_open`, a project task or a meeting participant. Its initial `reasoning_effort` must be inside that range. For routine scoped implementation, the supervisor should normally choose `high` when supported; choose `max` for difficult reasoning and `low` for simple, well-specified work with direct checks. These are scheduling guidelines, not measured guarantees of speed or correctness.
+
+Before a work, repair or exam job, supply both `reasoning_effort` and a concise `reasoning_reason` (1–1000 characters) to `telos_send`, `telos_repair` or `telos_evaluate`. Meeting follow-up messages accept the same pair. Omit both to inherit the last selection, or the initial effort for the first job. Running jobs cannot be changed. A project starts with each task's frozen initial effort; queued meeting follow-ups retain their recorded choice.
+
+Policies freeze canonical levels, aliases, source and allowed range. Status exposes `reasoning_policy` and the current `reasoning_decision`; full task status includes `reasoning_history`. Every job records requested/effective/previous effort, reason, source, job identity and contract hash. The relay enforces that selection independently of worker-supplied parameters, and usage entries record the effective effort. Dynamic jobs disable remote compaction so every model request passes the same selection path. Local `none` retains its existing omit-parameter meaning.
+
+Exams resume the same model and conversation using the selected **evaluation job** effort; the review packet binds its job/decision and transport evidence. The supervisor still reviews actual source/checks/answers; thresholds, ownership, pause/cancel, idempotency and acceptance gates remain unchanged. Reusing an event/request ID with a different choice is rejected. Changing providers requires reassignment/new contract, not editing task state.
+
+The built-in dynamic range for `bailian:deepseek-v4.1-flash-1017:responses` is `low`, `high`, `max`. Aliases are `minimal → low`, `medium → high`, `xhigh → high`; `medium` is **not** a fourth native level. The [Responses API table](https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-responses) documents the family mapping, and the [official Codex catalog](https://help.aliyun.com/zh/model-studio/codex) lists this exact snapshot. This opt-in range intentionally excludes disabling reasoning with `none`. Local simulation verifies forwarding and acceptance, not real inference quality at each level.
+
+Unknown capability keys stay fixed. Explicitly requesting a dynamic policy for one fails before task creation. An operator can declare a separately verified capability locally (never through a task's prompt/arguments):
+
+```json
+"reasoning_capabilities": {
+  "custom_provider:verified-model:responses": {
+    "supported_efforts": ["low", "medium", "high"],
+    "aliases": {},
+    "source": "Provider documentation URL or dated local compatibility report"
+  }
+}
+```
+
+The key must match the resolved binding exactly, including `chat` for a local Chat adapter. A declaration must include its source, nonempty unique supported levels and direct aliases; it is an operator assertion, not an automatic capability probe. Never assume that a CLI enum or a model name proves upstream support.
 
 If the original Codex conversation uses a locally named OpenAI provider such as `openai_http`, explicitly trust that provider ID in the installed configuration:
 
@@ -86,13 +114,13 @@ preserving your default and other profiles:
 
 Run `telos auth bailian` to enter the key privately, reload MCP, then select
 `executor_profile=bailian_deepseek`. Explicit `provider=bailian` also selects the
-snapshot without requiring a named profile. Telos sends the selected effort
+snapshot without requiring a named profile. Fixed tasks send the selected effort
 unchanged as `reasoning.effort`, including `none`; it does not translate it or
 silently retry at a lower level. Available Telos values are `none`, `minimal`,
 `low`, `medium`, `high`, `xhigh`, `max`. These are request values, not a claim of
 seven distinct native reasoning levels: Bailian can map levels internally.
 `max` and `none` were checked against this snapshot; other levels and their
-quality differences need separate validation.
+quality differences need separate validation. Dynamic tasks instead use the explicit canonical range and alias mapping above.
 
 The isolated executor includes a dedicated model catalog for the one-million-token
 window and its tested shell/patch tools. Its effective input window is 80%, with
@@ -172,6 +200,11 @@ Merge these entries into the existing configuration; replace the example endpoin
 | Project `max_parallel` | up to 3 | Concurrent model jobs, including exams |
 | Implementation project `max_jobs` | 40 | Job budget, not a token/dollar cap |
 | `task_budget` | unset | Optional default frozen usage budget for new tasks |
+| `task_token_limits_enabled` | true | Allow token limits when freezing new task budgets; false removes them |
+
+Set `"task_token_limits_enabled": false` in the runtime configuration to disable cumulative token limits for new standalone tasks, project tasks and comparison trials, including explicitly supplied limits. This removes `max_input_tokens`, `max_uncached_input_tokens`, `max_output_tokens`, `max_total_tokens` and `exam_reserve_tokens` before freezing the budget. Request counts, request reserves and time limits remain; usage is still recorded. A budget containing only token fields becomes unlimited (`null`). Existing frozen contracts and ledgers retain their original limits, including queued project tasks and reassignments. Model context windows and per-response output limits such as `exam_max_tokens` are separate and unchanged.
+
+本机配置设为 `"task_token_limits_enabled": false` 后，新任务不设置累计 Token 上限；即使创建任务时显式传入这些上限，也会在冻结合同前移除。仍记录 Token 用量并保留请求次数、超时与验收规则。历史任务的冻结预算保持原样。
 
 Profiles may override `http_timeout`, `job_timeout`, `exam_max_tokens`, `exam_format_attempts` and `credential_provider`. A task's `use_experience=false` disables experience injection for that task.
 
@@ -233,7 +266,7 @@ task switching, and Ghostty/iTerm2 usage.
 - 全新安装将根目录配置示例复制为 `~/.local/share/telos/config.json`；`--upgrade` 保留现有配置。修改后重启 MCP。直接运行未配置的源码会使用历史默认值，不能视为已完成安装。
 - 配套大总管 Skill 复用同一配置，不另存模型、入口或 Key，不改变当前大总管模型、强度或活动本地入口。
 - 用 `executor_profile` 选择执行者，或明确指定 `provider` 与 `model`；只改模型名不会自动切换服务商。新任务不支持独立考试模型。
-- 每项任务冻结执行者绑定，云端默认强度为 `max`，本地默认不发送推理参数，显式值不静默降级。大总管模型由允许列表约束，强度由原 Codex 对话设置。
+- 每项任务冻结执行者模型和供应商。启用 `dynamic_reasoning_enabled` 后，新任务可冻结受支持的强度范围，由大总管在每次执行前选择档位并记录理由；运行中不能改档，旧任务保持固定。百炼当前支持的动态档位为 `low/high/max`，`medium` 会明确映射为 `high`。全局初始档位、Token 设置和验收要求不变。
 - 大总管使用 `openai_http` 等本机 OpenAI 通道名时，核对实际地址和认证配置后，在 `supervisor.provider_aliases` 中明确授权该名称。默认不接受别名；模型允许列表、原会话绑定和验收前身份复查继续生效。
 - 凭据依次从环境变量、Telos 凭据文件、地址匹配的 OpenCode 配置读取。使用 `telos auth deepseek`、`telos auth ark` 或 `telos auth openai` 隐藏输入，禁止把 Key 写进任务和仓库。
 - OpenAI 执行者需要自己的 API 凭据，不复用大总管的 ChatGPT/Codex 登录。

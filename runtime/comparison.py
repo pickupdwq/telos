@@ -188,7 +188,7 @@ def validate_cases(cases):
 def initialize(root, spec):
     import telos as b
     from evaluation_suite import cases as builtin_cases
-    from usage import validate_budget
+    from usage import resolve_task_budget
     root = Path(root).expanduser().absolute()
     if root.exists() or root.is_symlink():
         raise ComparisonError('Use a new experiment directory; existing data was preserved')
@@ -208,7 +208,7 @@ def initialize(root, spec):
     binding = b.providers.resolve_executor({**b.DEFAULT, **cfg}, **selection)
     repeats = integer(spec.get('repeats', 1), 'repeats', high=10)
     rounds = integer(spec.get('max_rounds', 2), 'max_rounds', high=5)
-    budget = validate_budget(spec.get('budget'))
+    budget = resolve_task_budget(spec.get('budget'), cfg)
     if not budget or 'max_requests' not in budget:
         raise ComparisonError('Every trial requires an explicit max_requests budget')
     all_cases = spec.get('cases', builtin_cases())

@@ -29,7 +29,7 @@ def _text(value, limit=1200):
 def _checks(checks):
     result = []
     for check in checks or []:
-        item = {key: check.get(key) for key in ('id', 'status', 'returncode', 'seconds', 'source_read_only') if key in check}
+        item = {key: check.get(key) for key in ('id', 'status', 'returncode', 'seconds', 'source_read_only', 'output_incomplete') if key in check}
         # Successful logs are usually noise. Failures remain actionable and are
         # bounded; full evidence is always available with detail="full".
         if check.get('status') != 'passed':
@@ -92,7 +92,8 @@ def _evidence(evidence):
     if not isinstance(evidence, dict):
         return evidence
     result = {key: evidence.get(key) for key in (
-        'session_id', 'round', 'commit', 'contract_hash', 'assessment_input_hash') if key in evidence}
+        'session_id', 'round', 'commit', 'contract_hash', 'assessment_input_hash',
+        'job_id', 'reasoning_decision') if key in evidence}
     if 'checks' in evidence:
         result['checks'] = _checks(evidence.get('checks'))
     if 'exam' in evidence:
@@ -141,7 +142,8 @@ def status(full):
         'submitted_commit', 'packet_id', 'contract_hash', 'turns', 'rounds',
         'job_id', 'job_kind', 'infra_failures', 'next_retry_at', 'last_failure_kind',
         'project_id', 'task_type', 'discussion_complete', 'version', 'workflow', 'executor', 'budget', 'usage', 'timing',
-        'next_action', 'clarification', 'archived', 'audit_artifacts', 'audit_report', 'message') if key in full}
+        'next_action', 'clarification', 'archived', 'audit_artifacts', 'audit_report', 'message',
+        'reasoning_policy', 'reasoning_decision') if key in full}
     if 'last_error' in full:
         result['last_error'] = _text(full.get('last_error'), 1200)
     if 'acceptance' in full:
@@ -209,7 +211,7 @@ def _project_task(task):
         'id', 'phase', 'depends_on', 'allowed_paths', 'provider', 'model', 'executor_profile',
         'workflow_version', 'reasoning_effort', 'session_id', 'event_id', 'accepted_commit',
         'base_commit', 'budget', 'usage', 'timing', 'revision', 'delivery', 'clarification',
-        'start_error', 'next_action', 'role', 'active', 'queued_followup') if key in task}
+        'start_error', 'next_action', 'role', 'active', 'queued_followup', 'reasoning_policy', 'reasoning_decision') if key in task}
     if 'error' in task:
         result['error'] = _text(task.get('error'), 1200)
     return result

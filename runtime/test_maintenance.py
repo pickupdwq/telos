@@ -11,7 +11,7 @@ from unittest.mock import Mock, patch
 
 from test_telos import b, BridgeTests
 from test_projects import ProjectTests
-from processes import process_running, process_start, reap_background
+from processes import process_running, process_start, reap_background, kill_process_tree
 
 
 @contextlib.contextmanager
@@ -76,6 +76,128 @@ class SnapshotTests(unittest.TestCase):
         with self.assertRaisesRegex(b.GateError, 'path/link'):
             b.snapshot(state, 'unsafe')
         self.assertFalse((b.CACHE / 'snapshots' / state['session_id'] / 'unsafe').exists())
+
+    def test_scope_preserves_leading_whitespace_in_untracked_and_tracked_paths(self):
+        for tracked in (False, True):
+            for name in (' a.py', '\ta.py', '\na.py'):
+                with self.subTest(tracked=tracked, name=name):
+                    if tracked:
+                        (self.repo / name).write_text('old\n')
+                        b.git(self.repo, 'add', '--', name)
+                        b.git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=test@localhost',
+                              'commit', '-qm', 'fixture')
+                    sid = b.create_session(str(self.repo), 'Implement a.py', self.q, self.checks,
+                                           allowed_paths=['a.py'])['session_id']
+                    state = b.read_json(b.run_dir(sid) / 'state.json')
+                    (Path(state['worktree']) / name).write_text('changed\n')
+                    with self.assertRaisesRegex(b.GateError, 'outside task scope'):
+                        b.snapshot(state, 'scope')
+                    self.assertEqual(b.git(state['worktree'], 'rev-parse', 'HEAD'), state['base_commit'])
+
+    def test_explicit_whitespace_filename_is_allowed_without_normalization(self):
+        for name in (' a.py', '\ta.py'):
+            with self.subTest(name=name):
+                sid = b.create_session(str(self.repo), 'Implement the named file', self.q, self.checks,
+                                       allowed_paths=[name])['session_id']
+                state = b.read_json(b.run_dir(sid) / 'state.json')
+                (Path(state['worktree']) / name).write_text('VALUE = 1\n')
+                _, target = b.snapshot(state, 'scope')
+                self.assertEqual((target / name).read_text(), 'VALUE = 1\n')
+
+
+class CheckTimeoutTests(unittest.TestCase):
+    setUp = BridgeTests.setUp
+    tearDown = BridgeTests.tearDown
+
+    def test_cleanup_does_not_signal_unrelated_or_reused_pids(self):
+        process = Mock(pid=101, returncode=None)
+        initial = {101: (1, 'root'), 102: (101, 'old'), 103: (102, 'child'), 104: (1, 'unrelated')}
+        current = {**initial, 102: (1, 'replacement')}
+        with patch('processes._process_table', side_effect=[initial, current]), \
+                patch('processes.os.kill') as kill, patch('processes.os.killpg') as killpg:
+            kill_process_tree(process)
+        kill.assert_called_once_with(103, signal.SIGKILL)
+        killpg.assert_called_once_with(101, signal.SIGKILL)
+        process.kill.assert_called_once_with()
+
+    def detached_check(self, *, parent_exits=False):
+        sid = b.create_session(str(self.repo), 'Check bounded timeout', self.q, self.checks)['session_id']
+        state = b.read_json(b.run_dir(sid) / 'state.json')
+        _, target = b.snapshot(state, 'timeout')
+        code = ('import subprocess,sys,time\n'
+                'p=subprocess.Popen([sys.executable,"-c","import time; time.sleep(5)"],start_new_session=True)\n'
+                'print("child="+str(p.pid),flush=True)\n'
+                'print("stderr marker",file=sys.stderr,flush=True)\n'
+                + ('' if parent_exits else 'time.sleep(20)\n'))
+        started = time.monotonic()
+        result = b.executable_checks({'checks': [{'id': 'detached', 'argv': ['{python}', '-c', code],
+                                                  'timeout_seconds': 1}]}, target)[0]
+        elapsed = time.monotonic() - started
+        pid = int(result['stdout'].split('child=')[1].splitlines()[0])
+        self.addCleanup(self.stop_fixture, pid)
+        return result, elapsed, pid
+
+    @staticmethod
+    def stop_fixture(pid):
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+
+    def test_timeout_terminates_detached_descendant_and_preserves_partial_output(self):
+        result, elapsed, pid = self.detached_check()
+        self.assertEqual(result['status'], 'timeout')
+        self.assertIn('stderr marker', result['stderr'])
+        self.assertLess(elapsed, 3.5)
+        self.assertFalse(process_running(pid))
+
+    def test_exited_parent_with_inherited_pipes_still_has_bounded_timeout(self):
+        result, elapsed, _ = self.detached_check(parent_exits=True)
+        self.assertEqual(result['status'], 'timeout')
+        self.assertTrue(result['output_incomplete'])
+        self.assertLess(elapsed, 3.5)
+
+
+class StorageInventoryTests(unittest.TestCase):
+    setUp = BridgeTests.setUp
+    tearDown = BridgeTests.tearDown
+    task = ProjectTests.task
+    create = ProjectTests.create
+
+    def test_corrupt_record_does_not_block_healthy_project_inventory_or_allow_cleanup(self):
+        pid = self.create([self.task('a')])
+        broken = b.run_dir('f' * 32) / 'state.json'
+        broken.parent.mkdir(parents=True)
+        broken.write_text('{broken')
+        store = b.storage_manager()
+        result = store.inventory(pid)
+        self.assertEqual(result['target_id'], pid)
+        self.assertFalse(result['complete'])
+        self.assertEqual(result['diagnostics'][0]['path'], str(broken))
+        self.assertEqual(result['bytes'], sum(item['bytes'] for item in result['paths']))
+        for action in ('archive', 'cleanup'):
+            with self.subTest(action=action), self.assertRaisesRegex(b.GateError, 'scope'):
+                store.manage(action, pid, dry_run=False)
+        self.assertFalse((b.STATE / 'archives' / pid).exists())
+        self.assertEqual(broken.read_text(), '{broken')
+        self.assertFalse((b.STATE / 'quarantine').exists())
+
+    def test_global_inventory_isolates_corrupt_projects_and_malformed_session_objects(self):
+        pid = self.create([self.task('a')])
+        broken_project = b.project_manager().path('e' * 32)
+        broken_project.parent.mkdir(parents=True)
+        broken_project.write_text('{broken')
+        broken = b.run_dir('f' * 32) / 'state.json'
+        broken.parent.mkdir(parents=True)
+        for payload in ('{broken', 'null', '[]', '{}'):
+            with self.subTest(payload=payload):
+                broken.write_text(payload)
+                result = b.storage_manager().inventory()
+                self.assertIn(pid, [task['target_id'] for task in result['tasks']])
+                self.assertFalse(result['complete'])
+                self.assertEqual({item['path'] for item in result['diagnostics']},
+                                 {str(broken), str(broken_project)})
+                self.assertEqual(broken.read_text(), payload)
 
 
 class SchedulingTests(ProjectTests):

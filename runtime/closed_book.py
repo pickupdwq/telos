@@ -180,7 +180,7 @@ def response_usage(attempts):
 def answer(b, state, contract, commit):
     if not state.get('thread_id'):
         raise b.GateError('Closed-book exam requires the executor\'s existing work conversation')
-    binding = b.backend_bindings(contract)['executor']
+    binding = b.execution_binding(state, contract)
     payload = question_payload(contract)
     prompt = exam_instructions(b, contract, payload)
     attempts = []
@@ -215,10 +215,20 @@ def answer(b, state, contract, commit):
 
 def validate_evidence(b, state, contract, packet):
     exam = packet.get('exam', {})
+    binding = b.backend_bindings(contract)['executor']
+    if contract.get('reasoning_policy'):
+        ident = packet.get('job_id')
+        if not ident:
+            raise b.GateError('Dynamic exam is missing its job identity')
+        binding = b.execution_binding(state, contract, job_id=ident)
+        request = b.read_json(b.run_dir(state['session_id']) / f'job-{ident}.json')
+        if (request['kind'] != 'evaluate' or request.get('reserved_round') != packet.get('round')
+                or packet.get('reasoning_decision') != request.get('reasoning_decision')):
+            raise b.GateError('Exam reasoning evidence differs from the committed evaluation job')
     expected = {'mode': 'closed_book', 'executor_thread_id': state.get('thread_id'),
                 'session_id': state['session_id'], 'commit': packet['commit'], 'same_executor': True,
                 'tool_call_count': 0, 'public_payload_hash': b.digest(question_payload(contract)),
-                'backend': b.providers.public_binding(b.backend_bindings(contract)['executor'])}
+                'backend': b.providers.public_binding(binding)}
     if not state.get('thread_id') or any(exam.get(k) != v for k, v in expected.items()):
         raise b.GateError('Exam evidence does not match the same executor, questions and submitted commit')
     if not exam.get('attempts') or any(not a.get('requests') or not a.get('responses')

@@ -247,6 +247,9 @@ class _PureBridge:
     def backend_bindings(self, contract):
         return {'executor': contract['executor']}
 
+    def execution_binding(self, state, contract):
+        return self.backend_bindings(contract)['executor']
+
     def peer_turn(self, state, contract, prompt, phase=None, policy=None):
         self.calls += 1
         self.prompts.append(prompt)

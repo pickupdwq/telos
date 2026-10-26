@@ -18,7 +18,8 @@ import time
 import uuid
 from processes import process_start, process_running, reap_background
 from identity import canonical_tool_name
-from usage import TOKEN_FIELDS, validate_budget
+from usage import TOKEN_FIELDS, resolve_task_budget
+import effort_policy
 
 
 class Projects:
@@ -104,8 +105,9 @@ class Projects:
             # constrained reassignment flow, so task budgets stay cumulative.
             t['usage_id'] = uuid.uuid4().hex
             try:
-                configured = t.get('budget') if t.get('budget') is not None else self.b.config().get('task_budget')
-                t['budget'] = validate_budget(configured)
+                cfg = self.b.config()
+                configured = t.get('budget') if t.get('budget') is not None else cfg.get('task_budget')
+                t['budget'] = resolve_task_budget(configured, cfg)
             except ValueError as error:
                 raise self.b.GateError('Invalid task budget: ' + str(error)) from None
             if any(k in t for k in ('exam_profile', 'exam_provider', 'exam_model', 'exam_reasoning_effort',
@@ -114,6 +116,7 @@ class Projects:
             t['executor'] = self.b.providers.resolve_executor(self.b.config(), **{k: t.get(k) for k in (
                 'executor_profile', 'provider', 'model', 'reasoning_effort')})
             t['workflow_version'] = 3
+            t['reasoning_policy'] = effort_policy.freeze(t['executor'], self.b.config(), t.get('reasoning_policy'))
             self.backend_fields(t)
             t.setdefault('threshold', self.b.config()['threshold'])
             t.setdefault('max_rounds', self.b.config()['max_rounds'])
@@ -364,12 +367,14 @@ class Projects:
             item = {k: t.get(k) for k in ('id', 'task', 'depends_on', 'allowed_paths', 'provider', 'model',
                                            'executor_profile', 'workflow_version', 'reasoning_effort',
                                            'session_id', 'phase', 'accepted_commit', 'event_id', 'error',
-                                           'budget', 'revision')}
+                                           'budget', 'revision', 'reasoning_policy')}
             if p.get('kind') == 'discussion':
                 item.update(role=t['role'], active=t.get('active', True), queued_followup=bool(t.get('discussion_pending')))
             try:
                 observed = (observations or {}).get(t['session_id'])
                 if observed is not None:
+                    if observed.get('reasoning_decision'):
+                        item['reasoning_decision'] = observed['reasoning_decision']
                     if observed.get('clarification'):
                         item['clarification'] = observed['clarification']
                     item['budget'] = observed['budget']
@@ -381,6 +386,8 @@ class Projects:
                         item['delivery'] = summary(observed['delivery'])
                 elif (session := self._child_session(t)):
                     child, contract = session
+                    if child.get('reasoning_decision'):
+                        item['reasoning_decision'] = child['reasoning_decision']
                     if child.get('clarification'):
                         item['clarification'] = child['clarification']
                     item['budget'] = contract.get('budget')
@@ -496,13 +503,16 @@ class Projects:
             raise self.b.GateError('Project job budget exhausted; no more model jobs')
         return True
 
-    def launch(self, p, sid, kind, message='', event_id=None, discussion_request_id=None):
+    def launch(self, p, sid, kind, message='', event_id=None, discussion_request_id=None,
+               reasoning_effort=None, reasoning_reason=None):
         """Reserve before spawning; refund only when no new job was persisted."""
         before = self.b.read_json(self.b.run_dir(sid) / 'state.json')
         p['jobs_started'] += 1
         self.save(p)
         try:
             extra = {'_discussion_request_id': discussion_request_id} if discussion_request_id is not None else {}
+            if reasoning_effort is not None or reasoning_reason is not None:
+                extra.update(reasoning_effort=reasoning_effort, reasoning_reason=reasoning_reason)
             result = self.b._start_job(sid, kind, message, event_id, **extra)
         except Exception:
             # Validation and definite spawn failure leave the old job identity.
@@ -612,6 +622,7 @@ class Projects:
                                          task_type=t.get('task_type', 'implementation'), audit=t.get('audit'), repair_of=t.get('repair_of'),
                                          _session_id=t['session_id'], _base_commit=base, _project_id=pid,
                                          _usage_id=t.get('usage_id'), _budget=t.get('budget'),
+                                         _reasoning_policy=t.get('reasoning_policy'),
                                          _allowed_paths=t['allowed_paths'], _dependency_pins=pins,
                                          _workflow_version=t.get('workflow_version', 2),
                                          **({'_discussion': True} if p.get('kind') == 'discussion' else {}),
@@ -636,7 +647,7 @@ class Projects:
             self.save(p)
             return self.view(p)
 
-    def start_child(self, sid, kind, message='', event_id=None):
+    def start_child(self, sid, kind, message='', event_id=None, reasoning_effort=None, reasoning_reason=None):
         b = self.b
         with self.lock():
             s, _ = b.load_session(b.run_dir(sid))
@@ -649,14 +660,16 @@ class Projects:
                     raise b.GateError('Use telos_meeting_round for durable targeted follow-up; meetings cannot run implementation or exams')
                 s = b.read_json(b.run_dir(sid) / 'state.json')
             # Idempotency must be checked before reserving another budget slot.
-            replay = b.event_action(s, event_id, kind, {'message': message})
+            replay = b.event_action(s, event_id, kind, effort_policy.arguments(message, reasoning_effort, reasoning_reason))
             if replay:
                 return replay
             provider = s.get('exam_provider', s.get('provider', 'ark')) if kind == 'evaluate' else s.get('provider', 'ark')
             if not self.capacity(p, provider):
                 raise b.GateError('Project/provider concurrency limit reached; retry after completion')
-            return (self.launch(p, sid, kind, message, event_id) if p is not None
-                    else b._start_job(sid, kind, message, event_id))
+            extra = ({'reasoning_effort': reasoning_effort, 'reasoning_reason': reasoning_reason}
+                     if reasoning_effort is not None or reasoning_reason is not None else {})
+            return (self.launch(p, sid, kind, message, event_id, **extra) if p is not None
+                    else b._start_job(sid, kind, message, event_id, **extra))
 
     def publish(self, p):
         b = self.b
@@ -838,6 +851,12 @@ class Projects:
             for key in ('backends', 'exam_provider', 'exam_model', 'exam_profile', 'exam_reasoning_effort', 'review_paths'):
                 new.pop(key, None)
             new.update(executor=binding, workflow_version=3, assessment_mode='closed_book')
+            old_policy = t.get('reasoning_policy')
+            if old_policy and old_policy['capability_key'] == effort_policy.capability_key(binding):
+                new['reasoning_policy'] = effort_policy.validate({**old_policy,
+                    'initial_effort': effort_policy.canonical(binding['reasoning_effort'], old_policy)}, binding)
+            else:
+                new['reasoning_policy'] = effort_policy.freeze(binding, self.b.config())
             self.backend_fields(new)
             if message is not None:
                 if not isinstance(message, str) or not message.strip():

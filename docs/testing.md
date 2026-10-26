@@ -16,7 +16,15 @@ The installer tests use temporary directories and mocked prerequisites. They cov
 
 验收检查只能读取提交快照，构建产物使用 `TELOS_CHECK_OUTPUT`，临时文件使用 `TMPDIR`；目录在检查后清理。默认状态/验收包保留结构化交付摘要，并明确区分执行者声称做过的检查与真实执行的验收检查。损坏的任务状态单独标记、保留原始文件并报告用量缺口；仍在运行的任务继续占用并发名额。此处验证不代表真实服务商或桌面自动回传已通过。
 
+`test_maintenance.py` also checks exact Git filename handling in `allowed_paths`, including leading whitespace in tracked and untracked names. Timeout regressions launch real detached descendants: known descendants are terminated, and pipe draining remains bounded even when a parent has already exited. Such checks remain `timeout`; if pipe draining is interrupted, `output_incomplete=true` marks the partial logs. Descendants already reparented outside the check's process tree cannot always be identified, so EOF is never used as an unbounded cleanup barrier.
+
+Storage inventory returns readable entries plus `diagnostics` and `complete=false` when records are corrupt; reported byte totals then cover only readable entries. Tests verify that corrupt records are preserved, global and per-project queries still return healthy data, and archive/cleanup remain blocked when session ownership cannot be determined.
+
 ### Selection and parallel verification
+
+`test_effort_policy.py` covers frozen capability/range validation, documented aliases, legacy fixed tasks, disabled token caps, queued project policy, reassignment, ownership/control/idempotency, spawn rollback, relay enforcement and local Chat/Responses adapters. Its native CLI lifecycle resumes one executor across high/max/low jobs, verifies recorded HTTP effort and usage, rejects mismatched exam evidence, runs actual checks and grades to `accepted=true`.
+
+For a separate Postman HTTP run, start `postman simulation run postman/simulations/reasoning.sim.yaml --port auto --no-history --output ndjson`, read its listening port, then run `python3 -B runtime/verify_reasoning_simulation.py --base-url http://127.0.0.1:<port>/reasoning/compatible-mode/v1`. Read [simulation context](../postman/simulations/reasoning.context.md) first. Optional `--installed-config <path>` copies current installed settings into an isolated test config; the verifier still supplies only a synthetic credential and never touches existing task state. Inspect request events and stop the server afterward. This validates the real CLI/relay/acceptance chain against deterministic local responses; it does not measure live-model speed or quality.
 
 The RSI campaign added reusable test selection and optional parallel execution:
 
@@ -71,9 +79,13 @@ python3 install.py --prefix "$PWD/.artifacts/installed" \
   --bin-dir "$PWD/.artifacts/bin" --skills-dir "$PWD/.artifacts/skills"
 python3 runtime/verify.py --install-dir "$PWD/.artifacts/installed" \
   --report .artifacts/installation.json
+# Run the installed suite independently of the source checkout.
+python3 .artifacts/installed/verify_all.py .artifacts/installed-regression.json
 ```
 
-The explicit Skill directory keeps this smoke test separate from your real global Skill. It does not register MCP or change your current installation. Use fresh targets each time: the installer deliberately refuses implicit overwrites. The verification includes a stdio MCP handshake and 25-tool catalog, rejection of untrusted ownership, callback/repair regressions, a real local Codex app-server with a stub model and a worker credential-environment probe.
+The explicit Skill directory keeps this smoke test separate from your real global Skill. It does not register MCP or change your current installation. Use fresh targets each time: the installer deliberately refuses implicit overwrites. The verification includes a stdio MCP handshake and 28-tool catalog, rejection of untrusted ownership, callback/repair regressions, a real local Codex app-server with a stub model and a worker credential-environment probe.
+
+The installed suite includes the meeting model fixture at `fixtures/meetings/default.js`, tracked by the installation manifest. Source tests use the original file under `postman/mocks/meetings/`; installed tests use only the bundled copy and report its path if it is missing. Installer regressions start that fixture after both fresh installation and upgrade, without relying on the source checkout.
 
 A passing report verifies this local CLI/MCP path. It does **not** validate upstream keys, remote model behavior or automatic return to a real Desktop conversation. After a CLI/Desktop upgrade, repeat local tests and a small end-to-end task in the actual host you intend to use.
 
