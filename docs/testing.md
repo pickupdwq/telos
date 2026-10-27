@@ -174,3 +174,7 @@ GitHub Actions runs portable installer tests on Ubuntu and the runtime suite plu
 完整安装验证还包括 MCP 握手、25 个工具、可信会话绑定、原生队列、回传和执行环境凭据隔离。临时安装命令使用独立 Skill 目录，不注册 MCP、不覆盖本机部署。已有验证目录请保留或换一个空目录，不要对生产目录强制覆盖。Skill 的加载发现、场景模拟和真实模型验收是三种不同证据，需分别说明。
 
 离线通过不等于真实 Key 有效，也不等于桌面自动回传已通过。升级 CLI/桌面程序后，在目标宿主再做小规模真实任务验证。`--live` 是额外付费验证，会调用配置中的 DeepSeek 与火山服务商；CI 不运行它。报告可能含路径或任务信息，不要提交到仓库。
+
+## Checkpoints and project environments / 续做与项目环境
+
+See [protocol, frozen policy, sandbox preflight and cache behavior](checkpoints-environments.md). New implementation tasks support checkpoint and blocked_environment; malformed replies are separate protocol errors. Optional auto_continue_checkpoints resumes authorized work, never acceptance. Environment requirements are explicit and optional; credentials and existing model/token settings remain unchanged.

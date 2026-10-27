@@ -8,7 +8,7 @@ import math
 import re
 
 
-PHASES = {'ready', 'running', 'responded', 'needs_clarification', 'discussion_result', 'awaiting_review', 'not_accepted',
+PHASES = {'checkpoint', 'blocked_environment', 'protocol_error', 'ready', 'running', 'responded', 'needs_clarification', 'discussion_result', 'awaiting_review', 'not_accepted',
           'accepted', 'error', 'project_update'}
 
 

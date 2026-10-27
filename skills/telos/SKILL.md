@@ -2,7 +2,7 @@
 name: telos
 description: "Supervise Telos delegated development, scoped system audits (code, APIs, page interactions and visual evidence), and confirmed-bug repairs through MCP. Use for requests to use Telos, coordinate independent executors with evidence-based acceptance, or continue an existing TELOS_EVENT. Ordinary coding, general review and questions about Telos do not by themselves authorize starting an executor."
 metadata:
-  version: "3.9.0"
+  version: "3.10.0"
 ---
 
 # Telos
@@ -56,3 +56,29 @@ When a task freezes `task_budget`, all work, repair and exam attempts share it. 
 Use structured MCP errors (`error.code`, `retryable`, `retry_after_seconds`, `next_action`, optional `usage`) to diagnose failures. Retry metadata never overrides event ownership, pause/cancel, budgets or acceptance gates. Timing summaries distinguish cumulative request durations from lifecycle phases and project wall time; preserve incomplete/unknown markers rather than inventing missing history.
 
 Report the inspected version/environment, accepted result or remaining blockers, evidence/worktree locations and unverified boundaries. Link confirmed audit findings to authorized repair tasks. Reuse verified repository experience when relevant. Treat merge, push and deployment as separate actions governed by the user's authorization; acceptance alone grants none.
+
+## Checkpoints and project environments (3.10)
+
+New implementation work uses protocol v2. completed means ready for the existing
+receive/evaluate/review/grade flow. checkpoint means unfinished authorized work:
+do not ask the user whether to continue routine work, run authorized checks or fix
+in-scope defects. blocked_environment requires specific environment evidence and
+repair actions. needs_clarification is reserved for genuine missing business,
+scope, permission or requirement decisions; format errors are protocol_error.
+
+When auto_continue_checkpoints is frozen true, the runtime resumes the same
+executor through its auditable internal scheduler. Honor pause/cancel, budgets,
+no-progress and uncertain-result diagnostics. Never fabricate a receive receipt,
+create a replacement task to reset limits, automatically evaluate/grade, or
+silently alter frozen contracts. A completed submission still requires the
+original supervisor's review. Legacy contracts preserve their old behavior.
+
+Declare only relevant environment_requirements before creating a task/project:
+exact tool paths, lock/config files, read-only download sources, necessary local
+services, browser capabilities and already-authorized bootstrap commands.
+dependency_paths and network permissions must be explicit. Reuse public sandbox
+preflight evidence; check environment diagnostics before asking the user to
+troubleshoot. Use TELOS_CHECK_OUTPUT and TMPDIR and independent writable state;
+formal checks read immutable source. No automatic new dependencies or secret
+values in requirements/context. Do not change model, dynamic reasoning or Token
+settings merely to use checkpoint/environment support.

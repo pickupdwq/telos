@@ -286,3 +286,7 @@ task switching, and Ghostty/iTerm2 usage.
 - `dependency_paths` 只开放依赖目录读取；`command_network` 和检查的 `network` 分别控制工作/检查的网络权限，闭卷阶段不获得这些权限。
 - 旧 `EXAM_LOOP_STATE_DIR` / `EXAM_LOOP_CACHE_DIR` 仍兼容，同名 `TELOS_*` 设置优先；历史合同按原来的绑定执行，不强行迁移。
 - `watch.auto_tmux` 默认开启；设为 `false` 可关闭自动分屏，保留日志和手动 `telos watch`。配置 MCP 环境转发后，在 Ghostty/iTerm2 的 tmux 中启动 Codex 即可使用[只读观察面板](watch.md)。
+
+## Checkpoints and project environments / 续做与项目环境
+
+See [protocol, frozen policy, sandbox preflight and cache behavior](checkpoints-environments.md). New implementation tasks support checkpoint and blocked_environment; malformed replies are separate protocol errors. Optional auto_continue_checkpoints resumes authorized work, never acceptance. Environment requirements are explicit and optional; credentials and existing model/token settings remain unchanged.

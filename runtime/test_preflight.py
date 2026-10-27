@@ -549,3 +549,307 @@ class RealSandboxPreflightTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main(verbosity=2)
+
+
+class ProjectEnvironmentTests(unittest.TestCase):
+    def setUp(self):
+        self.temp = tempfile.TemporaryDirectory(prefix='tl-env-', dir='/tmp')
+        self.root = Path(self.temp.name).resolve()
+        self.work = self.root / 'source'; self.work.mkdir()
+        (self.work / 'deps.lock').write_text('dependency-v1')
+        (self.work / 'bootstrap.py').write_text(
+            'import pathlib,os\n'
+            'p=pathlib.Path(os.environ["TELOS_CHECK_OUTPUT"])\n'
+            'p.mkdir(exist_ok=True)\n'
+            '(p/"installed.txt").write_text("installed")\n')
+        self.cache = self.root / 'cache'
+        self.cache.mkdir()
+        self.bridge = SimpleNamespace(CACHE=self.cache, HOME=Path.home(), INSTALL=Path(__file__).parent,
+            GateError=providers.ProviderError, write_json=telos.write_json,
+            read_json=telos.read_json, sandbox_profile=telos.sandbox_profile)
+        self.env_patches = [patch.object(telos, 'CACHE', self.cache),
+                           patch.object(telos, 'STATE', self.root / 'private'),
+                           patch.object(telos, 'INSTALL', self.root / 'install')]
+        for p in self.env_patches: p.start()
+
+    def tearDown(self):
+        for p in reversed(self.env_patches): p.stop()
+        self.temp.cleanup()
+
+    def module(self):
+        self.assertTrue(hasattr(preflight, 'project'), 'Declared project environment preflight is missing')
+        import project_environment
+        return project_environment
+
+    def requirements(self, **kw):
+        return {'version': 1, 'tools': [{'id': 'python', 'path': sys.executable, 'kind': 'python'}],
+                'lockfiles': ['deps.lock'], **kw}
+
+    def run_probe(self, requirements=None, *, scratch=None, phase='work'):
+        module = self.module()
+        scratch = scratch or self.root / 'scratch'
+        scratch.mkdir(exist_ok=True, mode=0o700)
+        contract = {'environment_requirements': requirements or self.requirements(), 'dependency_paths': [],
+                    'command_network': False}
+        env, protected = module.build_environment(self.bridge, contract, self.work, scratch,
+                                                   {'PATH': '/usr/bin:/bin'}, phase=phase)
+        profile = telos.sandbox_profile(writable=[scratch], readable=[self.work],
+                                         protected=[self.work, *protected],
+                                         service_ports=module.service_ports(contract,phase),
+                                         ipc_paths=[env['TMPDIR']] if contract['environment_requirements'].get('local_ipc') else [])
+        return preflight.project(self.bridge, contract, self.work, scratch, env, profile, phase=phase), env
+
+    def test_declared_tools_are_probed_inside_real_sandbox_and_cache_reused(self):
+        one, env = self.run_probe()
+        two, _ = self.run_probe()
+        self.assertEqual(one['status'], 'passed')
+        self.assertFalse(one['cache_hit'])
+        self.assertTrue(two['cache_hit'])
+        self.assertEqual(one['cache_key'], two['cache_key'])
+        self.assertEqual(one['tools'][0]['path'], sys.executable)
+        self.assertIn('abi', one['tools'][0])
+        self.assertEqual(env['HOME'], str(self.root/'scratch/home'))
+        self.assertEqual(env['TMPDIR'], str(self.root/'scratch/tmp'))
+
+    def test_missing_runtime_is_structured_environment_blocker(self):
+        module = self.module()
+        with self.assertRaises(module.EnvironmentBlocked) as caught:
+            self.run_probe(self.requirements(tools=[{'id':'missing','path':'/not-installed/python'}]))
+        self.assertEqual(caught.exception.code, 'blocked_environment')
+        self.assertEqual(caught.exception.evidence['status'], 'blocked_environment')
+        self.assertIn('tool:missing', caught.exception.evidence['failed_check'])
+
+    def test_lock_runtime_configuration_change_invalidates_cache(self):
+        one, _ = self.run_probe()
+        (self.work/'deps.lock').write_text('dependency-v2')
+        two, _ = self.run_probe()
+        self.assertNotEqual(one['cache_key'], two['cache_key'])
+        three, _ = self.run_probe(self.requirements(variables={'CI':'true'}))
+        self.assertNotEqual(two['cache_key'], three['cache_key'])
+        four, _ = self.run_probe(self.requirements(tools=[{'id':'python','path':sys.executable,
+                                                           'kind':'python','version_args':['-VV']}]))
+        self.assertNotEqual(two['cache_key'], four['cache_key'])
+
+    def test_read_only_sources_and_independent_writable_directories(self):
+        _, a = self.run_probe(scratch=self.root/'a', phase='checks')
+        _, z = self.run_probe(scratch=self.root/'z', phase='checks')
+        self.assertNotEqual(a['HOME'], z['HOME'])
+        self.assertNotEqual(a['TMPDIR'], z['TMPDIR'])
+        self.assertNotEqual(a['TELOS_CHECK_OUTPUT'], z['TELOS_CHECK_OUTPUT'])
+        Path(a['TELOS_CHECK_OUTPUT'],'data').write_text('first workspace')
+        self.assertFalse(Path(z['TELOS_CHECK_OUTPUT'],'data').exists())
+
+    def test_bootstrap_reused_only_with_intact_outputs_and_current_source(self):
+        req = self.requirements(bootstrap=[{'id':'prepare','argv':['{python}','-I','{repo}/bootstrap.py'],
+                                           'outputs':['output/installed.txt']}])
+        one, env = self.run_probe(req)
+        self.assertEqual(one['bootstrap'][0]['status'], 'executed')
+        two, _ = self.run_probe(req)
+        self.assertEqual(two['bootstrap'][0]['status'], 'reused')
+        Path(env['TELOS_CHECK_OUTPUT'],'installed.txt').write_text('corrupt')
+        three, _ = self.run_probe(req)
+        self.assertEqual(three['bootstrap'][0]['status'], 'executed')
+        (self.work/'new-source.py').write_text('VALUE=2')
+        four, _ = self.run_probe(req)
+        self.assertEqual(four['bootstrap'][0]['status'], 'executed')
+
+    def test_failed_bootstrap_and_corrupt_fact_cache_are_never_reused_as_success(self):
+        module = self.module()
+        req = self.requirements(bootstrap=[{'id':'bad','argv':['{python}','-I','-c','raise SystemExit(9)'],
+                                           'outputs':['output/missing']}])
+        for _ in range(2):
+            with self.assertRaises(module.EnvironmentBlocked): self.run_probe(req)
+        one, _ = self.run_probe()
+        cache = Path(one['cache_path'])
+        cache.write_text('{broken')
+        two, _ = self.run_probe()
+        self.assertFalse(two['cache_hit'])
+        self.assertEqual(two['status'], 'passed')
+
+    def test_work_and_formal_checks_have_separate_verified_cache_entries(self):
+        one, _ = self.run_probe()
+        two, _ = self.run_probe(phase='checks')
+        self.assertNotEqual(one['cache_key'], two['cache_key'])
+        self.assertFalse(two['cache_hit'])
+
+    def test_no_declared_capabilities_performs_no_extra_probe(self):
+        self.module()
+        with patch('project_environment.subprocess.Popen') as process:
+            result = preflight.project(self.bridge, {}, self.work, self.root/'scratch',
+                                       {'PATH':'/usr/bin:/bin'}, 'PROFILE')
+        self.assertIsNone(result)
+        process.assert_not_called()
+
+    def test_concurrent_workspaces_share_facts_but_not_bootstrap_outputs(self):
+        import concurrent.futures
+        req = self.requirements(bootstrap=[{'id':'prepare','argv':['{python}','-I','{repo}/bootstrap.py'],
+                                           'outputs':['output/installed.txt']}])
+        with concurrent.futures.ThreadPoolExecutor(2) as pool:
+            results=list(pool.map(lambda name:self.run_probe(req,scratch=self.root/name), ['one','two']))
+        self.assertEqual(sorted(r[0]['cache_hit'] for r in results), [False,True])
+        for evidence, env in results:
+            self.assertEqual(evidence['bootstrap'][0]['status'], 'executed')
+        self.assertNotEqual(results[0][1]['TELOS_CHECK_OUTPUT'],results[1][1]['TELOS_CHECK_OUTPUT'])
+
+
+    def test_declared_local_ipc_uses_short_private_paths(self):
+        evidence, env = self.run_probe(self.requirements(local_ipc=True))
+        self.assertEqual(evidence['status'], 'passed')
+        self.assertLess(len((env['TMPDIR']+'/s-12345678').encode()),104)
+
+    def test_declared_local_service_is_checked_in_sandbox_without_broad_network(self):
+        import socket
+        server=socket.socket(); server.bind(('127.0.0.1',0)); server.listen(2)
+        try:
+            port=server.getsockname()[1]
+            req=self.requirements(services=[{'id':'mail','host':'127.0.0.1','port':port}])
+            self.assertEqual(self.run_probe(req)[0]['status'],'passed')
+        finally:
+            server.close()
+        with self.assertRaises(self.module().EnvironmentBlocked):
+            self.run_probe(req)
+
+    def test_undeclared_dependency_read_is_not_added_to_sandbox(self):
+        cache=self.root/'downloads'; cache.mkdir(); (cache/'package').write_text('cache')
+        req=self.requirements(download_caches=[str(cache)])
+        with self.assertRaises(self.module().EnvironmentBlocked) as caught:
+            self.run_probe(req)
+        self.assertEqual(caught.exception.evidence['failed_check'],'download_cache')
+
+    def test_default_probe_does_not_execute_repository_bootstrap(self):
+        (self.work/'bootstrap.py').write_text('raise RuntimeError("must not run")')
+        evidence,_=self.run_probe()
+        self.assertEqual(evidence['bootstrap'],[])
+
+
+class EnvironmentAcceptanceTests(unittest.TestCase):
+    def test_actual_clean_snapshot_checks_source_readonly_and_scratch_ipc(self):
+        from test_telos import b, BridgeTests
+        fixture=BridgeTests(); fixture.setUp()
+        try:
+            (fixture.repo/'.gitignore').write_text('leftover-build/\n')
+            b.git(fixture.repo,'add','.gitignore')
+            b.git(fixture.repo,'-c','user.name=Test','-c','user.email=test@localhost','commit','-qm','ignore build')
+            sid=fixture.create(environment_requirements={'version':1,'local_ipc':True})
+            state=b.read_json(b.run_dir(sid)/'state.json')
+            (Path(state['worktree'])/'leftover-build').mkdir()
+            (Path(state['worktree'])/'leftover-build/old').write_text('must not be required')
+            _,tree=b.snapshot(state,'environment-clean')
+            code = ('import os,pathlib,socket\n'
+                    'assert not pathlib.Path("leftover-build").exists()\n'
+                    'try: pathlib.Path("calc.py").write_text("bad")\n'
+                    'except PermissionError: pass\n'
+                    'else: raise AssertionError("source writable")\n'
+                    '\nassert os.environ["HOME"]!=os.environ["TMPDIR"]\n'
+                    'p=str(pathlib.Path(os.environ["TMPDIR"])/"test.sock"); s=socket.socket(socket.AF_UNIX); s.bind(p); s.close()\n'
+                    'pathlib.Path(os.environ["TELOS_CHECK_OUTPUT"],"result").write_text("ok")')
+            contract=b.read_json(b.run_dir(sid)/'contract.json')
+            contract={**contract,'checks':[{'id':'clean','argv':['{python}','-c',code]}]}
+            for _ in range(2):
+                result=b.executable_checks(contract,tree)
+                self.assertEqual(result[0]['status'],'passed',result)
+                self.assertTrue(result[0]['source_read_only'])
+                self.assertEqual(result[0]['environment']['phase'],'checks')
+        finally: fixture.tearDown()
+
+
+class EnvironmentExecutionOrderTests(ExecutorPreflightOrderTests):
+    def test_project_environment_failure_prevents_executor_launch(self):
+        import project_environment
+        self.contract['environment_requirements']={'version':1}
+        blocked=project_environment.EnvironmentBlocked('browser_launch','Declared browser cannot start')
+        with patch.object(preflight,'git_executable',return_value=sys.executable), \
+             patch.object(preflight,'run',return_value={'status':'passed','cwd':str(self.work),'interpreter':sys.executable}), \
+             patch.object(preflight,'project',side_effect=blocked), \
+             patch.object(executor.subprocess,'Popen') as process:
+            with self.assertRaises(project_environment.EnvironmentBlocked):
+                executor._run(self.bridge,self.state,self.contract,'message','http://127.0.0.1:9/v1','KEY',1234)
+            process.assert_not_called()
+
+    def test_base_preflight_failure_is_an_environment_error(self):
+        import project_environment
+        with patch.object(preflight,'git_executable',return_value=sys.executable), \
+             patch.object(preflight,'run',side_effect=providers.ProviderError('Python unavailable')), \
+             patch.object(executor.subprocess,'Popen') as process:
+            with self.assertRaises(project_environment.EnvironmentBlocked):
+                executor._run(self.bridge,self.state,self.contract,'message','http://127.0.0.1:9/v1','KEY',1234)
+            process.assert_not_called()
+
+class EnvironmentLaunchBoundaryTests(ExecutorPreflightOrderTests):
+    def test_pause_or_cancel_during_preflight_prevents_cli_request(self):
+        from test_telos import BridgeTests, b
+        from unittest.mock import Mock
+        fixture = BridgeTests(); fixture.setUp()
+        try:
+            for action in ('pause', 'cancel'):
+                sid = fixture.create(_workflow_version=3)
+                with patch.object(b.subprocess, 'Popen', return_value=Mock(pid=os.getpid())):
+                    b.start_job(sid, 'send', 'Authorized work')
+                state, contract = b.load_session(b.run_dir(sid))
+                self.bridge.STATE = b.STATE
+                self.bridge.locked = b.locked
+                self.bridge.load_session = b.load_session
+                self.bridge.run_dir = b.run_dir
+                def stop(*args, **kwargs):
+                    b.return_control(sid, action)
+                    return {'status':'passed','cwd':state['worktree'],'interpreter':sys.executable}
+                with patch.object(preflight, 'git_executable', return_value=sys.executable),                      patch.object(preflight, 'run', side_effect=stop),                      patch.object(executor.subprocess, 'Popen') as process:
+                    with self.assertRaisesRegex(providers.ProviderError, 'paused|cancelled'):
+                        executor._run(self.bridge, state, self.contract, 'message',
+                                      'http://127.0.0.1:9/v1', 'KEY', 1234)
+                    process.assert_not_called()
+        finally:
+            fixture.tearDown()
+
+    def test_redirected_frozen_dependency_blocks_before_cli(self):
+        from unittest.mock import Mock
+        self.contract['dependency_paths'] = ['/declared/cache']
+        self.bridge.validate_dependencies = Mock(return_value=['/redirected/private'])
+        with patch.object(executor.subprocess, 'Popen') as process:
+            with self.assertRaisesRegex(providers.ProviderError, 'redirected'):
+                executor._run(self.bridge,self.state,self.contract,'message',
+                              'http://127.0.0.1:9/v1','KEY',1234)
+            process.assert_not_called()
+
+
+class EnvironmentIntegrityBoundaryTests(ProjectEnvironmentTests):
+    def test_output_symlink_cannot_make_external_writable_artifact_reusable(self):
+        module = self.module()
+        outside = self.root/'external'; outside.mkdir()
+        (outside/'artifact').write_text('external')
+        (self.work/'bootstrap.py').write_text(
+            'import os,pathlib\np=pathlib.Path(os.environ["TELOS_CHECK_OUTPUT"])\n'
+            'p.mkdir(exist_ok=True)\n(p/"link").symlink_to(' + repr(str(outside/'artifact')) + ')\n')
+        req = self.requirements(bootstrap=[{'id':'prepare','argv':['{python}','-I','{repo}/bootstrap.py'],
+                                            'outputs':['output']}])
+        with self.assertRaisesRegex(module.EnvironmentBlocked, 'outside'):
+            self.run_probe(req)
+
+    def test_shared_fact_expiry_and_probe_version_invalidate_only_facts(self):
+        module = self.module()
+        one,_ = self.run_probe()
+        cache = Path(one['cache_path'])
+        record = telos.read_json(cache); record.pop('proof'); record['at'] -= 301
+        module._save_cache(self.bridge, cache, record)
+        self.assertFalse(self.run_probe()[0]['cache_hit'])
+        with patch.object(module, 'VERSION', 'future-probe'):
+            changed,_ = self.run_probe()
+        self.assertNotEqual(changed['cache_key'], one['cache_key'])
+
+    def test_work_only_browser_is_not_probed_during_formal_checks(self):
+        req = self.requirements(browser={'node':'/unavailable/node','module':'/unavailable/module',
+                                         'executable':'/unavailable/browser','phases':['work']})
+        self.assertEqual(self.run_probe(req,phase='checks')[0]['status'], 'passed')
+        with self.assertRaises(self.module().EnvironmentBlocked):
+            self.run_probe(req)
+
+    def test_interrupted_bootstrap_marker_cannot_be_reused(self):
+        module = self.module()
+        req = self.requirements(bootstrap=[{'id':'prepare','argv':['{python}','-I','{repo}/bootstrap.py'],
+                                            'outputs':['output/installed.txt']}])
+        self.run_probe(req)
+        marker = next((self.cache/'project-environments'/'prepared').glob('*.json'))
+        record = telos.read_json(marker); record.pop('proof'); record['status']='preparing'
+        module._save_cache(self.bridge, marker, record)
+        evidence,_ = self.run_probe(req)
+        self.assertEqual(evidence['bootstrap'][0]['status'], 'executed')

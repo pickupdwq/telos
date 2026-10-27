@@ -115,3 +115,8 @@ def run(b, cli, cwd, env, profile, *, check_repo=False, secrets=(), timeout=20,
             raise b.GateError(_diagnostic(p, label, secrets))
         evidence['checks'].append({'name': label, 'output': _redact(out.strip()[:240], secrets)})
     return evidence
+
+
+def project(b, contract, source, scratch, env, profile, *, phase='work'):
+    from project_environment import probe
+    return probe(b, contract, source, scratch, env, profile, phase=phase)

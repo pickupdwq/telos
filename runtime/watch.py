@@ -194,7 +194,8 @@ def tasks(state_dir, group=None, project=None):
             if project and value.get('project_id') != project:
                 continue
             result.append({k: value.get(k) for k in (
-                'session_id', 'model', 'repo', 'phase', 'continuation', 'created_at', 'project_id')})
+                'session_id', 'model', 'repo', 'phase', 'continuation', 'created_at', 'project_id',
+                'auto_continue_pending', 'environment')})
         except (OSError, ValueError, AttributeError):
             continue
     return sorted(result, key=lambda item: (_created_at_order(item.get('created_at')),

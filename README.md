@@ -352,3 +352,7 @@ The runtime verification commands run the macOS regression suite with local mode
 ## License
 
 [MIT](LICENSE). The license covers this repository's code and documentation. Codex, model services and other external dependencies retain their own licenses and service terms. Telos is an independent project, not an official product of OpenAI, DeepSeek or Volcengine.
+
+## Checkpoints and project environments / 续做与项目环境
+
+See [protocol, frozen policy, sandbox preflight and cache behavior](docs/checkpoints-environments.md). New implementation tasks support checkpoint and blocked_environment; malformed replies are separate protocol errors. Optional auto_continue_checkpoints resumes authorized work, never acceptance. Environment requirements are explicit and optional; credentials and existing model/token settings remain unchanged.

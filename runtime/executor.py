@@ -1,4 +1,5 @@
 """Persistent executor CLI driver; provider credentials stay in the bridge relay."""
+import contextlib
 import json
 import os
 from pathlib import Path
@@ -7,8 +8,9 @@ import signal
 import subprocess
 import uuid
 import activity
-from delivery import WORK_REPLY_GUIDANCE
+import delivery
 import preflight
+import project_environment
 import providers
 from processes import terminate_and_drain
 from identity import data_path
@@ -117,6 +119,31 @@ def run(b, state, contract, message, endpoint, key, relay_port, phase="work", cl
     return _run(b, state, contract, message, endpoint, key, relay_port, phase, closeout=closeout)
 
 
+@contextlib.contextmanager
+def _launch_permission(b, state):
+    # Serialize the final launch with project/session pause and cancellation.
+    # Probe work can be slow; admission at scheduling time alone is insufficient.
+    if not state.get('job_id') or not hasattr(b, 'locked'):
+        yield
+        return
+    from projects import Projects
+    manager = Projects(b)
+    with manager.lock():
+        with b.locked(state['session_id']) as root:
+            current, _ = b.load_session(root)
+            control = current.get('continuation', 'active')
+            if control != 'active':
+                raise b.GateError('Executor launch stopped: ' + control, code='continuation_stopped')
+            if current.get('job_id') != state.get('job_id') or current.get('phase') != 'running':
+                raise b.GateError('Executor launch identity is stale', code='continuation_stopped')
+            if current.get('project_id'):
+                project = manager.load(current['project_id'])
+                if project.get('continuation', 'active') != 'active':
+                    raise b.GateError('Executor launch stopped: project ' + project['continuation'],
+                                      code='continuation_stopped')
+            yield
+
+
 def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", probe=None, closeout=None):
     """Run or resume exactly one executor; work/exam differ only in capabilities."""
     if phase not in ("work", "exam"):
@@ -163,6 +190,20 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
         artifact_root = audit.artifacts(b, state)
         env.update(TELOS_AUDIT_URL=probe['url'], TELOS_AUDIT_TOKEN=probe['token'], TELOS_AUDIT_ARTIFACTS=str(artifact_root),
                    TELOS_AUDIT_SOURCE=state['worktree'])
+    dependencies = contract.get('dependency_paths', [])
+    if not exam and hasattr(b, 'validate_dependencies'):
+        try:
+            validated = b.validate_dependencies(dependencies)
+        except b.GateError as error:
+            raise project_environment.EnvironmentBlocked('dependency_paths', str(error)) from None
+        if validated != dependencies:
+            raise project_environment.EnvironmentBlocked('dependency_paths',
+                'A frozen dependency path was redirected; restore the declared directory')
+    project_scratch = None
+    dependency_roots = []
+    if not exam and contract.get('environment_requirements') is not None:
+        project_scratch = project_environment.work_scratch(b, state['session_id'])
+        env, dependency_roots = project_environment.build_environment(b, contract, state['worktree'], project_scratch, env, phase='work')
     # Closed-book exams must not inspect the worktree. Their only writable path
     # is the peer home, so the common Git directory is irrelevant there.
     common_git = None if exam else git(state["worktree"], "rev-parse", "--git-common-dir")
@@ -219,7 +260,7 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
     pinned = data_path(HOME, '.local/share/{name}-cli') / 'node_modules/.bin/codex'
     cli = str(pinned) if pinned.exists() else shutil.which("codex")
     if not cli:
-        raise GateError("Environment preflight failed before any model request: dedicated Codex CLI not found; "
+        raise project_environment.EnvironmentBlocked("dedicated CLI", "dedicated Codex CLI not found; "
                         "install the dedicated Telos CLI or restore it on PATH")
     args = [cli, "--no-daemon", "--cd", str(cwd)]
     for setting in settings:
@@ -248,6 +289,10 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
     if discussion:
         writable = [peer_home]
         protected.append(state['worktree'])
+    if project_scratch is not None:
+        readable_cache.append(project_scratch)
+        writable.append(project_scratch)
+        protected.extend(dependency_roots)
     audit_sources = []
     if probe:
         audit_sources = audit.source_paths(state, contract['audit'])
@@ -256,32 +301,47 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
         protected.append(state['worktree'])
     profile = sandbox_profile(network=False if exam else contract.get('command_network', False),
                               writable=writable, relay_port=relay_port,
-                              protected=protected, service_ports=[probe['port']] if probe else [],
+                              protected=protected, service_ports=([probe['port']] if probe else []) + project_environment.service_ports(contract, 'work'),
+                              ipc_paths=[env['TMPDIR']] if project_scratch is not None and contract['environment_requirements'].get('local_ipc') else [],
                               readable=[] if exam else contract.get('dependency_paths', []),
                               readable_cache=readable_cache)
     guidance = ''
     if phase == 'work':
         # One bounded probe per work invocation, in the same sandbox/env/cwd as
         # the CLI. Exams never probe the worktree; audits use their isolated room.
-        evidence = preflight.run(b, cli, cwd, env, profile,
-                                 check_repo=(probe is None and contract.get('task_type') != 'audit'),
-                                 secrets=(key,))
+        try:
+            evidence = preflight.run(b, cli, cwd, env, profile,
+                                     check_repo=(probe is None and contract.get('task_type') != 'audit'),
+                                     secrets=(key,))
+        except b.GateError as error:
+            raise project_environment.EnvironmentBlocked('base_preflight', str(error)) from None
+        project_evidence = preflight.project(b, contract, cwd, project_scratch, env, profile, phase='work')
+        if project_evidence is not None and hasattr(b, 'materialize_commit'):
+            public_check_scratch = project_scratch / 'public-check'
+            public_check_scratch.mkdir(exist_ok=True, mode=0o700)
+            project_evidence['acceptance_environment'] = project_environment.check_environment(b, state, contract, public_check_scratch)
+        if project_evidence is not None and hasattr(b, 'run_dir'):
+            b.write_json(b.run_dir(state['session_id']) / ('job-' + state['job_id'] + '-environment.json'), project_evidence)
         if discussion:
             from meetings import GUIDANCE
             guidance = (GUIDANCE + 'Verified source cwd: ' + str(cwd) + '; interpreter: '
                         + evidence['interpreter'] + '. Source and Git metadata are read-only.\n')
         else:
-            guidance = WORK_REPLY_GUIDANCE + _work_guidance(evidence, contract, state, artifact_root=artifact_root if probe else None)
+            guidance = delivery.guidance(contract) + _work_guidance(evidence, contract, state, artifact_root=artifact_root if probe else None)
+        if project_evidence is not None:
+            guidance += 'Verified declared project environment: ' + json.dumps({k: project_evidence[k] for k in ('tools','files','bootstrap','cache_hit')}) + '\n'
+            guidance += 'Public self-check environment matches acceptance HOME/TMP/output conventions. Use TELOS_CHECK_OUTPUT for build outputs and TMPDIR for temporary data. Source is read-only in acceptance.\n'
         guidance += _execution_guidance(b, state, contract, binding)
     prompt = (initial if not state.get("thread_id") else "") + guidance + "Codex message:\n" + message
     command = ["/usr/bin/sandbox-exec", "-p", profile, *args]
-    if closeout is not None:
-        closeout.start(cfg["job_timeout"])
     recorder = activity.for_state(b, state, phase, secrets=(key, probe['token'] if probe else ''))
-    if recorder:
-        recorder.emit('status', 'Executor started' if not exam else 'Closed-book exam started')
-    p = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE,
-                         stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+    with _launch_permission(b, state):
+        if closeout is not None:
+            closeout.start(cfg["job_timeout"])
+        if recorder:
+            recorder.emit('status', 'Executor started' if not exam else 'Closed-book exam started')
+        p = subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.PIPE,
+                             stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
     try:
         stdout, stderr = (activity.communicate(p, prompt.encode(), cfg["job_timeout"], recorder)
                           if recorder else p.communicate(prompt.encode(), timeout=cfg["job_timeout"]))
@@ -322,10 +382,10 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
                 extra = extra.replace(key, "[REDACTED]")
             detail += extra[-1200:]
         raise _retain_thread(GateError("Execution model failed: " + detail), stdout, state)
-    if exam and thread != state["thread_id"]:
+    if state.get("thread_id") and thread != state["thread_id"]:
         raise GateError("Closed-book exam resumed a different executor conversation")
     summary = output.read_text()
     if key:
         summary = summary.replace(key, "[REDACTED]")
-    return {"thread_id": thread, "summary": summary if exam else summary[:12000], "summary_truncated": not exam and len(summary) > 12000,
+    return {"thread_id": thread, "summary": summary, "summary_truncated": False,
             "usage": usage, "model": binding['model'], 'backend': providers.public_binding(binding)}

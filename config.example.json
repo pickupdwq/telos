@@ -9,7 +9,9 @@
   },
   "supervisor": {
     "provider": "openai",
-    "models": ["gpt-6-astra"]
+    "models": [
+      "gpt-6-astra"
+    ]
   },
   "profiles": {
     "local": {
@@ -47,5 +49,6 @@
   "experience_enabled": true,
   "watch": {
     "auto_tmux": true
-  }
+  },
+  "auto_continue_checkpoints": false
 }

@@ -27,3 +27,29 @@ Status shows requested/effective effort and the decision reason; full status ret
 Credentials are resolved by the runtime from configured environment references, its private credential store, or matching existing provider configuration. Use interactive `telos auth <provider>` when a key must be supplied. Never ask for a key in chat or place it in task arguments, prompts, skill files or the repository.
 
 Keep this skill and its companion runtime at the same installed release. If tools or behavior do not match this workflow, report the versions and use the installation's supported upgrade procedure. Do not modify runtime configuration or install another tool simply because the skill was loaded.
+
+## Checkpoints and project environments (3.10)
+
+New implementation work uses protocol v2. completed means ready for the existing
+receive/evaluate/review/grade flow. checkpoint means unfinished authorized work:
+do not ask the user whether to continue routine work, run authorized checks or fix
+in-scope defects. blocked_environment requires specific environment evidence and
+repair actions. needs_clarification is reserved for genuine missing business,
+scope, permission or requirement decisions; format errors are protocol_error.
+
+When auto_continue_checkpoints is frozen true, the runtime resumes the same
+executor through its auditable internal scheduler. Honor pause/cancel, budgets,
+no-progress and uncertain-result diagnostics. Never fabricate a receive receipt,
+create a replacement task to reset limits, automatically evaluate/grade, or
+silently alter frozen contracts. A completed submission still requires the
+original supervisor's review. Legacy contracts preserve their old behavior.
+
+Declare only relevant environment_requirements before creating a task/project:
+exact tool paths, lock/config files, read-only download sources, necessary local
+services, browser capabilities and already-authorized bootstrap commands.
+dependency_paths and network permissions must be explicit. Reuse public sandbox
+preflight evidence; check environment diagnostics before asking the user to
+troubleshoot. Use TELOS_CHECK_OUTPUT and TMPDIR and independent writable state;
+formal checks read immutable source. No automatic new dependencies or secret
+values in requirements/context. Do not change model, dynamic reasoning or Token
+settings merely to use checkpoint/environment support.

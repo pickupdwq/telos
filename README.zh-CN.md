@@ -351,3 +351,7 @@ python3 runtime/verify_all.py .artifacts/regression-parallel.json --jobs 4
 ## 开源许可
 
 采用 [MIT License](LICENSE)，覆盖本仓库代码与文档。Codex、模型服务及其他外部依赖仍适用各自许可与服务条款。Telos 是独立项目，并非 OpenAI、DeepSeek 或火山引擎的官方产品。
+
+## Checkpoints and project environments / 续做与项目环境
+
+See [protocol, frozen policy, sandbox preflight and cache behavior](docs/checkpoints-environments.md). New implementation tasks support checkpoint and blocked_environment; malformed replies are separate protocol errors. Optional auto_continue_checkpoints resumes authorized work, never acceptance. Environment requirements are explicit and optional; credentials and existing model/token settings remain unchanged.

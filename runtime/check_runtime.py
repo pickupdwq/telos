@@ -3,7 +3,7 @@ from pathlib import Path
 import shutil
 
 
-def dependency_home(paths, original_home, check_home):
+def dependency_home(paths, original_home, check_home, *, links=False):
     """Mirror only declared home-relative dependencies, preserving symlinks.
 
     Check programs sometimes discover a tool under HOME (for example ~/.npm).
@@ -23,7 +23,15 @@ def dependency_home(paths, original_home, check_home):
             continue
         destination = check_home / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copytree(source, destination, symlinks=True)
+        if links:
+            if destination.is_symlink() and destination.resolve() == source.resolve():
+                pass
+            elif destination.exists() or destination.is_symlink():
+                raise ValueError('Declared dependency HOME path conflicts with existing workspace data')
+            else:
+                destination.symlink_to(source, target_is_directory=True)
+        else:
+            shutil.copytree(source, destination, symlinks=True)
         selected.append(source)
         roots.add(check_home / relative.parts[0])
     return sorted(roots)

@@ -1,5 +1,16 @@
 # Changelog / 更新记录
 
+## 3.10.0 — checkpoint continuation and declared project environments
+
+- Versioned work replies distinguish completed, checkpoint, blocked_environment,
+  genuine clarification and structured protocol errors; preserve raw evidence.
+- Freeze opt-in same-session checkpoint continuation for new tasks/project children,
+  retaining concurrency, budgets, controls, progress guards and supervisor acceptance.
+- Add declared sandbox environment probes, shared public facts, isolated writable
+  preparation outputs, deterministic cache invalidation and clean check preflight.
+- Existing frozen contracts, model bindings and token/reasoning settings are preserved.
+
+
 ## 3.9.0 — 2026-10-26
 
 - Add supervisor-selected reasoning effort before each work, repair, meeting follow-up and evaluation job. Freeze supported provider/model/protocol levels and allowed ranges, record requested/effective effort and reasons, enforce the selection at the relay, and bind exam evidence to the evaluation job. Existing tasks remain fixed; executor identity, conversation, ownership and acceptance gates are preserved.

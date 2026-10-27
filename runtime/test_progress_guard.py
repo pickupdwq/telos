@@ -46,7 +46,12 @@ class ProgressTests(unittest.TestCase):
                 (Path(state['worktree']) / 'calc.py').write_text(change)
             if error:
                 raise error
-            return {'thread_id': OTHER, 'summary': summary}
+            if contract.get('work_reply_version') == 2 and not summary.lstrip().startswith('{'):
+                summary_text = json.dumps({'status':'completed','summary':summary,'changed_files':[],
+                    'checks_performed':[],'remaining_issues':[],'clarification_questions':[]})
+            else:
+                summary_text = summary
+            return {'thread_id': OTHER, 'summary': summary_text}
         with patch.object(b, 'peer_turn', side_effect=peer):
             b.background_job(sid, job)
         return self.state(sid)

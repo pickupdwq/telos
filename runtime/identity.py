@@ -3,7 +3,7 @@ import os
 from pathlib import Path
 
 NAME = 'telos'
-VERSION = '3.9.0'
+VERSION = '3.10.0'
 
 TOOL_PREFIXES = (
     ('exam_experience_', 'telos_experience_'),

@@ -12,6 +12,7 @@ from unittest.mock import patch
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 import install
+from runtime.identity import VERSION
 
 
 class InstallerTests(unittest.TestCase):
@@ -36,9 +37,11 @@ class InstallerTests(unittest.TestCase):
 
     def test_install_manifest_launchers_and_mcp_with_shell_metacharacters(self):
         result = install.install(self.prefix, self.bin_dir)
-        self.assertEqual(result["version"], "3.9.0")
+        self.assertEqual(result["version"], VERSION)
         self.assertTrue((self.prefix / 'audit_browser.cjs').is_file())
         self.assertTrue((self.prefix / 'local_executor.py').is_file())
+        self.assertTrue((self.prefix / 'continuation.py').is_file())
+        self.assertTrue((self.prefix / 'project_environment.py').is_file())
         self.assertTrue((self.prefix / 'chat_adapter.py').is_file())
         self.assertTrue((self.prefix / 'bailian_models.json').is_file())
         cfg = json.loads((self.prefix / "config.json").read_text())
@@ -229,7 +232,7 @@ with NativeMeetingTests().fixture() as base_url:
         launcher = self.bin_dir / "telos"
         before = launcher.read_bytes()
         result = install.install(self.prefix, self.bin_dir, upgrade=True)
-        self.assertEqual(result["version"], "3.9.0")
+        self.assertEqual(result["version"], VERSION)
         self.assertEqual(launcher.read_bytes(), before)
         self.assertTrue((self.skill / "SKILL.md").is_file())
         self.assertEqual(set(result["backups"]), {"runtime"})

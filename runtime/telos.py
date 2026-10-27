@@ -35,6 +35,9 @@ import watch as watch_runtime
 import providers
 import effort_policy
 import progress_guard
+import continuation
+import project_environment
+import preflight
 from providers import ProviderError as GateError
 from processes import process_start, process_running, reap_background, kill_process_tree
 from processes import terminate_and_drain
@@ -55,7 +58,8 @@ DEFAULT = {"model": "deepseek-v4-1-flash-260910", "base_url": "https://ark.cn-be
            "callback_recovery_seconds": 30, "progress_timeout_seconds": 180,
            "progress_reminder_limit": 3, "infra_retry_limit": 5, "infra_backoff_seconds": 10,
            "review_max_bytes": 200000, "task_budget": None, "task_token_limits_enabled": True,
-           "planning_mode": "multi_executor", "dynamic_reasoning_enabled": False}
+           "planning_mode": "multi_executor", "dynamic_reasoning_enabled": False,
+           "auto_continue_checkpoints": False}
 _BUDGET_UNSET = object()
 WATCH_EVENTS = ("pending", "sending", "uncertain", "queued", "delivered")
 
@@ -198,7 +202,7 @@ def private_paths():
             HOME / ".git-credentials", HOME / '.local/share/opencode/auth.json', CONFIG]
 
 
-def sandbox_profile(network=False, writable=(), protected=(), readable_cache=None, readable=(), relay_port=None, service_ports=()):
+def sandbox_profile(network=False, writable=(), protected=(), readable_cache=None, readable=(), relay_port=None, service_ports=(), ipc_paths=()):
     if sys.platform != "darwin" or not Path("/usr/bin/sandbox-exec").exists():
         raise GateError("This deployment requires macOS sandbox-exec; isolation cannot be silently disabled")
     clauses = ["(version 1)", "(allow default)"]
@@ -235,6 +239,9 @@ def sandbox_profile(network=False, writable=(), protected=(), readable_cache=Non
             clauses.append(f'(allow network-outbound (remote ip "localhost:{int(relay_port)}"))')
         for port in service_ports:
             clauses.append(f'(allow network-outbound (remote ip "localhost:{int(port)}"))')
+    for path in ipc_paths:
+        literal = json.dumps(str(Path(path).resolve()))
+        clauses.append(f'(allow network* (local unix-socket (subpath {literal})) (remote unix-socket (subpath {literal})))')
     return "\n".join(clauses)
 
 
@@ -288,10 +295,10 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
                    assessment_mode="closed_book", review_paths=None, dependency_paths=None, command_network=False,
                    executor_profile=None, exam_profile=None, reasoning_effort=None, exam_reasoning_effort=None,
                    task_type='implementation', audit=None, repair_of=None, allowed_paths=None,
-                   budget=None, reasoning_policy=None,
+                   budget=None, reasoning_policy=None, auto_continue_checkpoints=None, environment_requirements=None,
                    _session_id=None, _base_commit=None, _project_id=None, _allowed_paths=None, _dependency_pins=None,
                    _usage_id=None, _budget=_BUDGET_UNSET, _reasoning_policy=_BUDGET_UNSET,
-                   _backends=None, _executor=None, _workflow_version=3, _discussion=False, _planning=None):
+                   _backends=None, _executor=None, _work_reply_version=None, _workflow_version=3, _discussion=False, _planning=None):
     cfg = config()
     import audit as audit_runtime
     if allowed_paths is not None:
@@ -359,6 +366,13 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
     public_contract = {'questions': questions, 'checks': checks}
     validate_public_material(public_contract, task=task, context=context,
                              allowed_paths=encoded(_allowed_paths))
+    environment_requirements = project_environment.validate(environment_requirements, repo)
+    if environment_requirements is not None:
+        validate_public_material(public_contract, environment_requirements=encoded(environment_requirements))
+    if _workflow_version == 3 and task_type == 'implementation':
+        auto_continue_checkpoints = continuation.freeze(auto_continue_checkpoints, cfg)
+    if environment_requirements is not None and task_type != 'implementation':
+        raise GateError('Project environment preparation is for implementation tasks only')
     repo = Path(repo).resolve()
     repo = Path(git(repo, "rev-parse", "--show-toplevel")).resolve()
     if git(repo, "status", "--porcelain"):
@@ -403,10 +417,18 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
         frozen.update(workflow_version=3, executor=executor)
         if reasoning_policy is not None:
             frozen['reasoning_policy'] = reasoning_policy
+    if _workflow_version == 3 and task_type == 'implementation':
+        frozen['work_reply_version'] = 2 if _work_reply_version is None else _work_reply_version
+        if frozen['work_reply_version'] == 2:
+            frozen['auto_continue_checkpoints'] = continuation.freeze(auto_continue_checkpoints, cfg)
+            frozen['work_reply_format_retries'] = 1
     if task_type == 'audit':
         frozen.update(task_type='audit', audit=audit)
     elif task_type == 'discussion':
         frozen['task_type'] = 'discussion'
+    if environment_requirements is not None:
+        frozen['environment_requirements'] = environment_requirements
+        validate_public_material(public_contract, environment_requirements=encoded(environment_requirements))
     if _planning is not None:
         frozen['planning'] = _planning
     if repair_of is not None:
@@ -510,6 +532,10 @@ def event_message(sid, event):
     if event.get('phase') == 'discussion_result':
         return (f"[TELOS_EVENT {event['id']}] Design opinion is ready; this is not implementation or acceptance. "
                 f"Call telos_receive with session_id={sid}, event_id={event['id']}; review the report through the parent meeting.")
+    if event.get('phase') in ('checkpoint', 'blocked_environment', 'protocol_error'):
+        return (f"[TELOS_EVENT {event['id']}] Work stage {event['phase']} needs supervisor attention. "
+                f"Call telos_receive(session_id={sid!r}, event_id={event['id']!r}); inspect its diagnostics and next_action. "
+                'This is not completed implementation or acceptance.')
     if event.get('phase') == 'needs_clarification':
         return (f"[TELOS_EVENT {event['id']}] Executor needs requirement clarification. "
                 f"Call telos_receive with session_id={sid}, event_id={event['id']}. "
@@ -642,7 +668,7 @@ def return_control(sid, action):
             state["resumed_after_turn_id"] = state.get("paused_turn_id")
             latest = state.get("events", {}).get(state.get("last_event_id"))
             if (latest and not state.get('return_complete')
-                    and state['phase'] in ('responded', 'needs_clarification', 'discussion_result', 'awaiting_review', 'not_accepted', 'error', 'project_update')
+                    and state['phase'] in ('responded', 'checkpoint', 'blocked_environment', 'protocol_error', 'needs_clarification', 'discussion_result', 'awaiting_review', 'not_accepted', 'error', 'project_update')
                     and latest["status"] in (*WATCH_EVENTS, "received", "unacknowledged", "processed")):
                 # Resume is an explicit request to continue the same pending stage.
                 latest.update(status="pending", resume_requested_at=time.time())
@@ -913,6 +939,7 @@ def recover_events():
             event = state.get("events", {}).get(state.get("last_event_id"), {})
             if state.get('project_id') and not state.get('notification_only'):
                 continue
+            project_manager().continue_pending(state['session_id'])
             recover_progress(state['session_id'])
             state = read_json(path)
             event = delivery_event(state) or {}
@@ -989,6 +1016,9 @@ def recover_progress(sid):
     # action event, preserving action deduplication even across receipt/crash gaps.
     with locked(sid) as root:
         state, _ = load_session(root)
+        if continuation.quiet(state):
+            return
+
         event = state.get('events', {}).get(state.get('last_event_id'))
         if retire_reminders(state, keep_event_id=state.get('last_event_id')):
             write_json(root / 'state.json', state)
@@ -1009,12 +1039,12 @@ def recover_progress(sid):
             pending = []
             for task in p['tasks']:
                 child = project_manager().child(task)
-                if child and child['phase'] in ('responded', 'needs_clarification', 'discussion_result', 'awaiting_review', 'not_accepted', 'error'):
+                if child and child['phase'] in ('responded', 'checkpoint', 'blocked_environment', 'protocol_error', 'needs_clarification', 'discussion_result', 'awaiting_review', 'not_accepted', 'error'):
                     pending.append([child['session_id'], child['phase'], child.get('job_id')])
             if p['phase'] in ('awaiting_final_review', 'integration_failed', 'integrated', 'integration_conflict') or all(t['phase'] == 'accepted' for t in p['tasks']):
                 pending.append([p['phase'], p.get('integration', {}).get('packet_id')])
         else:
-            pending = [state['phase'], state.get('job_id')] if state['phase'] in ('responded', 'needs_clarification', 'discussion_result', 'awaiting_review', 'not_accepted', 'error') else []
+            pending = [state['phase'], state.get('job_id')] if state['phase'] in ('responded', 'checkpoint', 'blocked_environment', 'protocol_error', 'needs_clarification', 'discussion_result', 'awaiting_review', 'not_accepted', 'error') else []
         if not pending:
             if retire_reminders(state):
                 write_json(root / 'state.json', state)
@@ -1105,13 +1135,19 @@ def start_job(sid, kind, message="", event_id=None, reasoning_effort=None, reaso
 
 
 def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None,
-               reasoning_effort=None, reasoning_reason=None):
+               reasoning_effort=None, reasoning_reason=None, _continuation_id=None):
     with locked(sid) as root:
         state, contract = load_session(root)
         if state.get('archived'):
             raise GateError('Archived task is terminal; restore its bundle into a new task if needed')
         arguments = effort_policy.arguments(message, reasoning_effort, reasoning_reason)
-        replay = event_action(state, event_id, kind, arguments)
+        if _continuation_id is not None:
+            if kind != 'send' or event_id is not None:
+                raise GateError('Internal continuation can only resume work')
+            continuation.authorize(state, contract, _continuation_id)
+            replay = None
+        else:
+            replay = event_action(state, event_id, kind, arguments)
         if replay:
             return replay
         if state["phase"] == "accepted":
@@ -1131,6 +1167,9 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
         if time.time() < retry_at:
             raise GateError('Startup retry backoff active', code='retry_backoff', retryable=True,
                             next_action='retry_after_backoff', retry_after_seconds=retry_at - time.time())
+        if kind == 'evaluate' and state['phase'] in ('checkpoint', 'blocked_environment', 'protocol_error'):
+            raise GateError('Work has not completed; resolve the current stage before evaluation',
+                            code='work_incomplete', next_action=next_action_for(state['phase']))
         if kind == 'evaluate' and (state['phase'] == 'needs_clarification' or state.get('clarification')):
             raise GateError('Resolve the executor questions through telos_send before evaluation',
                             code='clarification_required', next_action='answer_clarification_then_send')
@@ -1180,6 +1219,10 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
         else:
             raise GateError("Invalid job kind")
         job = uuid.uuid4().hex
+        if _continuation_id is not None:
+            continuation.started(state, _continuation_id, job)
+        elif continuation.pending(state):
+            continuation.stop(state, continuation.pending(state), 'Superseded by explicit supervisor work')
         progress_guard.seed(bridge_services(), state, contract)
         trial = state['progress_guard'].get('trial')
         if trial and kind == 'send':
@@ -1219,6 +1262,8 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
             (root / 'job-lease.json').unlink(missing_ok=True)
             progress_guard.check(before_start)
             raise GateError(before_start["last_error"])
+        if _continuation_id is not None:
+            state['auto_continuations'][_continuation_id]['status'] = 'started'
         state["job_pid"] = p.pid
         progress_guard.started(state)
         state['job_process_start'] = process_start(p.pid)
@@ -1483,6 +1528,9 @@ def executable_checks(contract, target):
         raise GateError('A frozen dependency path was redirected; restore the declared directory')
     # Source is immutable, including directory replacement and shadow modules.
     # Builds and temporary files use a separate root outside the submission.
+    if contract.get('environment_requirements') is not None:
+        with project_environment.check_scratch() as scratch:
+            return _executable_checks(contract, target, scratch, dependencies, env)
     with tempfile.TemporaryDirectory(prefix='.telos-check-', dir=target.parent) as scratch:
         return _executable_checks(contract, target, Path(scratch), dependencies, env)
 
@@ -1490,14 +1538,19 @@ def executable_checks(contract, target):
 def _executable_checks(contract, target, temp, dependencies, env):
     from check_runtime import dependency_home
     results = []
-    dependency_roots = dependency_home(dependencies, HOME, temp)
+    if contract.get('environment_requirements') is not None:
+        dependency_roots = []
+    else:
+        dependency_roots = dependency_home(dependencies, HOME, temp)
     env["TMPDIR"] = str(temp)
     env['TMPPREFIX'] = str(temp / 'zsh')
     env['HOME'] = str(temp)
     output = temp / 'output'
-    output.mkdir()
+    output.mkdir(exist_ok=True, mode=0o700)
     env['TELOS_CHECK_OUTPUT'] = str(output)
     env['PYTHONDONTWRITEBYTECODE'] = '1'
+    if contract.get('environment_requirements') is not None:
+        env, dependency_roots = project_environment.build_environment(bridge_services(), contract, target, temp, env, phase='checks')
     if contract.get('task_type') == 'audit':
         env['TELOS_AUDIT_REPORT'] = str(target / '.telos-audit' / 'report.json')
         env['TELOS_AUDIT_ARTIFACTS'] = str(target / '.telos-audit')
@@ -1506,8 +1559,12 @@ def _executable_checks(contract, target, temp, dependencies, env):
     # Never inherit model keys, tmux socket, leader configuration, or bridge credentials.
     for check in contract["checks"]:
         argv = [x.replace("{repo}", str(target)).replace("{python}", sys.executable) for x in check["argv"]]
-        command = ["/usr/bin/sandbox-exec", "-p", sandbox_profile(check.get("network", False), writable=[temp],
-                   readable=[target, *dependencies], protected=[target, *dependency_roots]), *argv]
+        profile = sandbox_profile(check.get("network", False), writable=[temp],
+                   readable=[target, *dependencies], protected=[target, *dependency_roots],
+                   service_ports=project_environment.service_ports(contract, 'checks'),
+                   ipc_paths=[env['TMPDIR']] if (contract.get('environment_requirements') or {}).get('local_ipc') else [])
+        project_evidence = preflight.project(bridge_services(), contract, target, temp, env, profile, phase='checks')
+        command = ["/usr/bin/sandbox-exec", "-p", profile, *argv]
         started = time.time()
         output_incomplete = False
         p = subprocess.Popen(command, cwd=target, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
@@ -1520,6 +1577,7 @@ def _executable_checks(contract, target, temp, dependencies, env):
             status, code = "timeout", None
         results.append({"id": check["id"], "status": status, "returncode": code,
                         "source_read_only": True,
+                         **({"environment": project_evidence} if project_evidence is not None else {}),
                         "seconds": round(time.time() - started, 3),
                         "stdout": out.decode(errors="replace")[-6000:], "stderr": err.decode(errors="replace")[-6000:],
                         **({'output_incomplete': True} if output_incomplete else {})})
@@ -1543,6 +1601,9 @@ def background_job(sid, job):
         state, contract = load_session(root)
         if state.get("job_id") != job or state["phase"] != "running":
             return
+        if state.get('execution_claim') == job:
+            return
+        state['execution_claim'] = job
         state['job_pid'] = os.getpid()
         state['execution_started_at'] = time.time()
         write_json(root / 'state.json', state)
@@ -1560,12 +1621,16 @@ def background_job(sid, job):
                     raise
                 write_json(root / f'discussion-{job}.json', receipt)
             else:
-                receipt = delivery.capture(bridge_services(), state, result)
+                receipt = delivery.capture(bridge_services(), state, result, contract)
             write_json(root / f'delivery-{job}.json', receipt)
             clarification = delivery.pending_clarification(receipt, state.get('clarification'))
+            if contract.get('work_reply_version') == 2 and receipt['status'] != 'needs_clarification':
+                clarification = None
             update = {"phase": "needs_clarification" if clarification else "responded",
                       "thread_id": result["thread_id"], "last_result": result,
                       "delivery": receipt, 'clarification': clarification}
+            if contract.get('work_reply_version') == 2 and receipt['status'] in ('checkpoint', 'blocked_environment', 'protocol_error'):
+                update['phase'] = receipt['status']
             if contract.get('task_type') == 'discussion':
                 update['phase'] = 'discussion_result'
         else:
@@ -1658,6 +1723,9 @@ def background_job(sid, job):
                                            else 'execution')
             write_json(root / f'job-{job}-error.json', {'kind': update['last_failure_kind'],
                        'message': detail[:3000], 'retryable': False, 'at': time.time()})
+        if isinstance(error, project_environment.EnvironmentBlocked):
+            update.update(phase='blocked_environment', last_failure_kind='environment', environment=error.evidence)
+            write_json(root / f'job-{job}-environment.json', error.evidence)
         if isinstance(error, ExamFormatError) and hasattr(error, "diagnostics"):
             write_json(root / f"attempt-{state['rounds']}-format-error.json", error.diagnostics)
     if request['kind'] == 'send' and contract.get('task_type') not in ('audit', 'discussion'):
@@ -1666,10 +1734,18 @@ def background_job(sid, job):
         current, _ = load_session(root)
         if current.get("job_id") == job:
             current.update(update, job_finished=time.time())
+            for action in current.get('auto_continuations', {}).values():
+                if action.get('job_id') == job:
+                    action.update(status='finished', result_phase=current['phase'], finished_at=time.time())
+            environment_path = root / f'job-{job}-environment.json'
+            if environment_path.exists():
+                current['environment'] = read_json(environment_path)
             progress_guard.completed(bridge_services(), current, contract, request)
             import state_store
             state_store.lease(bridge_services(), root, current)
-            record_event(current)
+            continuation.prepare(current, contract)
+            if not continuation.quiet(current):
+                record_event(current)
             write_json(root / "state.json", current)
             activity.status(bridge_services(), current)
             if update.get('last_error'):
@@ -1684,12 +1760,18 @@ def background_job(sid, job):
         shutil.rmtree(tree)
     if current.get("project_id"):
         project_manager().tick(current['project_id'])
-    elif current.get("owner"):
-        spawn_dispatch(sid)
+    else:
+        project_manager().continue_pending(sid)
+        with locked(sid) as root:
+            current, _ = load_session(root)
+        if current.get('owner') and not continuation.quiet(current) and current['phase'] != 'running':
+            spawn_dispatch(sid)
 
 
 def next_action_for(phase):
-    return {"responded": "telos_evaluate", "awaiting_review": "telos_review_then_grade",
+    return {'checkpoint': 'resume_authorized_work', 'blocked_environment': 'repair_declared_environment',
+            'protocol_error': 'inspect_protocol_error_then_correct',
+            "responded": "telos_evaluate", "awaiting_review": "telos_review_then_grade",
             "needs_clarification": "answer_clarification_then_send",
             "discussion_result": "review_opinion_then_meeting_round_or_conclude",
             "error": "inspect_error_before_retry",
@@ -1710,6 +1792,9 @@ def status(sid, detail='full'):
                     raise ProcessLookupError()
             except ProcessLookupError:
                 state.update(phase="error", last_error="Background process exited without a result; no acceptance")
+                for action in state.get('auto_continuations', {}).values():
+                    if action.get('job_id') == state.get('job_id'):
+                        action.update(status='uncertain', diagnostic='Continuation job disappeared without a result; inspect retained job evidence, never resend automatically')
                 timing.transition(state, 'supervisor_wait', interrupted=True)
                 request_path = root / f"job-{state.get('job_id')}.json"
                 request = read_json(request_path) if request_path.exists() else {}
@@ -1733,6 +1818,7 @@ def status(sid, detail='full'):
         result = {k: state.get(k) for k in ("session_id", "phase", "model", "worktree", "turns", "rounds",
                                            "job_id", "job_kind", "last_error", "last_result", "delivery", "clarification", "acceptance", "project_id",
                                            "infra_failures", "next_retry_at", "last_failure_kind", "archived")}
+        result['environment'] = state.get('environment')
         result['version'] = VERSION
         result.update(base_commit=state.get('base_commit'), submitted_commit=state.get('submitted_commit'),
                       packet_id=state.get('packet_id'), contract_hash=state.get('contract_hash'),
@@ -1740,6 +1826,11 @@ def status(sid, detail='full'):
                       timing=timing.snapshot(state),
                       next_action=next_action_for(state['phase']))
         result['task_type'] = contract.get('task_type', 'implementation')
+        result['auto_continue_checkpoints'] = contract.get('auto_continue_checkpoints', False)
+        result['auto_continue_pending'] = continuation.pending(state)
+        result['auto_continuations'] = state.get('auto_continuations', {})
+        if continuation.quiet(state):
+            result['next_action'] = 'automatic_continuation_pending'
         result['progress_guard'] = progress_guard.view(state)
         if progress_guard.blocked(state) and state['phase'] not in ('accepted', 'awaiting_review'):
             result['next_action'] = (result['progress_guard']['next_action']
@@ -2168,6 +2259,19 @@ TOOLS += [
      "inputSchema": obj({**SID, "request_id": STR, "blocker": STR, "approach": STR, "evidence": STR, "success_criterion": STR})},
 ]
 
+for schema in (TOOLS[0]['inputSchema'], PROJECT_TASK,
+               next(t for t in TOOLS if t['name'] == 'telos_project_open')['inputSchema']):
+    schema['properties'].update({'auto_continue_checkpoints': {'type':'boolean'},
+                                 'environment_requirements': project_environment.schema(obj)})
+for name in ('telos_open', 'telos_project_open'):
+    tool = next(t for t in TOOLS if t['name'] == name)
+    tool['description'] += (' Optional auto_continue_checkpoints is frozen on new implementation tasks, including queued project children. '
+        'It resumes valid checkpoints in the same thread under existing control/concurrency/budget/progress gates, never evaluates or grades. '
+        'New work replies use protocol v2: completed, checkpoint, blocked_environment, needs_clarification; malformed replies are protocol_error '
+        'with one bounded same-session correction. Legacy contracts retain their original semantics. '
+        'environment_requirements declares only relevant tools, lock/config files, read-only download sources, loopback services, browsers '
+        'and explicitly authorized bootstrap argv. Probe inside actual work/check sandboxes before inference; no new dependency or permission is inferred. '
+        'Project-level requirements are inherited by implementation children; dependency_paths permissions must also be explicitly declared.')
 SERVER_INSTRUCTIONS = (
     'Use the telos skill. Only the original supervisor accepts; keep references/checks private. '
     'Follow proceed, next_action and returned event IDs; await callbacks. Honor pause/cancel. '

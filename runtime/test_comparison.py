@@ -351,7 +351,7 @@ class ComparisonWorkflowTests(ComparisonTests):
             if request.get('tool_choice') == 'none':
                 text = answers
             elif request['messages'][-1]['role'] == 'tool':
-                text = 'Implementation complete.'
+                text = json.dumps({'status': 'completed', 'summary': 'Implementation complete.', 'changed_files': [], 'checks_performed': [], 'remaining_issues': [], 'clarification_questions': []})
             else:
                 names = [t['function']['name'] for t in request['tools']]
                 name = 'shell_command' if 'shell_command' in names else 'exec_command'

@@ -89,7 +89,7 @@ class JobTests(unittest.TestCase):
                                event_id, effort, reason)
 
     def finish(self, sid, job):
-        with patch.object(b, 'spawn_dispatch'), patch.object(b, 'peer_turn', return_value={'thread_id': OTHER, 'summary': 'Verified addition.'}):
+        with patch.object(b, 'spawn_dispatch'), patch.object(b, 'peer_turn', return_value={'thread_id': OTHER, 'summary': json.dumps({'status': 'completed', 'summary': 'Verified addition.', 'changed_files': [], 'checks_performed': [], 'remaining_issues': [], 'clarification_questions': []})}):
             b.background_job(sid, job)
 
     def test_round_selection_alias_inheritance_and_frozen_config(self):
@@ -186,7 +186,7 @@ class JobTests(unittest.TestCase):
         sid = self.create()
         answers = json.dumps({'answers': [{'id': 'q1', 'answer': '5'}, {'id': 'q2', 'answer': '3'}]})
         def reply(request, number):
-            return message(answers if request.get('tool_choice') == 'none' else 'Addition verified.')
+            return message(answers if request.get('tool_choice') == 'none' else json.dumps({'status': 'completed', 'summary': 'Addition verified.', 'changed_files': [], 'checks_performed': [], 'remaining_issues': [], 'clarification_questions': []}))
         with self.model(reply) as requests:
             for effort in ('high', 'max'):
                 job = self.start(sid, effort, 'Verify the selected execution level')

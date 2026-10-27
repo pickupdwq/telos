@@ -42,7 +42,7 @@ class IntegrityTests(unittest.TestCase):
     def create(self, **kw):
         return b.create_session(**{'repo': str(self.repo), 'task': 'Implement addition.',
             'questions': self.q, 'checks': self.checks, 'notify': False,
-            'use_experience': False, **kw})['session_id']
+            'use_experience': False, '_work_reply_version': 1, **kw})['session_id']
 
     def state(self, sid):
         return b.read_json(b.run_dir(sid) / 'state.json')
@@ -254,7 +254,8 @@ class ProjectIntegrityTests(unittest.TestCase):
         state = self.child(pid, 'a')
         sid = state['session_id']
         marker = 'Delivered a complete change; remaining external integration review.'
-        with patch.object(b, 'peer_turn', return_value={'thread_id': OTHER, 'summary': marker}):
+        with patch.object(b, 'peer_turn', return_value={'thread_id': OTHER, 'summary': json.dumps({'status':'completed','summary':marker,
+                'clarification_questions':[], 'changed_files':[], 'checks_performed':[], 'remaining_issues':[]})}):
             b.background_job(sid, state['job_id'])
         with patch.object(b.subprocess, 'Popen', return_value=Mock(pid=os.getpid())):
             job = b.start_job(sid, 'evaluate')['job_id']

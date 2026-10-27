@@ -21,6 +21,7 @@ from identity import canonical_tool_name
 from usage import TOKEN_FIELDS, resolve_task_budget
 import effort_policy
 import progress_guard
+import continuation
 
 
 class Projects:
@@ -117,6 +118,8 @@ class Projects:
             t['executor'] = self.b.providers.resolve_executor(self.b.config(), **{k: t.get(k) for k in (
                 'executor_profile', 'provider', 'model', 'reasoning_effort')})
             t['workflow_version'] = 3
+            t['work_reply_version'] = 2
+            t['auto_continue_checkpoints'] = continuation.freeze(t.get('auto_continue_checkpoints'), self.b.config())
             t['reasoning_policy'] = effort_policy.freeze(t['executor'], self.b.config(), t.get('reasoning_policy'))
             self.backend_fields(t)
             t.setdefault('threshold', self.b.config()['threshold'])
@@ -128,6 +131,9 @@ class Projects:
                 raise self.b.GateError('Source review belongs to the GPT supervisor; executor exams are closed-book')
             if t.get('dependency_paths') is not None:
                 t['dependency_paths'] = self.b.validate_dependencies(t['dependency_paths'])
+            if t.get('environment_requirements') is not None:
+                import project_environment
+                t['environment_requirements'] = project_environment.validate(t['environment_requirements'])
             self.b.validate_exam(t['questions'], t['checks'], t['threshold'], t['max_rounds'])
             self.validate_public_task(t, t)
             result.append(t)
@@ -161,13 +167,15 @@ class Projects:
     def validate_public_task(self, t, private_contract):
         fields = {key: t.get(key, '') for key in ('task', 'context', 'message')}
         fields['allowed_paths'] = self.b.encoded(t.get('allowed_paths'))
+        if t.get('environment_requirements') is not None:
+            fields['environment_requirements'] = self.b.encoded(t['environment_requirements'])
         if t.get('audit'):
             fields['audit'] = self.b.encoded(t['audit'])
         self.b.validate_public_material(private_contract, **fields)
 
     def create(self, repo, task, tasks, questions, checks, decision_reason,
                execution_mode='auto', strategy='single', max_parallel=3,
-               max_jobs=40, context='', notify=True, caller=None, use_experience=True, dependency_paths=None, _planning=None):
+               max_jobs=40, context='', notify=True, caller=None, use_experience=True, dependency_paths=None, environment_requirements=None, auto_continue_checkpoints=None, _planning=None):
         if execution_mode not in ('auto', 'single', 'parallel') or strategy not in ('single', 'parallel', 'phased'):
             raise self.b.GateError('Invalid execution mode or supervisor strategy')
         if not isinstance(decision_reason, str) or not decision_reason.strip():
@@ -176,6 +184,15 @@ class Projects:
             raise self.b.GateError('max_parallel must be 1-3')
         if type(max_jobs) is not int or not 1 <= max_jobs <= 200:
             raise self.b.GateError('max_jobs must be 1-200')
+        import project_environment
+        environment_requirements = project_environment.validate(environment_requirements, repo)
+        tasks = [dict(t) for t in tasks]
+        for t in tasks:
+            if t.get('task_type', 'implementation') == 'implementation':
+                if auto_continue_checkpoints is not None:
+                    t.setdefault('auto_continue_checkpoints', auto_continue_checkpoints)
+                if environment_requirements is not None:
+                    t.setdefault('environment_requirements', environment_requirements)
         tasks = self.validate_tasks(tasks)
         if _planning and _planning.get('meeting_id'):
             for t in tasks:
@@ -196,6 +213,9 @@ class Projects:
         pid = uuid.uuid4().hex
         contract = {'task': task, 'context': context, 'questions': questions, 'checks': checks,
                     'threshold': 90, 'max_rounds': 5, 'dependency_paths': dependency_paths}
+        contract['auto_continue_checkpoints'] = continuation.freeze(auto_continue_checkpoints, b.config())
+        if environment_requirements is not None:
+            contract['environment_requirements'] = environment_requirements
         if _planning is not None:
             contract['planning'] = _planning
         p = {'project_id': pid, 'repo': str(repo), 'base_commit': b.git(repo, 'rev-parse', 'HEAD'),
@@ -251,6 +271,7 @@ class Projects:
                     observations[t['session_id']] = stat
                 t['phase'] = stat['phase']
                 t['progress_guard'] = stat.get('progress_guard')
+                t['auto_continue_pending'] = stat.get('auto_continue_pending')
                 if t['phase'] != 'ready' and not t.get('discussion_pending'):
                     t.pop('start_error', None)
                 # A rejected start never reaches the child's execution state.
@@ -383,6 +404,8 @@ class Projects:
                         item['reasoning_decision'] = observed['reasoning_decision']
                     if observed.get('clarification'):
                         item['clarification'] = observed['clarification']
+                    item['environment'] = observed.get('environment')
+                    item['auto_continue_pending'] = observed.get('auto_continue_pending')
                     item['budget'] = observed['budget']
                     item['usage'] = observed['usage']
                     snapshots[t['session_id']] = item['usage']
@@ -396,6 +419,8 @@ class Projects:
                         item['reasoning_decision'] = child['reasoning_decision']
                     if child.get('clarification'):
                         item['clarification'] = child['clarification']
+                    item['environment'] = child.get('environment')
+                    item['auto_continue_pending'] = continuation.pending(child)
                     item['budget'] = contract.get('budget')
                     item['usage'] = self.b.usage_snapshot(child, contract)
                     snapshots[t['session_id']] = item['usage']
@@ -405,6 +430,9 @@ class Projects:
                         item['delivery'] = summary(child['delivery'])
             except (self.b.GateError, OSError, ValueError, KeyError, TypeError, AttributeError) as error:
                 self.isolate(item, error)
+            if item['phase'] in ('checkpoint', 'blocked_environment', 'protocol_error'):
+                item['next_action'] = ('automatic_continuation_pending' if t.get('auto_continue_pending')
+                                       else self.b.next_action_for(item['phase'])) if p['continuation'] == 'active' else None
             if item['phase'] == 'needs_clarification':
                 item['next_action'] = ('answer_clarification_then_send' if p['continuation'] == 'active' else None)
             if t.get('start_error') and item['phase'] in ('pending', 'ready', 'starting', 'setup_error'):
@@ -512,13 +540,15 @@ class Projects:
         return True
 
     def launch(self, p, sid, kind, message='', event_id=None, discussion_request_id=None,
-               reasoning_effort=None, reasoning_reason=None, automatic=False):
+               reasoning_effort=None, reasoning_reason=None, automatic=False, continuation_id=None):
         """Reserve before spawning; refund only when no new job was persisted."""
         before = self.b.read_json(self.b.run_dir(sid) / 'state.json')
         p['jobs_started'] += 1
         self.save(p)
         try:
             extra = {'_discussion_request_id': discussion_request_id} if discussion_request_id is not None else {}
+            if continuation_id is not None:
+                extra['_continuation_id'] = continuation_id
             if reasoning_effort is not None or reasoning_reason is not None:
                 extra.update(reasoning_effort=reasoning_effort, reasoning_reason=reasoning_reason)
             result = self.b._start_job(sid, kind, message, event_id, **extra)
@@ -615,6 +645,9 @@ class Projects:
                             t['start_error'] = errors.payload(error)['error']
                         self.save(p)
                         continue
+                if t['phase'] in ('checkpoint', 'protocol_error'):
+                    self._continue_pending(t['session_id'], p)
+                    continue
                 if t['phase'] not in ('pending', 'ready'):
                     continue
                 if any(next(x for x in p['tasks'] if x['id'] == dep)['phase'] != 'accepted' for dep in t['depends_on']):
@@ -643,6 +676,9 @@ class Projects:
                                          _session_id=t['session_id'], _base_commit=base, _project_id=pid,
                                          _usage_id=t.get('usage_id'), _budget=t.get('budget'),
                                          _reasoning_policy=t.get('reasoning_policy'),
+                                          auto_continue_checkpoints=t.get('auto_continue_checkpoints', False),
+                                          _work_reply_version=t.get('work_reply_version', 1),
+                                          environment_requirements=t.get('environment_requirements'),
                                          _allowed_paths=t['allowed_paths'], _dependency_pins=pins,
                                          _workflow_version=t.get('workflow_version', 2),
                                          **({'_discussion': True} if p.get('kind') == 'discussion' else {}),
@@ -666,6 +702,47 @@ class Projects:
             self.publish(p)
             self.save(p)
             return self.view(p)
+
+
+    def continue_pending(self, sid):
+        with self.lock():
+            s, _ = self.b.load_session(self.b.run_dir(sid))
+            if s.get('notification_only'):
+                return
+            p = self.refresh(self.load(s['project_id'])) if s.get('project_id') else None
+            return self._continue_pending(sid, p)
+
+    def _continue_pending(self, sid, p=None):
+        """Coordinator lock -> session lock. Admission uses the existing launch path."""
+        b = self.b
+        with b.locked(sid) as root:
+            state, contract = b.load_session(root)
+            source = continuation.pending(state)
+            if not source or state.get('continuation', 'active') != 'active':
+                return
+            if p is not None and (p['continuation'] != 'active' or p['phase'] not in ('planned', 'running')):
+                return
+            try:
+                continuation.authorize(state, contract, source)
+                message = continuation.message(state)
+            except b.GateError as error:
+                continuation.stop(state, source, error)
+                b.record_event(state); b.write_json(root / 'state.json', state)
+                return
+        try:
+            if not self.capacity(p, state['provider']):
+                return
+            result = (self.launch(p, sid, 'send', message, continuation_id=source) if p is not None
+                      else b._start_job(sid, 'send', message, _continuation_id=source))
+            return result
+        except Exception as error:
+            with b.locked(sid) as root:
+                current, _ = b.load_session(root)
+                continuation.stop(current, source, error)
+                if current['phase'] != 'running':
+                    b.record_event(current)
+                b.write_json(root / 'state.json', current)
+            return {'stopped': True, 'diagnostic': str(error)[:1000]}
 
     def start_child(self, sid, kind, message='', event_id=None, reasoning_effort=None, reasoning_reason=None):
         b = self.b
@@ -704,8 +781,8 @@ class Projects:
         # outstanding batch (and its existing identity/reminders) alive, but do
         # not create a fresh courier when there is nothing to deliver.
         quiet = (p.get('phase') == 'running' and p.get('continuation') == 'active'
-                 and any(t.get('phase') == 'running' for t in p['tasks'])
-                 and all(t.get('phase') in ('pending', 'starting', 'running', 'accepted') for t in p['tasks'])
+                 and any(t.get('phase') == 'running' or t.get('auto_continue_pending') for t in p['tasks'])
+                 and all(t.get('phase') in ('pending', 'starting', 'running', 'accepted') or t.get('auto_continue_pending') for t in p['tasks'])
                  and not any(t.get('error') for t in p['tasks']))
         # Never overwrite an in-flight courier event: receive always gathers the
         # latest project state, so one outstanding wake-up covers all completions.
@@ -823,7 +900,13 @@ class Projects:
                     raise self.b.GateError('max_parallel must be 1-3')
                 p['max_parallel'] = max_parallel
             if add_tasks:
-                tasks = self.validate_tasks(add_tasks, p['tasks'])
+                additions = [dict(task) for task in add_tasks]
+                for task in additions:
+                    if task.get('task_type', 'implementation') == 'implementation':
+                        for key in ('environment_requirements', 'auto_continue_checkpoints'):
+                            if key in p['contract']:
+                                task.setdefault(key, p['contract'][key])
+                tasks = self.validate_tasks(additions, p['tasks'])
                 for t in tasks:
                     self.validate_public_task(t, p['contract'])
                 for t in tasks:
