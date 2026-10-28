@@ -90,8 +90,9 @@ def environment_identity(b, contract):
 
     A snapshot freshness declaration asserts deterministic use of these declared
     inputs. Undeclared/time-dependent inputs must use max_age or never instead.
-    Symlink targets are scanned separately; an escaping directory link blocks
-    reuse instead of treating link text as the dependency's content.
+    A dependency may link only to another explicitly declared dependency path;
+    such links are hashed through their target content, while any undeclared
+    escape still blocks reuse. Source/output trees keep the strict rules.
     """
     import project_environment as pe
     req = contract.get('environment_requirements') or {}
@@ -104,16 +105,95 @@ def environment_identity(b, contract):
     if 'checks' in browser.get('phases', ['work', 'checks']):
         paths.update(browser[k] for k in ('node', 'module', 'executable') if k in browser)
     identities = {}
+    declared = sorted(paths)
     for name in sorted(paths):
         path = Path(name)
         resolved = path.resolve(strict=True)
-        identities[name] = [str(resolved), pe._tree_hash(resolved, confined=resolved, include_git=True)]
+        identities[name] = [str(resolved), declared_tree_hash(resolved, declared)]
     env = b.minimal_env()
     env.pop('TMPDIR', None)  # Always replaced by a unique private check scratch.
     return {'requirements': req, 'dependencies': identities, 'environment': env,
             'permissions': {'source_read_only': True, 'scratch_only_writes': True,
                 'network': [bool(c.get('network', False)) for c in contract['checks']],
                 'services': pe.service_ports(contract, 'checks'), 'local_ipc': bool(req.get('local_ipc'))}}
+
+
+def declared_tree_hash(path, declared):
+    """Hash one declared dependency, following links only to declared paths.
+
+    Symlinks are never trusted by their text: a link that resolves inside any
+    explicitly declared dependency roots contributes both its raw link text and
+    the content identity of its target, so relinking or editing the target
+    invalidates reuse. Undeclared targets, dangling links and link cycles fail
+    closed with the same bounded scan budget as strict artifact trees.
+    """
+    import hashlib
+    import os
+    import stat
+    import time
+    import project_environment as pe
+
+    roots = []
+    for item in declared:
+        candidate = Path(item).resolve()
+        if candidate not in roots:
+            roots.append(candidate)
+    budget = {'files': 0, 'bytes': 0}
+    deadline = time.monotonic() + 30
+    active = []
+
+    def tick():
+        budget['files'] += 1
+        if budget['files'] > 100000 or time.monotonic() > deadline:
+            raise pe.EnvironmentBlocked('integrity', 'Artifact tree exceeds bounded integrity scan')
+
+    def node(target_path):
+        tick()
+        if target_path.is_symlink():
+            text = os.readlink(target_path)
+            try:
+                target = target_path.resolve(strict=True)
+            except OSError:
+                raise pe.EnvironmentBlocked('integrity', 'Dependency link target is missing') from None
+            except RuntimeError:
+                raise pe.EnvironmentBlocked('integrity', 'Dependency link cycle is not verifiable') from None
+            if not any(target == root or target.is_relative_to(root) for root in roots):
+                raise pe.EnvironmentBlocked('integrity', 'Output link points outside its declared artifact tree')
+            if any(open_root == target or open_root.is_relative_to(target) for open_root in active):
+                raise pe.EnvironmentBlocked('integrity', 'Dependency link cycle is not verifiable')
+            return ['link', text, str(target), scan(target)]
+        mode = stat.S_IMODE(target_path.stat().st_mode)
+        if target_path.is_dir():
+            return ['directory', mode]
+        if not target_path.is_file():
+            raise pe.EnvironmentBlocked('integrity', 'Artifact contains an unsupported special file')
+        h = hashlib.sha256()
+        with target_path.open('rb') as stream:
+            while chunk := stream.read(1024 * 1024):
+                budget['bytes'] += len(chunk)
+                if budget['bytes'] > 4 * 1024**3 or time.monotonic() > deadline:
+                    raise pe.EnvironmentBlocked('integrity', 'Artifact tree exceeds bounded integrity scan')
+                h.update(chunk)
+        return ['file', mode, h.hexdigest()]
+
+    def scan(root_path):
+        root_path = Path(root_path)
+        first = node(root_path)
+        if root_path.is_symlink() or not root_path.is_dir():
+            return pe.digest(first)
+        rows = [['.', first]]
+        active.append(root_path)
+        try:
+            for base, dirs, files in os.walk(root_path, followlinks=False):
+                dirs.sort()
+                for name in sorted(dirs + files):
+                    item = Path(base) / name
+                    rows.append([str(item.relative_to(root_path)), node(item)])
+        finally:
+            active.pop()
+        return pe.digest(rows)
+
+    return scan(Path(path))
 
 
 def identity(b, state, contract, commit):

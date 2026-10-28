@@ -1,9 +1,11 @@
 import contextlib
+import check_runtime
 import importlib.util
 import io
 import json
 import os
 from pathlib import Path
+import preflight
 import subprocess
 import sys
 import tempfile
@@ -42,6 +44,12 @@ class BridgeTests(unittest.TestCase):
                         patch.object(b, "CONFIG", self.base / "config.json"),
                         patch.object(b.watch_runtime, "tmux",
                                      side_effect=OSError("tmux is isolated in bridge fixtures"))]
+        # Apple's /usr/bin/git is an xcrun shim whose extra libraries may be
+        # unreadable in the check sandbox; prefer a real installed binary.
+        real_git = preflight.git_executable()
+        if real_git:
+            self.patches.append(patch.dict(os.environ,
+                {'PATH': str(Path(real_git).parent) + os.pathsep + os.environ.get('PATH', '')}))
         for p in self.patches:
             p.start()
         self.repo = self.base / "repo"
@@ -493,6 +501,66 @@ class AutoChecksTests(unittest.TestCase):
         with patch.object(b, 'executable_checks', side_effect=checks): done = self.complete_checks(sid)
         self.assertEqual(done['auto_check']['status'], 'blocked')
         self.assertFalse(b.status(sid)['accepted'])
+
+    def test_environment_identity_accepts_venv_link_to_declared_interpreter(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp).resolve()
+            interpreter, venv = root / 'uv' / 'bin', root / 'venv' / 'bin'
+            interpreter.mkdir(parents=True); venv.mkdir(parents=True)
+            (interpreter / 'python').write_text('alpha')
+            os.symlink(interpreter / 'python', venv / 'python')
+            contract = {'dependency_paths': [str(root / 'uv'), str(root / 'venv')],
+                        'checks': [], 'environment_requirements': {}}
+            first = check_runtime.environment_identity(b, contract)
+            self.assertEqual(check_runtime.environment_identity(b, contract), first)
+            self.assertEqual(first['dependencies'][str(root / 'venv')][0], str((root / 'venv').resolve()))
+            (interpreter / 'python').write_text('beta')
+            changed = check_runtime.environment_identity(b, contract)
+            self.assertNotEqual(first['dependencies'][str(root / 'venv')], changed['dependencies'][str(root / 'venv')])
+            os.unlink(venv / 'python')
+            os.symlink(interpreter / 'python', venv / 'python2')
+            self.assertTrue(check_runtime.environment_identity(b, contract)['dependencies'][str(root / 'venv')])
+
+    def test_dependency_links_fail_closed_outside_declared_or_unverifiable(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            declared_root, foreign = root / 'declared', root / 'undeclared'
+            (declared_root / 'bin').mkdir(parents=True); (foreign / 'bin').mkdir(parents=True)
+            (foreign / 'bin' / 'python').write_text('outside')
+            os.symlink(foreign / 'bin' / 'python', declared_root / 'bin' / 'python')
+            with self.assertRaises(b.project_environment.EnvironmentBlocked) as raised:
+                check_runtime.declared_tree_hash(declared_root, [str(declared_root)])
+            self.assertIn('outside its declared artifact tree', str(raised.exception))
+            os.unlink(declared_root / 'bin' / 'python')
+            os.symlink(declared_root / 'missing', declared_root / 'bin' / 'python')
+            with self.assertRaises(b.project_environment.EnvironmentBlocked):
+                check_runtime.declared_tree_hash(declared_root, [str(declared_root)])
+            os.unlink(declared_root / 'bin' / 'python')
+            os.symlink(declared_root, declared_root / 'bin' / 'loop')
+            with self.assertRaises(b.project_environment.EnvironmentBlocked) as raised:
+                check_runtime.declared_tree_hash(declared_root, [str(declared_root)])
+            self.assertIn('cycle', str(raised.exception))
+
+    def test_dependency_identity_covers_git_metadata_and_link_redirection(self):
+        with tempfile.TemporaryDirectory() as tmp:
+            root = Path(tmp)
+            tree = root / 'dep'
+            (tree / '.git').mkdir(parents=True)
+            (tree / '.git' / 'config').write_text('first')
+            (tree / 'python').write_text('binary')
+            first = check_runtime.declared_tree_hash(tree, [str(tree)])
+            (tree / '.git' / 'config').write_text('changed')
+            second = check_runtime.declared_tree_hash(tree, [str(tree)])
+            self.assertNotEqual(first, second)
+            other = root / 'other'
+            other.mkdir()
+            (other / 'python').write_text('binary')
+            os.symlink(tree / 'python', tree / 'alias')
+            linked = check_runtime.declared_tree_hash(tree, [str(tree), str(other)])
+            os.unlink(tree / 'alias')
+            os.symlink(other / 'python', tree / 'alias')
+            relinked = check_runtime.declared_tree_hash(tree, [str(tree), str(other)])
+            self.assertNotEqual(linked, relinked)
 
     def test_environment_block_prevents_checks_and_exam(self):
         sid = self.create(); self.deliver(sid)
