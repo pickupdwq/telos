@@ -853,3 +853,93 @@ class EnvironmentIntegrityBoundaryTests(ProjectEnvironmentTests):
         module._save_cache(self.bridge, marker, record)
         evidence,_ = self.run_probe(req)
         self.assertEqual(evidence['bootstrap'][0]['status'], 'executed')
+
+class NoProxyDeclarationTests(unittest.TestCase):
+    def test_bypass_lists_accept_hosts_domains_ips_ports_and_empty_value(self):
+        import project_environment as module
+        examples = ('localhost,127.0.0.1,::1', '.example.com,api.example.com,service-name',
+                    ' localhost , 127.0.0.1 ', 'localhost:8080,127.0.0.1:5432',
+                    '[::1]:8080,[2001:db8::1],2001:db8::2', '10.0.0.0/8,2001:db8::/32',
+                    '*', '', '*.example.com', 'example.com.')
+        for name in ('NO_PROXY', 'no_proxy'):
+            for value in examples:
+                with self.subTest(name=name, value=value):
+                    requirement = {'version':1, 'variables':{name:value}}
+                    try:
+                        actual = module.validate(requirement)
+                    except providers.ProviderError as error:
+                        self.fail('Valid bypass list rejected: ' + str(error))
+                    self.assertEqual(actual, requirement)
+
+    def test_bypass_list_rejects_urls_credentials_bad_addresses_and_controls(self):
+        import project_environment as module
+        for name in ('NO_PROXY', 'no_proxy'):
+            for value in ('http://localhost', 'user:pass@host', 'host/path', 'host?secret=x',
+                          '127.0.0.999', '[not-ipv6]', 'host:0', 'host:65536', 'host:abc',
+                          '10.0.0.0/99', 'example..com', '-host', 'local host',
+                          '::1%user:pass@host', '[::1%secret=fixture]',
+                          'localhost\n127.0.0.1', 'localhost\x00', 'localhost\t', 'a'*8001):
+                with self.subTest(name=name, value=value):
+                    with self.assertRaises(providers.ProviderError):
+                        module.validate({'version':1,'variables':{name:value}})
+
+    def test_proxy_endpoints_keep_the_existing_credential_free_url_policy(self):
+        import project_environment as module
+        for name in ('HTTP_PROXY','http_proxy','HTTPS_PROXY','https_proxy','ALL_PROXY','all_proxy'):
+            self.assertEqual(module.validate({'version':1,'variables':{name:'http://127.0.0.1:3128'}})
+                             ['variables'][name], 'http://127.0.0.1:3128')
+            for value in ('localhost,127.0.0.1', 'http://user:pass@proxy', 'http://proxy?token=x'):
+                with self.subTest(name=name, value=value), self.assertRaises(providers.ProviderError):
+                    module.validate({'version':1,'variables':{name:value}})
+
+
+class NoProxySandboxTests(unittest.TestCase):
+    setUp = ProjectEnvironmentTests.setUp
+    tearDown = ProjectEnvironmentTests.tearDown
+    module = ProjectEnvironmentTests.module
+
+    def test_explicit_bypass_value_overrides_both_inherited_cases_in_both_phases(self):
+        module = self.module()
+        for phase in ('work','checks'):
+            for variables,expected in (({'NO_PROXY':'.example.test'},'.example.test'),
+                                       ({'no_proxy':''},''),
+                                       ({'NO_PROXY':'upper.test','no_proxy':'lower.test'},'lower.test')):
+                with self.subTest(phase=phase,variables=variables):
+                    contract={'environment_requirements':{'version':1,'variables':variables}}
+                    before=json.loads(json.dumps(contract))
+                    env,_=module.build_environment(self.bridge,contract,self.work,self.root/'scratch',
+                        {'NO_PROXY':'127.0.0.1,localhost','no_proxy':'127.0.0.1,localhost'},phase=phase)
+                    self.assertEqual(env['NO_PROXY'],expected)
+                    self.assertEqual(env['no_proxy'],expected)
+                    self.assertEqual(contract,before)
+
+    def test_declared_bypass_reaches_local_service_in_real_work_and_check_sandboxes(self):
+        import threading
+        from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
+        module=self.module(); requests=[]
+        class Handler(BaseHTTPRequestHandler):
+            def log_message(self,*args): pass
+            def do_HEAD(self):
+                requests.append(self.path)
+                self.send_response(200); self.end_headers()
+        server=ThreadingHTTPServer(('127.0.0.1',0),Handler)
+        worker=threading.Thread(target=server.serve_forever,daemon=True); worker.start()
+        try:
+            for phase in ('work','checks'):
+                for name in ('NO_PROXY','no_proxy'):
+                    with self.subTest(phase=phase,name=name):
+                        req=module.validate({'version':1,
+                            'variables':{'HTTP_PROXY':'http://127.0.0.1:9',name:'localhost,127.0.0.1,::1'},
+                            'services':[{'id':'fixture','host':'127.0.0.1','port':server.server_port}],
+                            'registries':[{'id':'fixture','url':'http://127.0.0.1:'+str(server.server_port)}]})
+                        contract={'environment_requirements':req}
+                        scratch=self.root/(phase+('-upper' if name=='NO_PROXY' else '-lower')); scratch.mkdir(mode=0o700)
+                        env,protected=module.build_environment(self.bridge,contract,self.work,scratch,
+                            {'PATH':'/usr/bin:/bin','NO_PROXY':'old.invalid','no_proxy':'old.invalid'},phase=phase)
+                        profile=telos.sandbox_profile(writable=[scratch],readable=[self.work],
+                            protected=[self.work,*protected],service_ports=module.service_ports(contract,phase))
+                        evidence=module.probe(self.bridge,contract,self.work,scratch,env,profile,phase=phase)
+                        self.assertEqual(evidence['status'],'passed')
+            self.assertEqual(len(requests),4)
+        finally:
+            server.shutdown(); server.server_close(); worker.join()

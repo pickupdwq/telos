@@ -7,7 +7,8 @@ regressions and missing historical intervals remain explicitly incomplete.
 import math
 import time
 
-STAGES = ('idle', 'work', 'checks', 'exam', 'callback_wait', 'supervisor_wait', 'paused')
+LEGACY_STAGES = ('idle', 'work', 'checks', 'exam', 'callback_wait', 'supervisor_wait', 'paused')
+STAGES = (*LEGACY_STAGES, 'scheduler_wait')
 COUNTERS = ('requests', 'measured_requests', 'missing_requests', 'in_flight_requests')
 
 
@@ -74,16 +75,20 @@ def merge_latency(summaries):
 
 def initialize(state, at=None):
     at = time.time() if at is None else at
-    state['timing'] = {'version': 1, 'started_at': at, 'since': at, 'stage': 'idle',
+    state['timing'] = {'version': 2, 'started_at': at, 'since': at, 'stage': 'idle',
+                       'scheduler_wait_tracked_since': at,
                        'phase_seconds': {stage: 0.0 for stage in STAGES}, 'complete': True}
 
 
 def _valid(value):
-    return (isinstance(value, dict) and value.get('version') == 1
-            and value.get('stage') in (*STAGES, None)
+    if not isinstance(value, dict) or type(value.get('version')) is not int or value['version'] not in (1, 2):
+        return False
+    stages = LEGACY_STAGES if value['version'] == 1 else STAGES
+    return (value.get('stage') in (*stages, None)
             and number(value.get('started_at')) and number(value.get('since'))
             and isinstance(value.get('phase_seconds'), dict)
-            and all(number(value['phase_seconds'].get(stage)) for stage in STAGES))
+            and all(number(value['phase_seconds'].get(stage)) for stage in stages)
+            and (value['version'] == 1 or number(value.get('scheduler_wait_tracked_since'))))
 
 
 def transition(state, stage, at=None, *, interrupted=False):
@@ -97,6 +102,11 @@ def transition(state, stage, at=None, *, interrupted=False):
         initialize(state, at)
         state['timing']['complete'] = False  # Never backfill historical durations.
     timing = state['timing']
+    if timing['version'] == 1:
+        # Observational schema migration only: retain old counters and their
+        # attribution. Historical scheduler waiting cannot be inferred as zero.
+        timing['phase_seconds']['scheduler_wait'] = 0.0
+        timing.update(version=2, scheduler_wait_tracked_since=at)
     previous, since = timing.get('stage'), timing.get('since')
     if previous == stage and not interrupted:
         if not number(at) or at < since:
@@ -121,6 +131,9 @@ def waiting_stage(state):
         return 'paused'
     if state.get('phase') == 'ready':
         return 'idle'
+    from continuation import quiet
+    if state.get('phase') in ('checkpoint', 'protocol_error') and quiet(state):
+        return 'scheduler_wait'
     event = state.get('events', {}).get(state.get('last_event_id'), {})
     if state.get('owner') and event.get('status') in (
             'pending', 'sending', 'uncertain', 'queued', 'delivered', 'unacknowledged'):
@@ -142,7 +155,7 @@ def snapshot(state, at=None):
     if not _valid(timing):
         return {'complete': False, 'elapsed_wall_seconds': elapsed(state, at),
                 'phase_seconds': None, 'current_stage': None, 'tracked_since': None}
-    durations = {stage: timing['phase_seconds'][stage] for stage in STAGES}
+    durations = {stage: timing['phase_seconds'].get(stage, 0.0) for stage in STAGES}
     stage, since = timing.get('stage'), timing.get('since')
     complete = timing.get('complete') is True
     if stage in STAGES:
@@ -154,7 +167,8 @@ def snapshot(state, at=None):
     return {'complete': complete and wall is not None,
             'elapsed_wall_seconds': wall,
             'phase_seconds': {key: round(value, 6) for key, value in durations.items()},
-            'current_stage': stage, 'tracked_since': timing.get('started_at')}
+            'current_stage': stage, 'tracked_since': timing.get('started_at'),
+            'scheduler_wait_tracked_since': timing.get('scheduler_wait_tracked_since')}
 
 
 def check_timing(project):

@@ -724,6 +724,11 @@ class Projects:
                 return
             try:
                 continuation.authorize(state, contract, source)
+                # Reconcile persisted pending work as well as fresh checkpoints.
+                # Repeated recovery keeps the same interval; no launch or receipt.
+                import timing
+                timing.transition(state, timing.waiting_stage(state))
+                b.write_json(root / 'state.json', state)
                 message = continuation.message(state)
             except b.GateError as error:
                 continuation.stop(state, source, error)

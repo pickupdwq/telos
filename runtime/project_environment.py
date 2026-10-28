@@ -7,6 +7,7 @@ workspace permissions. Bootstrap markers are private and tied to source/output h
 import contextlib
 import fcntl
 import hashlib
+import ipaddress
 import json
 import os
 from pathlib import Path
@@ -58,6 +59,55 @@ def _string(value):
     return value
 
 
+def _no_proxy(value):
+    """Validate a bypass list without interpreting it as a proxy URL.
+
+    Preserve the supplied text. Host matching (notably CIDR and wildcard support)
+    remains the responsibility of the selected HTTP client.
+    """
+    error = 'NO_PROXY/no_proxy must be a bounded comma-separated host/domain/IP bypass list, not URLs or credentials'
+    if (not isinstance(value, str) or len(value) > 8000
+            or any(ord(c) < 32 or ord(c) == 127 for c in value)):
+        raise ProviderError(error)
+    for item in value.split(','):
+        item = item.strip()
+        if not item or item == '*':
+            continue
+        try:
+            if '%' in item:
+                raise ValueError()  # Scoped IPv6 syntax is not a portable bypass entry.
+            if '/' in item:
+                ipaddress.ip_network(item, strict=False)
+                continue
+            port = None
+            if item.startswith('['):
+                match = re.fullmatch(r'\[([^\]]+)\](?::([0-9]+))?', item)
+                if not match or ipaddress.ip_address(match[1]).version != 6:
+                    raise ValueError()
+                port = match[2]
+            elif item.count(':') > 1:
+                ipaddress.IPv6Address(item)
+            else:
+                host, separator, port = item.partition(':')
+                if separator and not port:
+                    raise ValueError()
+                try:
+                    ipaddress.ip_address(host)
+                except ValueError:
+                    if re.fullmatch(r'[0-9.]+', host):
+                        raise ValueError()
+                    domain = host.removeprefix('*.').removeprefix('.').removesuffix('.')
+                    if (len(domain) > 253 or not domain
+                            or any(not re.fullmatch(r'[A-Za-z0-9](?:[A-Za-z0-9-]{0,61}[A-Za-z0-9])?', label)
+                                   for label in domain.split('.'))):
+                        raise ValueError()
+            if port and (not re.fullmatch(r'[0-9]+', port) or not 1 <= int(port) <= 65535):
+                raise ValueError()
+        except ValueError:
+            raise ProviderError(error) from None
+    return value
+
+
 def _relative(value):
     _string(value)
     if Path(value).is_absolute() or any(p in ('', '.', '..', '.git') for p in value.split('/')) or '\\' in value:
@@ -99,6 +149,9 @@ def validate(value, repo=None):
     variables = value.get('variables', {})
     _object(variables, VARIABLES)
     for name, item in variables.items():
+        if name.lower() == 'no_proxy':
+            _no_proxy(item)
+            continue
         _string(item)
         if 'proxy' in name.lower() or 'index_url' in name.lower() or name == 'npm_config_registry':
             for url in item.split():
@@ -188,7 +241,13 @@ def build_environment(b, contract, source, scratch, initial, *, phase):
                TELOS_CHECK_OUTPUT=str(output), TELOS_ENV_SCRATCH=str(scratch),
                PYTHONDONTWRITEBYTECODE='1')
     req = contract.get('environment_requirements') or {}
-    env.update(req.get('variables', {}))
+    variables = req.get('variables', {})
+    env.update(variables)
+    # A declaration must override the inherited counterpart too. Lowercase wins
+    # when both are explicitly supplied, consistently across work/check clients.
+    if 'no_proxy' in variables or 'NO_PROXY' in variables:
+        bypass = variables.get('no_proxy', variables.get('NO_PROXY'))
+        env.update(NO_PROXY=bypass, no_proxy=bypass)
     paths = [str(Path(t['path']).parent) for t in req.get('tools', [])]
     if paths: env['PATH'] = os.pathsep.join(dict.fromkeys(paths + env.get('PATH','/usr/bin:/bin').split(os.pathsep)))
     if req.get('download_caches'):
@@ -444,8 +503,13 @@ def schema(obj):
     browser = obj({'node':string,'module':string,'executable':string,'phases':phases}, ['node','module','executable'])
     bootstrap = obj({'id':string,'argv':strings,'outputs':strings,'phases':phases,
                      'timeout_seconds':{'type':'integer','minimum':1,'maximum':600}}, ['id','argv','outputs'])
+    variables = {k:dict(string) for k in sorted(VARIABLES)}
+    for name in ('NO_PROXY', 'no_proxy'):
+        variables[name].update(maxLength=8000,
+            description='Comma-separated proxy bypass hosts/domains/IPs, optional ports or CIDR, or empty string; '
+                        'not proxy URLs. Lowercase wins if both cases are declared. Matching depends on the HTTP client.')
     return obj({'version':{'type':'integer','enum':[1]},'tools':rows(tool),'lockfiles':strings,
-                'config_files':strings,'download_caches':strings,'variables':obj({k:string for k in sorted(VARIABLES)}, []),
+                'config_files':strings,'download_caches':strings,'variables':obj(variables, []),
                 'services':rows(service),'registries':rows(registry),'browser':browser,
                 'bootstrap':rows(bootstrap),'local_ipc':{'type':'boolean'}}, ['version'])
 

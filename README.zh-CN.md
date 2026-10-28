@@ -355,3 +355,5 @@ python3 runtime/verify_all.py .artifacts/regression-parallel.json --jobs 4
 ## Checkpoints and project environments / 续做与项目环境
 
 See [protocol, frozen policy, sandbox preflight and cache behavior](docs/checkpoints-environments.md). New implementation tasks support checkpoint and blocked_environment; malformed replies are separate protocol errors. Optional auto_continue_checkpoints resumes authorized work, never acceptance. Environment requirements are explicit and optional; credentials and existing model/token settings remain unchanged.
+
+3.10.1 修复了 NO_PROXY/no_proxy 绕过代理列表的校验，并将自动续做等待调度的时间单独记入 scheduler_wait。历史计时值保留，新指标会标明起算时间。

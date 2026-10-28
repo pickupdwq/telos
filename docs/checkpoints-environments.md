@@ -38,6 +38,10 @@ to notify the original supervisor and require the original acceptance steps.
 
 Pause/cancel, business questions, environment blockers, request/job budgets,
 unknown required usage and the no-progress guard stop automatic continuation.
+Automatic continuation admission waits are recorded as scheduler_wait, separately
+from work and supervisor time. Paused time is separate; launch or a stopped
+continuation ends the wait. Older counters retain their recorded attribution,
+with scheduler_wait_tracked_since indicating coverage of the new metric.
 Actual source/check evidence drives progress; changing a checkpoint summary does
 not reset it. Forced timeouts remain errors. Normal pending checkpoints wait for
 existing capacity without repeatedly waking the supervisor. No model, concurrency
@@ -52,7 +56,7 @@ environment_requirements is optional and has version=1. Available fields:
 | tools | id, absolute path, optional kind (python/node/package_manager/tool), version_args, exact expected_version |
 | lockfiles / config_files | repository-relative files whose actual sandbox-visible bytes enter the cache identity |
 | download_caches | explicit read-only cache/source directories; access must already be granted by dependency_paths |
-| variables | allowlisted non-secret registry/proxy/offline settings and CI; no HOME/PATH override or credentials |
+| variables | allowlisted non-secret registry/proxy/offline settings and CI; NO_PROXY/no_proxy is a comma-separated bypass list, not a URL; no HOME/PATH override or credentials |
 | services | id, loopback host, port, optional phases; grants access only to those local ports |
 | registries | id, credential-free HTTP(S) URL, optional phases; HEAD probe, no redirects |
 | browser | absolute node, module and executable paths, optional phases; actual sandbox launch, not host-only discovery |
@@ -65,6 +69,12 @@ network permission for that phase. Failure never expands permissions, installs
 software or discovers/executes repository scripts implicitly. Use credential
 references outside public declarations; do not paste credentials into commands,
 URLs, environment requirements, reports or configuration examples.
+
+NO_PROXY/no_proxy supports host/domain/IP entries, optional ports, CIDR, wildcards
+and an empty value; scoped IPv6 is excluded. Exact matching depends on the HTTP
+client. The effective declaration is supplied in both cases to work and checks;
+explicit lowercase wins if both are declared. Proxy bypass never expands sandbox
+network access.
 
 Bootstrap runs with scratch as cwd. Supported argv substitutions are {python},
 {repo}, {scratch}. Commands are existing, explicitly authorized setup commands,

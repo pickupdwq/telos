@@ -356,3 +356,5 @@ The runtime verification commands run the macOS regression suite with local mode
 ## Checkpoints and project environments / 续做与项目环境
 
 See [protocol, frozen policy, sandbox preflight and cache behavior](docs/checkpoints-environments.md). New implementation tasks support checkpoint and blocked_environment; malformed replies are separate protocol errors. Optional auto_continue_checkpoints resumes authorized work, never acceptance. Environment requirements are explicit and optional; credentials and existing model/token settings remain unchanged.
+
+In 3.10.1, NO_PROXY/no_proxy accepts proxy bypass lists, and automatic continuation admission waits are recorded as scheduler_wait. Existing timing totals are retained; the new metric includes a tracking start time.

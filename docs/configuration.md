@@ -235,8 +235,9 @@ Project `allowed_paths` are literal relative files/directory prefixes, not globs
 Status and review summaries expose timing without enabling any additional model calls:
 
 - `usage.request_latency` reports cumulative `observed_seconds`, `measured_requests`, `missing_requests`, `in_flight_requests`, `complete`, and separate `work`/`exam` phases. Failed requests with measured duration are included; repairs count as work. Project usage aggregates the shared task ledgers, including prior executor assignments. `unavailable_sources` and `complete=false` preserve unreadable or incomplete child data. A zero observed total with missing requests does **not** mean zero actual time.
-- Task `timing.phase_seconds` separates `idle`, `work`, `checks`, `exam`, `callback_wait`, `supervisor_wait`, and `paused`. Work/check/exam stages include their local setup. Callback wait ends at acknowledgement; supervisor wait includes review, repair decisions and the wait before the next action. It is elapsed waiting time, not a measurement of the supervisor's model inference. Pausing does not stop an already running job's clock; cancellation ends its clock when that job actually finishes.
+- Task `timing.phase_seconds` separates `idle`, `work`, `checks`, `exam`, `callback_wait`, `supervisor_wait`, `scheduler_wait`, and `paused`. Work/check/exam stages include their local setup. Scheduler wait measures authorized automatic continuation waiting for admission after a checkpoint or bounded protocol correction; it ends at job launch and excludes paused time. These waits do not count as executor work or supervisor review. Callback wait ends at acknowledgement; supervisor wait includes review, repair decisions and the wait before the next action. It is elapsed waiting time, not a measurement of the supervisor's model inference. Pausing does not stop an already running job's clock; cancellation ends its clock when that job actually finishes.
 - Project `timing.elapsed_wall_seconds` is time from creation to acceptance/cancellation (or now while active). `child_phase_seconds` sums retained executor assignments and can overlap across children; it must not be presented as project wall time. `integration_checks` separately reports completed final verification runtime, including failures, and identifies an in-flight verification. It does not include worker scheduling delay.
+- Timing schema v2 adds scheduler_wait. Legacy v1 counters remain readable and migrate on the next timing transition without resetting prior totals. scheduler_wait_tracked_since identifies the new metric's start; null means historical scheduling wait was not separately measured. Old work totals retain their original attribution.
 - These metrics are observational, never budget or acceptance inputs. Lifecycle tracking starts with new tasks or the first observed transition of a historical task; missing history, process-loss intervals and clock regressions remain `complete=false`. Legacy terminal records without a finish timestamp have unknown wall time. Request latency measures relay elapsed time, not pure provider compute or first-token latency.
 
 Project `usage` remains `null` when all children are on their first pending assignment with no session artifacts or ledger. Such children do not make a partially started project's aggregate incomplete. Missing ledgers for prior assignments or partially initialized tasks remain unknown rather than being reported as zero usage.
@@ -290,3 +291,16 @@ task switching, and Ghostty/iTerm2 usage.
 ## Checkpoints and project environments / 续做与项目环境
 
 See [protocol, frozen policy, sandbox preflight and cache behavior](checkpoints-environments.md). New implementation tasks support checkpoint and blocked_environment; malformed replies are separate protocol errors. Optional auto_continue_checkpoints resumes authorized work, never acceptance. Environment requirements are explicit and optional; credentials and existing model/token settings remain unchanged.
+
+### Proxy bypass declarations
+
+environment_requirements.variables.NO_PROXY and no_proxy accept comma-separated
+hosts, domain suffixes, IPv4/IPv6, optional ports, CIDR, wildcards and the empty
+string. Example: localhost,127.0.0.1,::1,.example.com. Scoped IPv6 is not supported.
+They are not HTTP URLs; URL syntax, credentials and control characters are rejected.
+CIDR/wildcard/port matching still depends on the selected HTTP client.
+
+Work and check environments receive the same effective value in both cases.
+An explicit lowercase declaration wins if both cases are supplied, including an
+empty string. Proxy endpoints retain their existing HTTP(S), credential-free URL
+validation. These settings do not widen the task's frozen sandbox network access.

@@ -71,7 +71,7 @@ class TimingTests(unittest.TestCase):
         self.assertEqual(result['elapsed_wall_seconds'], 40)
         self.assertEqual(result['phase_seconds'], {
             'idle': 2, 'work': 5, 'checks': 5, 'exam': 10,
-            'callback_wait': 8, 'supervisor_wait': 10, 'paused': 0})
+            'callback_wait': 8, 'supervisor_wait': 10, 'paused': 0, 'scheduler_wait': 0})
         self.assertTrue(result['complete'])
 
     def test_legacy_corrupt_interrupted_and_regressing_clocks_stay_incomplete(self):
@@ -206,3 +206,217 @@ class ProjectTimingIntegrationTests(unittest.TestCase):
         damaged = b.project_manager().status(pid, detail='summary')['timing']
         self.assertFalse(damaged['children_complete'])
         self.assertEqual(damaged['incomplete_children'], ['a@' + old['session_id'][:8]])
+
+class SchedulerTimingIntegrationTests(unittest.TestCase):
+    setUp = CallbackTests.setUp
+    tearDown = CallbackTests.tearDown
+    create = CallbackTests.create
+
+    def setup_clock(self):
+        import time
+        self.now = time.time()
+        clock = patch.object(timing.time, 'time', side_effect=lambda:self.now)
+        clock.start(); self.addCleanup(clock.stop)
+
+    def checkpoint(self, output=None):
+        from test_clarification import CheckpointTests, phase1_reply
+        fixture=CheckpointTests()
+        sid=self.create(_workflow_version=3,auto_continue_checkpoints=True,
+                        notify=True,owner_thread_id=OWNER)
+        fixture.launch(sid)
+        self.now += 10
+        with patch.object(Projects,'capacity',return_value=False):
+            state,launches,_=fixture.finish(sid,output or phase1_reply())
+        self.assertEqual(launches,[])
+        return sid,state
+
+    def load(self,sid):
+        return b.load_session(b.run_dir(sid))[0]
+
+    def test_checkpoint_capacity_wait_is_durable_and_not_work_or_supervisor_time(self):
+        self.setup_clock()
+        sid,state=self.checkpoint()
+        frozen=(b.run_dir(sid)/'contract.json').read_bytes()
+        before=timing.snapshot(state)
+        self.now += 60
+        with patch.object(Projects,'capacity',return_value=False), patch.object(b.subprocess,'Popen') as spawn:
+            for _ in range(2):
+                b.project_manager().continue_pending(sid)
+                b.recover_progress(sid)
+            spawn.assert_not_called()
+        after=b.status(sid,'summary')['timing']
+        self.assertEqual(after['phase_seconds']['work'],before['phase_seconds']['work'])
+        self.assertEqual(after['current_stage'],'scheduler_wait')
+        self.assertEqual(after['phase_seconds']['scheduler_wait'],60)
+        self.assertEqual(after['phase_seconds']['supervisor_wait'],0)
+        self.assertEqual(after['phase_seconds']['callback_wait'],0)
+        self.assertEqual(self.load(sid)['turns'],1)
+        self.assertFalse(self.load(sid).get('last_event_id'))
+        self.assertEqual((b.run_dir(sid)/'contract.json').read_bytes(),frozen)
+
+    def test_pause_resume_cancel_preserve_wait_totals_without_launching(self):
+        self.setup_clock()
+        sid,_=self.checkpoint()
+        self.now += 60
+        b.return_control(sid,'pause')
+        self.now += 20
+        self.assertEqual(timing.snapshot(self.load(sid))['current_stage'],'paused')
+        b.return_control(sid,'resume')
+        self.now += 15
+        with patch.object(Projects,'capacity',return_value=False), patch.object(b.subprocess,'Popen') as spawn:
+            b.project_manager().continue_pending(sid)
+            spawn.assert_not_called()
+        b.return_control(sid,'cancel')
+        self.now += 30
+        result=timing.snapshot(self.load(sid))
+        self.assertIsNone(result['current_stage'])
+        self.assertEqual(result['phase_seconds']['work'],10)
+        self.assertEqual(result['phase_seconds']['scheduler_wait'],75)
+        self.assertEqual(result['phase_seconds']['paused'],20)
+        self.assertEqual(self.load(sid)['turns'],1)
+
+    def test_successful_start_ends_wait_once_and_completion_still_waits_for_review(self):
+        from test_clarification import CheckpointTests,phase1_reply
+        self.setup_clock()
+        sid,_=self.checkpoint()
+        self.now += 60
+        real=b.subprocess.Popen
+        with patch.object(b.subprocess,'Popen',side_effect=lambda argv,**kw:
+                          Mock(pid=os.getpid()) if '_job' in argv else real(argv,**kw)) as spawn:
+            b.project_manager().continue_pending(sid)
+            b.project_manager().continue_pending(sid)
+        self.assertEqual(sum('_job' in call.args[0] for call in spawn.call_args_list),1)
+        self.now += 5
+        state=self.load(sid)
+        result=timing.snapshot(state)
+        self.assertEqual(result['current_stage'],'work')
+        self.assertEqual(result['phase_seconds']['work'],15)
+        self.assertEqual(result['phase_seconds']['scheduler_wait'],60)
+        CheckpointTests().finish(sid,phase1_reply('completed'))
+        self.assertEqual(timing.snapshot(self.load(sid))['current_stage'],'callback_wait')
+        self.assertFalse(b.status(sid)['accepted'])
+
+    def test_failed_spawn_stops_scheduler_clock_and_notifies_supervisor(self):
+        self.setup_clock()
+        sid,_=self.checkpoint()
+        self.now += 60
+        real=b.subprocess.Popen
+        def fail(argv,**kwargs):
+            if '_job' in argv: raise OSError('fixture launch failed')
+            return real(argv,**kwargs)
+        with patch.object(b.subprocess,'Popen',side_effect=fail):
+            b.project_manager().continue_pending(sid)
+        self.now += 20
+        result=timing.snapshot(self.load(sid))
+        self.assertEqual(result['current_stage'],'callback_wait')
+        self.assertEqual(result['phase_seconds']['work'],10)
+        self.assertEqual(result['phase_seconds']['scheduler_wait'],60)
+        self.assertEqual(result['phase_seconds']['callback_wait'],20)
+
+    def test_blocked_or_decision_stages_do_not_accrue_scheduler_wait(self):
+        from test_clarification import phase1_reply
+        self.setup_clock()
+        for status in ('needs_clarification','blocked_environment','completed'):
+            with self.subTest(status=status):
+                sid,_=self.checkpoint(phase1_reply(status))
+                self.now += 60
+                result=timing.snapshot(self.load(sid))
+                self.assertEqual(result['current_stage'],'callback_wait')
+                self.assertEqual(result['phase_seconds']['scheduler_wait'],0)
+                self.assertEqual(result['phase_seconds']['work'],10)
+
+    def test_saved_legacy_pending_task_starts_new_wait_measurement_without_rewriting_history(self):
+        self.setup_clock()
+        sid,state=self.checkpoint()
+        root=b.run_dir(sid)
+        frozen=(root/'contract.json').read_bytes()
+        state['timing']['version']=1
+        state['timing'].pop('scheduler_wait_tracked_since')
+        state['timing']['phase_seconds'].pop('scheduler_wait')
+        state['timing'].update(stage='work',since=self.now)
+        b.write_json(root/'state.json',state)
+        self.now += 60
+        with patch.object(Projects,'capacity',return_value=False):
+            b.project_manager().continue_pending(sid)
+        boundary=self.now
+        self.now += 15
+        observed=timing.snapshot(self.load(sid))
+        self.assertEqual(observed['current_stage'],'scheduler_wait')
+        self.assertEqual(observed['phase_seconds']['work'],70)
+        self.assertEqual(observed['phase_seconds']['scheduler_wait'],15)
+        self.assertEqual(observed['scheduler_wait_tracked_since'],boundary)
+        self.assertEqual((root/'contract.json').read_bytes(),frozen)
+
+    def test_protocol_correction_wait_is_also_scheduler_time(self):
+        self.setup_clock()
+        sid,_=self.checkpoint('invalid protocol text')
+        self.now += 60
+        result=timing.snapshot(self.load(sid))
+        self.assertEqual(result['current_stage'],'scheduler_wait')
+        self.assertEqual(result['phase_seconds']['work'],10)
+        self.assertEqual(result['phase_seconds']['scheduler_wait'],60)
+
+
+class SchedulerTimingCompatibilityTests(unittest.TestCase):
+    def legacy(self):
+        stages=('idle','work','checks','exam','callback_wait','supervisor_wait','paused')
+        return {'created_at':10,'phase':'responded','timing':{
+            'version':1,'started_at':10,'since':30,'stage':'supervisor_wait',
+            'phase_seconds':{k:(20 if k=='work' else 0) for k in stages},'complete':True}}
+
+    def test_old_timing_counters_survive_read_and_new_transition(self):
+        state=self.legacy(); before=copy.deepcopy(state)
+        observed=timing.snapshot(state,40)
+        self.assertEqual(state,before)
+        self.assertEqual(observed['phase_seconds']['work'],20)
+        self.assertEqual(observed['phase_seconds']['supervisor_wait'],10)
+        self.assertIsNone(observed.get('scheduler_wait_tracked_since'))
+        timing.transition(state,'scheduler_wait',40)
+        observed=timing.snapshot(state,100)
+        self.assertEqual(observed['phase_seconds']['work'],20)
+        self.assertEqual(observed['phase_seconds']['supervisor_wait'],10)
+        self.assertEqual(observed['phase_seconds']['scheduler_wait'],60)
+        self.assertEqual(observed['scheduler_wait_tracked_since'],40)
+
+    def test_corrupt_new_counter_is_not_treated_as_valid_legacy_data(self):
+        state=self.legacy()
+        state['timing'].update(version=2,scheduler_wait_tracked_since=30)
+        state['timing']['phase_seconds']['scheduler_wait']='bad'
+        self.assertFalse(timing.snapshot(state,40)['complete'])
+        self.assertIsNone(timing.snapshot(state,40)['phase_seconds'])
+
+class ProjectSchedulerTimingTests(unittest.TestCase):
+    setUp = CallbackTests.setUp
+    tearDown = CallbackTests.tearDown
+    task = ProjectTests.task
+    create = ProjectTests.create
+    start = ProjectTests.start
+    state = ProjectTests.state
+    child = ProjectTests.child
+    setup_clock = SchedulerTimingIntegrationTests.setup_clock
+
+    def test_project_child_wait_pause_resume_and_aggregate_preserve_job_count(self):
+        from test_clarification import phase1_reply
+        self.setup_clock()
+        pid=self.create([self.task('a')],auto_continue_checkpoints=True)
+        self.start(pid);child=self.child(pid,'a')
+        self.now += 10
+        with patch.object(Projects,'capacity',return_value=False), \
+             patch.object(b,'peer_turn',return_value={'thread_id':OTHER,'summary':phase1_reply()}):
+            b.background_job(child['session_id'],child['job_id'])
+        self.now += 60
+        before=b.project_manager().status(pid,'summary')
+        self.assertEqual(before['timing']['child_phase_seconds']['work'],10)
+        self.assertEqual(before['timing']['child_phase_seconds']['scheduler_wait'],60)
+        self.assertEqual(before['tasks'][0]['timing']['current_stage'],'scheduler_wait')
+        b.project_manager().control(pid,'pause')
+        self.now += 20
+        with patch.object(Projects,'capacity',return_value=False):
+            b.project_manager().control(pid,'resume')
+            self.now += 15
+            b.project_manager().tick(pid)
+        final=b.project_manager().status(pid,'summary')
+        self.assertEqual(final['jobs_started'],1)
+        self.assertEqual(final['timing']['child_phase_seconds']['work'],10)
+        self.assertEqual(final['timing']['child_phase_seconds']['scheduler_wait'],75)
+        self.assertEqual(final['timing']['child_phase_seconds']['paused'],20)

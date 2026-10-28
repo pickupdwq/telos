@@ -53,3 +53,9 @@ troubleshoot. Use TELOS_CHECK_OUTPUT and TMPDIR and independent writable state;
 formal checks read immutable source. No automatic new dependencies or secret
 values in requirements/context. Do not change model, dynamic reasoning or Token
 settings merely to use checkpoint/environment support.
+
+As of 3.10.1, NO_PROXY/no_proxy accepts bypass hosts rather than proxy URLs. Work
+and checks share the same effective value (explicit lowercase takes precedence).
+Automatic continuation admission waits appear in timing.phase_seconds.scheduler_wait.
+Honor scheduler_wait_tracked_since when comparing older tasks; do not reinterpret
+old work totals or change frozen contracts to adjust observational metrics.

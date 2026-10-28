@@ -2,7 +2,7 @@
 name: telos
 description: "Supervise Telos delegated development, scoped system audits (code, APIs, page interactions and visual evidence), and confirmed-bug repairs through MCP. Use for requests to use Telos, coordinate independent executors with evidence-based acceptance, or continue an existing TELOS_EVENT. Ordinary coding, general review and questions about Telos do not by themselves authorize starting an executor."
 metadata:
-  version: "3.10.0"
+  version: "3.10.1"
 ---
 
 # Telos
@@ -82,3 +82,15 @@ troubleshoot. Use TELOS_CHECK_OUTPUT and TMPDIR and independent writable state;
 formal checks read immutable source. No automatic new dependencies or secret
 values in requirements/context. Do not change model, dynamic reasoning or Token
 settings merely to use checkpoint/environment support.
+
+For declared proxies, NO_PROXY/no_proxy is a comma-separated bypass list (for example
+localhost,127.0.0.1,::1), not a proxy URL. The runtime supplies the same effective
+value in both cases; explicit lowercase takes precedence if both are declared.
+CIDR/wildcard matching depends on the selected client. No proxy bypass grants
+additional sandbox network access.
+
+Use timing.phase_seconds.scheduler_wait for authorized automatic continuation
+waiting for admission; do not attribute it to executor work or supervisor review.
+Pause/resume/cancel and launch/failure boundaries remain separate. Old timing
+counters retain their recorded attribution; scheduler_wait_tracked_since identifies
+when the new metric starts, and a missing boundary means historical wait is unknown.

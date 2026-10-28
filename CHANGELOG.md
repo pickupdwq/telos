@@ -1,5 +1,14 @@
 # Changelog / 更新记录
 
+## 3.10.1 — 2026-10-28
+
+- Validate NO_PROXY/no_proxy as bypass lists separately from credential-free proxy URLs;
+  synchronize the effective value in work/check environments, including explicit empty values.
+- Record automatic checkpoint/protocol-correction admission waits as scheduler_wait,
+  with correct start, pause/resume/cancel, failure and recovery transitions.
+- Preserve legacy timing counters and frozen contracts; expose the new metric's
+  measurement boundary instead of fabricating historical scheduling durations.
+
 ## 3.10.0 — checkpoint continuation and declared project environments
 
 - Versioned work replies distinguish completed, checkpoint, blocked_environment,

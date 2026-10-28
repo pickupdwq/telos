@@ -1744,7 +1744,9 @@ def background_job(sid, job):
             import state_store
             state_store.lease(bridge_services(), root, current)
             continuation.prepare(current, contract)
-            if not continuation.quiet(current):
+            if continuation.quiet(current):
+                timing.transition(current, timing.waiting_stage(current), current['job_finished'])
+            else:
                 record_event(current)
             write_json(root / "state.json", current)
             activity.status(bridge_services(), current)

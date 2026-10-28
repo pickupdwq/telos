@@ -268,7 +268,9 @@
                     "type": "string"
                   },
                   "NO_PROXY": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 8000,
+                    "description": "Comma-separated proxy bypass hosts/domains/IPs, optional ports or CIDR, or empty string; not proxy URLs. Lowercase wins if both cases are declared. Matching depends on the HTTP client."
                   },
                   "PIP_EXTRA_INDEX_URL": {
                     "type": "string"
@@ -292,7 +294,9 @@
                     "type": "string"
                   },
                   "no_proxy": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 8000,
+                    "description": "Comma-separated proxy bypass hosts/domains/IPs, optional ports or CIDR, or empty string; not proxy URLs. Lowercase wins if both cases are declared. Matching depends on the HTTP client."
                   },
                   "npm_config_offline": {
                     "type": "string"
@@ -1259,7 +1263,9 @@
                           "type": "string"
                         },
                         "NO_PROXY": {
-                          "type": "string"
+                          "type": "string",
+                          "maxLength": 8000,
+                          "description": "Comma-separated proxy bypass hosts/domains/IPs, optional ports or CIDR, or empty string; not proxy URLs. Lowercase wins if both cases are declared. Matching depends on the HTTP client."
                         },
                         "PIP_EXTRA_INDEX_URL": {
                           "type": "string"
@@ -1283,7 +1289,9 @@
                           "type": "string"
                         },
                         "no_proxy": {
-                          "type": "string"
+                          "type": "string",
+                          "maxLength": 8000,
+                          "description": "Comma-separated proxy bypass hosts/domains/IPs, optional ports or CIDR, or empty string; not proxy URLs. Lowercase wins if both cases are declared. Matching depends on the HTTP client."
                         },
                         "npm_config_offline": {
                           "type": "string"
@@ -1870,7 +1878,9 @@
                     "type": "string"
                   },
                   "NO_PROXY": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 8000,
+                    "description": "Comma-separated proxy bypass hosts/domains/IPs, optional ports or CIDR, or empty string; not proxy URLs. Lowercase wins if both cases are declared. Matching depends on the HTTP client."
                   },
                   "PIP_EXTRA_INDEX_URL": {
                     "type": "string"
@@ -1894,7 +1904,9 @@
                     "type": "string"
                   },
                   "no_proxy": {
-                    "type": "string"
+                    "type": "string",
+                    "maxLength": 8000,
+                    "description": "Comma-separated proxy bypass hosts/domains/IPs, optional ports or CIDR, or empty string; not proxy URLs. Lowercase wins if both cases are declared. Matching depends on the HTTP client."
                   },
                   "npm_config_offline": {
                     "type": "string"
@@ -2432,7 +2444,9 @@
                           "type": "string"
                         },
                         "NO_PROXY": {
-                          "type": "string"
+                          "type": "string",
+                          "maxLength": 8000,
+                          "description": "Comma-separated proxy bypass hosts/domains/IPs, optional ports or CIDR, or empty string; not proxy URLs. Lowercase wins if both cases are declared. Matching depends on the HTTP client."
                         },
                         "PIP_EXTRA_INDEX_URL": {
                           "type": "string"
@@ -2456,7 +2470,9 @@
                           "type": "string"
                         },
                         "no_proxy": {
-                          "type": "string"
+                          "type": "string",
+                          "maxLength": 8000,
+                          "description": "Comma-separated proxy bypass hosts/domains/IPs, optional ports or CIDR, or empty string; not proxy URLs. Lowercase wins if both cases are declared. Matching depends on the HTTP client."
                         },
                         "npm_config_offline": {
                           "type": "string"
