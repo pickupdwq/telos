@@ -2,9 +2,9 @@
 
 [English README](../README.md) · [中文 README](../README.zh-CN.md)
 
-Generated from `runtime/telos.py`. These 29 tools are intended for the original Codex supervisor; task ownership requires trusted MCP thread metadata. See [machine-readable schemas](tools.schema.json) for all fields.
+Generated from `runtime/telos.py`. These 30 tools are intended for the original Codex supervisor; task ownership requires trusted MCP thread metadata. See [machine-readable schemas](tools.schema.json) for all fields.
 
-由运行时自动生成，共 29 个工具，供原始 Codex 大总管使用；任务绑定依赖可信会话元数据。完整参数见 JSON schema。
+由运行时自动生成，共 30 个工具，供原始 Codex 大总管使用；任务绑定依赖可信会话元数据。完整参数见 JSON schema。
 
 ## `telos_open`
 
@@ -125,6 +125,12 @@ Required / 必填：`project_id`
 Original supervisor scores every final criterion, supplies blockers and an overall rationale. Enforces tests, unchanged accepted task commits, unchanged integrated commit and score threshold. Passing produces an accepted scratch integration commit, never automatic source-branch merge or deployment.
 
 Required / 必填：`project_id`, `packet_id`, `scores`, `blockers`, `rationale`
+
+## `telos_project_budget`
+
+Original supervisor only: record an explicitly user-authorized, audited job-admission policy change for one project. Only strategy=unlimited is supported; it raises the effective job ceiling to unlimited while preserving max_jobs, jobs_started, the frozen contract/hash, task identities and all history. Requires a stable request_id, reason and user_authorization. Same request_id with identical arguments is an idempotent replay; different arguments are rejected. Rejects accepted, cancelled, discussion and damaged-policy projects. A paused project stays paused; this never starts, resumes, accepts or deploys work. Projects without this policy keep their original max_jobs.
+
+Required / 必填：`project_id`, `request_id`, `reason`, `user_authorization`
 
 ## `telos_experience_search`
 

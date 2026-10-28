@@ -1,3 +1,18 @@
+## 3.11.1 — 2026-10-29
+
+- Add the owner-only, audited `telos_project_budget` API with the one-way
+  `unlimited` strategy. The versioned policy and append-only authorization
+  history live in the single atomic project record; `max_jobs`, `jobs_started`,
+  the frozen contract/hash, task identities and history are preserved.
+- Admission uses the policy's effective ceiling; projects without a policy keep
+  their original cap. Unknown or damaged policies fail closed. Paused projects
+  remain paused and no work is started, resumed, accepted or deployed.
+- Validate policy version/type/required fields, recomputed argument digests,
+  project identity, owner, contract and budget snapshots. Only a missing policy
+  preserves legacy behavior; explicit null is damaged. Re-verify the trusted
+  caller under the coordinator lock, reject whitespace-normalized request IDs,
+  and report current `jobs_started` while retaining authorization snapshots.
+
 # 3.11.0
 
 - Opt-in frozen automatic checks for sessions and queued project children; original supervisor acceptance remains mandatory.

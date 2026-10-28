@@ -23,6 +23,7 @@ import effort_policy
 import progress_guard
 import continuation
 import check_runtime
+import project_budget
 
 
 class Projects:
@@ -44,6 +45,12 @@ class Projects:
         p = self.b.read_json(self.path(pid))
         if self.b.digest(p['contract']) != p['contract_hash']:
             raise self.b.GateError('Project acceptance contract changed')
+        # A stored policy that cannot be trusted must never silently fall back
+        # to the legacy ceiling or to unlimited admission.
+        try:
+            project_budget.validate_project(p)
+        except ValueError as error:
+            raise self.b.GateError(str(error), code='invalid_budget_policy') from None
         return p
 
     def save(self, p):
@@ -390,6 +397,7 @@ class Projects:
         result = {k: p[k] for k in ('project_id', 'phase', 'continuation', 'execution_mode', 'strategy',
                                    'decision_reason', 'max_parallel', 'max_jobs', 'jobs_started', 'base_commit')}
         result['contract_hash'] = p.get('contract_hash')
+        result['job_budget'] = project_budget.summary(p)
         if p.get('kind') == 'discussion':
             from meetings import Meetings
             result['discussion'] = Meetings(self.b).view(p)
@@ -547,9 +555,52 @@ class Projects:
             return False
         if sum(s.get('capacity_unknown') or s.get('active_provider', s.get('provider', 'ark')) == provider for s in running) >= self.b.config().get('provider_max_parallel', 3):
             return False
-        if not local_checks and p is not None and p.get('max_jobs') is not None and p['jobs_started'] >= p['max_jobs']:
-            raise self.b.GateError('Project job budget exhausted; no more model jobs')
+        if not local_checks and p is not None:
+            try:
+                ceiling = project_budget.effective_max_jobs(p)
+            except ValueError as error:
+                raise self.b.GateError(str(error), code='invalid_budget_policy') from None
+            if ceiling is not None and p['jobs_started'] >= ceiling:
+                raise self.b.GateError('Project job budget exhausted; no more model jobs')
         return True
+
+    def budget(self, pid, request_id, reason, user_authorization, strategy='unlimited', caller=None):
+        """Original-supervisor-only, audited job ceiling policy change.
+
+        Only the one-way ``unlimited`` strategy is supported.  The frozen
+        contract, max_jobs, jobs_started, tasks and continuation stay untouched;
+        a paused project remains paused and nothing is started or accepted.
+        """
+        with self.lock():
+            p = self.load(pid)
+            if not p.get('owner'):
+                raise self.b.GateError('Only the original owner can change the job budget policy',
+                                       code='owner_required', next_action='use_original_supervisor')
+            # Re-check the trusted metadata-derived caller under the same lock as
+            # the mutation. There is no MCP argument that can supply this value.
+            if not isinstance(caller, str) or caller != p['owner']['thread_id']:
+                raise self.b.GateError('Project belongs to another supervisor thread',
+                                       code='owner_mismatch', next_action='use_original_supervisor')
+            if p.get('kind') == 'discussion':
+                raise self.b.GateError('Discussion projects have no job budget policy',
+                                       code='unsupported_project_kind')
+            if p['phase'] == 'accepted' or p['continuation'] == 'cancelled' or p.get('phase') == 'cancelled':
+                raise self.b.GateError('Cancelled or accepted projects cannot change budget policy',
+                                       code='project_terminal')
+            try:
+                updated, replayed, policy = project_budget.authorize(
+                    p, owner_thread_id=caller, strategy=strategy,
+                    request_id=request_id, reason=reason,
+                    user_authorization=user_authorization, now=time.time())
+            except ValueError as error:
+                raise self.b.GateError(str(error), code='invalid_budget_policy') from None
+            if not replayed:
+                self.save(updated)
+            return {'project_id': pid, 'replayed': replayed, 'strategy': strategy,
+                    'continuation': p['continuation'], 'phase': p['phase'],
+                    'max_jobs': p['max_jobs'], 'jobs_started': p['jobs_started'],
+                    'contract_hash': p.get('contract_hash'),
+                    'tasks_unchanged': True, 'job_budget': policy}
 
     def launch(self, p, sid, kind, message='', event_id=None, discussion_request_id=None,
                reasoning_effort=None, reasoning_reason=None, automatic=False, continuation_id=None):
@@ -1218,6 +1269,7 @@ class Projects:
                     'instruction': 'Supervisor must inspect the integrated code and answer each final acceptance criterion with evidence before finish. These private references must not be forwarded to workers.',
                     'project_id': pid, 'worktree': p['integration'].get('worktree'), 'commit': packet.get('commit'),
                     'pins': p['integration'].get('pins'), 'contract_hash': p.get('contract_hash'),
+                    'job_budget': project_budget.summary(p),
                     'blockers': (p.get('final_review') or {}).get('blockers', []),
                     'final_review': p.get('final_review'), 'usage': self._usage(p),
                     'timing': self._timing(p),
@@ -1313,6 +1365,14 @@ class Projects:
         if 'project_id' not in args:
             raise self.b.GateError('project_id is required', code='invalid_arguments', next_action='correct_arguments')
         pid = args['project_id']
+        if name == 'telos_project_budget':
+            rest = {k: v for k, v in args.items() if k != 'project_id'}
+            try:
+                inspect.signature(self.budget).bind(pid, caller=caller, **rest)
+            except TypeError:
+                raise self.b.GateError('Missing required or unsupported tool arguments; consult the tool schema',
+                                       code='invalid_arguments', next_action='correct_arguments') from None
+            return self.budget(pid, caller=caller, **rest)
         self.authorize(self.load(pid), caller)
         rest = {k: v for k, v in args.items() if k != 'project_id'}
         mapping = {'start': self.tick, 'status': self.status, 'receive': self.receive, 'update': self.update,

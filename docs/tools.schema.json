@@ -3176,6 +3176,39 @@
       }
     },
     {
+      "name": "telos_project_budget",
+      "description": "Original supervisor only: record an explicitly user-authorized, audited job-admission policy change for one project. Only strategy=unlimited is supported; it raises the effective job ceiling to unlimited while preserving max_jobs, jobs_started, the frozen contract/hash, task identities and all history. Requires a stable request_id, reason and user_authorization. Same request_id with identical arguments is an idempotent replay; different arguments are rejected. Rejects accepted, cancelled, discussion and damaged-policy projects. A paused project stays paused; this never starts, resumes, accepts or deploys work. Projects without this policy keep their original max_jobs.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "project_id": {
+            "type": "string"
+          },
+          "strategy": {
+            "enum": [
+              "unlimited"
+            ]
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "user_authorization": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "project_id",
+          "request_id",
+          "reason",
+          "user_authorization"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "telos_experience_search",
       "description": "Read repository-scoped experience and provenance. Default only previously accepted and project-verified lessons; include_candidates=true exposes unsuccessful or not-yet-integrated metadata for supervisor analysis. No private exam answers, checks or logs are stored. Relevant verified experience is injected automatically when new sessions start.",
       "inputSchema": {
