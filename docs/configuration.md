@@ -304,3 +304,18 @@ Work and check environments receive the same effective value in both cases.
 An explicit lowercase declaration wins if both cases are supplied, including an
 empty string. Proxy endpoints retain their existing HTTP(S), credential-free URL
 validation. These settings do not widen the task's frozen sandbox network access.
+
+
+## Automatic frozen checks (3.11)
+
+New implementation tasks may freeze `auto_run_checks=true`; shipped default false.
+Queued project children freeze it at creation. Only valid completed work triggers
+local checks; no model/exam/receive/grade is automatic. The original supervisor may
+prepare/read source during checks, then receives the completion and calls evaluate.
+Valid evidence is reused in the same round. Declare check `freshness` as `snapshot`
+only for deterministic declared inputs, or `max_age` with `max_age_seconds` (1–3600).
+Omitted/`never` or expired freshness permits one explicit same-round recheck; changed
+or tampered evidence blocks. Old contracts retain their original workflow.
+Inspect `automatic_checks` and `timing.stages`; distinguish cumulative/overlap time
+from lifecycle wall time. Follow existing pause/cancel, capacity, budgets and
+no-progress gates; never forward private check programs or raw failures.

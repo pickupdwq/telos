@@ -22,6 +22,7 @@ from usage import TOKEN_FIELDS, resolve_task_budget
 import effort_policy
 import progress_guard
 import continuation
+import check_runtime
 
 
 class Projects:
@@ -120,6 +121,8 @@ class Projects:
             t['workflow_version'] = 3
             t['work_reply_version'] = 2
             t['auto_continue_checkpoints'] = continuation.freeze(t.get('auto_continue_checkpoints'), self.b.config())
+            if t.get('task_type', 'implementation') == 'implementation':
+                t['auto_run_checks'] = check_runtime.freeze(t.get('auto_run_checks'), self.b.config())
             t['reasoning_policy'] = effort_policy.freeze(t['executor'], self.b.config(), t.get('reasoning_policy'))
             self.backend_fields(t)
             t.setdefault('threshold', self.b.config()['threshold'])
@@ -175,7 +178,7 @@ class Projects:
 
     def create(self, repo, task, tasks, questions, checks, decision_reason,
                execution_mode='auto', strategy='single', max_parallel=3,
-               max_jobs=40, context='', notify=True, caller=None, use_experience=True, dependency_paths=None, environment_requirements=None, auto_continue_checkpoints=None, _planning=None):
+               max_jobs=40, context='', notify=True, caller=None, use_experience=True, dependency_paths=None, environment_requirements=None, auto_continue_checkpoints=None, auto_run_checks=None, _planning=None):
         if execution_mode not in ('auto', 'single', 'parallel') or strategy not in ('single', 'parallel', 'phased'):
             raise self.b.GateError('Invalid execution mode or supervisor strategy')
         if not isinstance(decision_reason, str) or not decision_reason.strip():
@@ -189,6 +192,8 @@ class Projects:
         tasks = [dict(t) for t in tasks]
         for t in tasks:
             if t.get('task_type', 'implementation') == 'implementation':
+                if auto_run_checks is not None:
+                    t.setdefault('auto_run_checks', auto_run_checks)
                 if auto_continue_checkpoints is not None:
                     t.setdefault('auto_continue_checkpoints', auto_continue_checkpoints)
                 if environment_requirements is not None:
@@ -214,6 +219,7 @@ class Projects:
         contract = {'task': task, 'context': context, 'questions': questions, 'checks': checks,
                     'threshold': 90, 'max_rounds': 5, 'dependency_paths': dependency_paths}
         contract['auto_continue_checkpoints'] = continuation.freeze(auto_continue_checkpoints, b.config())
+        contract['auto_run_checks'] = check_runtime.freeze(auto_run_checks, b.config())
         if environment_requirements is not None:
             contract['environment_requirements'] = environment_requirements
         if _planning is not None:
@@ -232,12 +238,15 @@ class Projects:
         """Persist a coordinator and its notification courier under the same lock."""
         b = self.b
         pid = p['project_id']
+        import timing
+        timing.initialize(p, p['created_at'])
+        timing.attach_origin(b, p, p['contract'].get('planning'))
         with self.lock():
             # A project has one notification courier; child events stay durable in
             # their own sessions and are acknowledged by project_receive.
             courier = {'session_id': pid, 'project_id': pid, 'notification_only': True,
                        'contract_hash': p['contract_hash'], 'phase': 'project_update', 'owner': p['owner'],
-                       'continuation': 'active', 'events': {}, 'model': courier_model, 'turns': 0, 'rounds': 0}
+                       'continuation': 'active', 'events': {}, 'model': courier_model, 'coalesce_active': p['contract'].get('auto_run_checks', False), 'turns': 0, 'rounds': 0}
             b.write_json(b.run_dir(pid) / 'contract.json', p['contract'])
             b.write_json(b.run_dir(pid) / 'state.json', courier)
             self.save(p)
@@ -272,6 +281,7 @@ class Projects:
                 t['phase'] = stat['phase']
                 t['progress_guard'] = stat.get('progress_guard')
                 t['auto_continue_pending'] = stat.get('auto_continue_pending')
+                t['automatic_checks'] = stat.get('automatic_checks')
                 if t['phase'] != 'ready' and not t.get('discussion_pending'):
                     t.pop('start_error', None)
                 # A rejected start never reaches the child's execution state.
@@ -385,6 +395,7 @@ class Projects:
             result['discussion'] = Meetings(self.b).view(p)
             result['kind'] = 'discussion'
         result['effective_parallel'] = self.limit(p)
+        result['local_checks_started'] = p.get('local_checks_started', 0)
         tasks = []
         # Reuse only this view's observations. New views and acceptance paths
         # still load and validate current records; no cache survives this call.
@@ -393,7 +404,7 @@ class Projects:
             item = {k: t.get(k) for k in ('id', 'task', 'depends_on', 'allowed_paths', 'provider', 'model',
                                            'executor_profile', 'workflow_version', 'reasoning_effort',
                                            'session_id', 'phase', 'accepted_commit', 'event_id', 'error',
-                                           'budget', 'revision', 'reasoning_policy')}
+                                           'budget', 'revision', 'reasoning_policy', 'auto_run_checks', 'automatic_checks')}
             item['progress_guard'] = t.get('progress_guard')
             if p.get('kind') == 'discussion':
                 item.update(role=t['role'], active=t.get('active', True), queued_followup=bool(t.get('discussion_pending')))
@@ -424,7 +435,8 @@ class Projects:
                     item['budget'] = contract.get('budget')
                     item['usage'] = self.b.usage_snapshot(child, contract)
                     snapshots[t['session_id']] = item['usage']
-                    item['timing'] = timing.snapshot(child)
+                    item['timing'] = timing.snapshot(child, requests=item['usage'].get('request_intervals'))
+                    item['automatic_checks'] = check_runtime.public(child)
                     if child.get('delivery'):
                         from delivery import summary
                         item['delivery'] = summary(child['delivery'])
@@ -484,8 +496,8 @@ class Projects:
             item = {'id': ident, 'phase': phase}
             if phase != 'pending':
                 try:
-                    state, _ = self.b.load_session(self.b.run_dir(sid))
-                    item['timing'] = timing.snapshot(state)
+                    state, contract = self.b.load_session(self.b.run_dir(sid))
+                    item['timing'] = timing.snapshot(state, requests=self.b.usage_snapshot(state, contract).get('request_intervals'))
                 except (self.b.GateError, OSError, ValueError, KeyError, TypeError, AttributeError):
                     pass  # Preserve unavailable assignments as incomplete.
             items.append(item)
@@ -514,7 +526,7 @@ class Projects:
             return 1
         return p['max_parallel']
 
-    def capacity(self, p, provider):
+    def capacity(self, p, provider, *, local_checks=False):
         # All launch paths hold the coordinator lock, including standalone tasks.
         running = []
         roots = {path.parent for pattern in ('*/state.json', '*/job-lease.json')
@@ -535,7 +547,7 @@ class Projects:
             return False
         if sum(s.get('capacity_unknown') or s.get('active_provider', s.get('provider', 'ark')) == provider for s in running) >= self.b.config().get('provider_max_parallel', 3):
             return False
-        if p is not None and p.get('max_jobs') is not None and p['jobs_started'] >= p['max_jobs']:
+        if not local_checks and p is not None and p.get('max_jobs') is not None and p['jobs_started'] >= p['max_jobs']:
             raise self.b.GateError('Project job budget exhausted; no more model jobs')
         return True
 
@@ -645,6 +657,9 @@ class Projects:
                             t['start_error'] = errors.payload(error)['error']
                         self.save(p)
                         continue
+                if (t.get('automatic_checks') or {}).get('status') == 'queued':
+                    self._continue_pending(t['session_id'], p)
+                    continue
                 if t['phase'] in ('checkpoint', 'protocol_error'):
                     self._continue_pending(t['session_id'], p)
                     continue
@@ -677,6 +692,7 @@ class Projects:
                                          _usage_id=t.get('usage_id'), _budget=t.get('budget'),
                                          _reasoning_policy=t.get('reasoning_policy'),
                                           auto_continue_checkpoints=t.get('auto_continue_checkpoints', False),
+                                          auto_run_checks=t.get('auto_run_checks', False),
                                           _work_reply_version=t.get('work_reply_version', 1),
                                           environment_requirements=t.get('environment_requirements'),
                                          _allowed_paths=t['allowed_paths'], _dependency_pins=pins,
@@ -717,33 +733,51 @@ class Projects:
         b = self.b
         with b.locked(sid) as root:
             state, contract = b.load_session(root)
-            source = continuation.pending(state)
+            source = check_runtime.pending(state)
+            checks = source is not None
+            source = source or continuation.pending(state)
             if not source or state.get('continuation', 'active') != 'active':
                 return
             if p is not None and (p['continuation'] != 'active' or p['phase'] not in ('planned', 'running')):
                 return
             try:
-                continuation.authorize(state, contract, source)
+                if checks:
+                    check_runtime.authorize(b, state, contract, source)
+                else:
+                    continuation.authorize(state, contract, source)
                 # Reconcile persisted pending work as well as fresh checkpoints.
                 # Repeated recovery keeps the same interval; no launch or receipt.
                 import timing
                 timing.transition(state, timing.waiting_stage(state))
+                timing.begin(state, 'scheduler_wait', ('checks:' if checks else 'continuation:') + source + ':control:' + str(state.get('control_revision', 0)))
                 b.write_json(root / 'state.json', state)
-                message = continuation.message(state)
+                message = '' if checks else continuation.message(state)
             except b.GateError as error:
-                continuation.stop(state, source, error)
+                if checks:
+                    state['auto_check'].update(status='blocked', diagnostic=str(error)[:1000])
+                else:
+                    continuation.stop(state, source, error)
                 b.record_event(state); b.write_json(root / 'state.json', state)
                 return
         try:
-            if not self.capacity(p, state['provider']):
+            if not (self.capacity(p, state['provider'], local_checks=True) if checks else self.capacity(p, state['provider'])):
                 return
-            result = (self.launch(p, sid, 'send', message, continuation_id=source) if p is not None
-                      else b._start_job(sid, 'send', message, _continuation_id=source))
+            if checks:
+                result = b._start_job(sid, 'checks', _auto_check_id=source)
+                if p is not None:
+                    p['local_checks_started'] = p.get('local_checks_started', 0) + 1
+                    self.save(p)
+            else:
+                result = (self.launch(p, sid, 'send', message, continuation_id=source) if p is not None
+                          else b._start_job(sid, 'send', message, _continuation_id=source))
             return result
         except Exception as error:
             with b.locked(sid) as root:
                 current, _ = b.load_session(root)
-                continuation.stop(current, source, error)
+                if checks and (current.get('auto_check') or {}).get('status') == 'queued':
+                    current['auto_check'].update(status='blocked', diagnostic=str(error)[:1000])
+                else:
+                    continuation.stop(current, source, error)
                 if current['phase'] != 'running':
                     b.record_event(current)
                 b.write_json(root / 'state.json', current)
@@ -752,7 +786,7 @@ class Projects:
     def start_child(self, sid, kind, message='', event_id=None, reasoning_effort=None, reasoning_reason=None):
         b = self.b
         with self.lock():
-            s, _ = b.load_session(b.run_dir(sid))
+            s, contract = b.load_session(b.run_dir(sid))
             if s.get('notification_only'):
                 raise b.GateError('Project courier cannot execute tasks')
             p = self.refresh(self.load(s['project_id'])) if s.get('project_id') else None
@@ -765,6 +799,10 @@ class Projects:
             replay = b.event_action(s, event_id, kind, effort_policy.arguments(message, reasoning_effort, reasoning_reason))
             if replay:
                 return replay
+            if kind == 'evaluate' and s.get('auto_check'):
+                gate = check_runtime.evaluate_gate(b, s, contract)
+                if gate:
+                    return gate
             provider = s.get('exam_provider', s.get('provider', 'ark')) if kind == 'evaluate' else s.get('provider', 'ark')
             if not self.capacity(p, provider):
                 raise b.GateError('Project/provider concurrency limit reached; retry after completion')
@@ -788,7 +826,7 @@ class Projects:
         quiet = (p.get('phase') == 'running' and p.get('continuation') == 'active'
                  and any(t.get('phase') == 'running' or t.get('auto_continue_pending') for t in p['tasks'])
                  and all(t.get('phase') in ('pending', 'starting', 'running', 'accepted') or t.get('auto_continue_pending') for t in p['tasks'])
-                 and not any(t.get('error') for t in p['tasks']))
+                 and not any(t.get('error') or (t.get('automatic_checks') and t.get('event_id')) for t in p['tasks']))
         # Never overwrite an in-flight courier event: receive always gathers the
         # latest project state, so one outstanding wake-up covers all completions.
         with b.locked(p['project_id']) as root:
@@ -908,7 +946,7 @@ class Projects:
                 additions = [dict(task) for task in add_tasks]
                 for task in additions:
                     if task.get('task_type', 'implementation') == 'implementation':
-                        for key in ('environment_requirements', 'auto_continue_checkpoints'):
+                        for key in ('environment_requirements', 'auto_continue_checkpoints', 'auto_run_checks'):
                             if key in p['contract']:
                                 task.setdefault(key, p['contract'][key])
                 tasks = self.validate_tasks(additions, p['tasks'])
@@ -1221,6 +1259,8 @@ class Projects:
                     raise b.GateError('Invalid final criterion score')
             passed = not blockers and all(x['status'] == 'passed' for x in packet['checks']) and sum(x['points'] for x in scores) >= p['contract']['threshold'] and all(by_id[q['id']]['points'] >= q.get('minimum', 0) for q in questions)
             p['phase'] = 'accepted' if passed else 'integration_failed'
+            import timing
+            timing.mark(p, 'review_completed', packet_id)
             if passed:
                 p['finished_at'] = time.time()
             p['final_review'] = {'packet_id': packet_id, 'scores': scores, 'blockers': blockers, 'rationale': rationale, 'accepted': passed}

@@ -36,6 +36,7 @@ import providers
 import effort_policy
 import progress_guard
 import continuation
+import check_runtime
 import project_environment
 import preflight
 from providers import ProviderError as GateError
@@ -59,7 +60,7 @@ DEFAULT = {"model": "deepseek-v4-1-flash-260910", "base_url": "https://ark.cn-be
            "progress_reminder_limit": 3, "infra_retry_limit": 5, "infra_backoff_seconds": 10,
            "review_max_bytes": 200000, "task_budget": None, "task_token_limits_enabled": True,
            "planning_mode": "multi_executor", "dynamic_reasoning_enabled": False,
-           "auto_continue_checkpoints": False}
+           "auto_continue_checkpoints": False, "auto_run_checks": False}
 _BUDGET_UNSET = object()
 WATCH_EVENTS = ("pending", "sending", "uncertain", "queued", "delivered")
 
@@ -275,7 +276,7 @@ def validate_exam(questions, checks, threshold, max_rounds):
         raise GateError("At least one mandatory executable check is required")
     seen = set()
     for c in checks:
-        if not isinstance(c, dict) or set(c) - {"id", "argv", "timeout_seconds", "network"}:
+        if not isinstance(c, dict) or set(c) - {"id", "argv", "timeout_seconds", "network", "freshness"}:
             raise GateError("Invalid check fields")
         if not isinstance(c.get("id"), str) or not c["id"] or c["id"] in seen:
             raise GateError("Invalid or duplicate check ID")
@@ -288,6 +289,7 @@ def validate_exam(questions, checks, threshold, max_rounds):
             raise GateError("Invalid check timeout")
         if type(c.get("network", False)) is not bool:
             raise GateError("network must be boolean")
+        check_runtime.validate_freshness(c)
 
 
 def create_session(repo, task, questions, checks, context="", model=None, threshold=None, max_rounds=None,
@@ -295,7 +297,7 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
                    assessment_mode="closed_book", review_paths=None, dependency_paths=None, command_network=False,
                    executor_profile=None, exam_profile=None, reasoning_effort=None, exam_reasoning_effort=None,
                    task_type='implementation', audit=None, repair_of=None, allowed_paths=None,
-                   budget=None, reasoning_policy=None, auto_continue_checkpoints=None, environment_requirements=None,
+                   budget=None, reasoning_policy=None, auto_continue_checkpoints=None, environment_requirements=None, auto_run_checks=None,
                    _session_id=None, _base_commit=None, _project_id=None, _allowed_paths=None, _dependency_pins=None,
                    _usage_id=None, _budget=_BUDGET_UNSET, _reasoning_policy=_BUDGET_UNSET,
                    _backends=None, _executor=None, _work_reply_version=None, _workflow_version=3, _discussion=False, _planning=None):
@@ -371,6 +373,7 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
         validate_public_material(public_contract, environment_requirements=encoded(environment_requirements))
     if _workflow_version == 3 and task_type == 'implementation':
         auto_continue_checkpoints = continuation.freeze(auto_continue_checkpoints, cfg)
+        auto_run_checks = check_runtime.freeze(auto_run_checks, cfg)
     if environment_requirements is not None and task_type != 'implementation':
         raise GateError('Project environment preparation is for implementation tasks only')
     repo = Path(repo).resolve()
@@ -421,6 +424,7 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
         frozen['work_reply_version'] = 2 if _work_reply_version is None else _work_reply_version
         if frozen['work_reply_version'] == 2:
             frozen['auto_continue_checkpoints'] = continuation.freeze(auto_continue_checkpoints, cfg)
+            frozen['auto_run_checks'] = auto_run_checks
             frozen['work_reply_format_retries'] = 1
     if task_type == 'audit':
         frozen.update(task_type='audit', audit=audit)
@@ -448,6 +452,7 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
         audit_runtime.initialize(bridge_services(), state, frozen)
     progress_guard.seed(bridge_services(), state, frozen)
     timing.initialize(state, state['created_at'])
+    timing.attach_origin(bridge_services(), state, _planning)
     write_json(root / "state.json", state)
     activity.status(bridge_services(), state)
     return {"session_id": sid, "worktree": str(worktree), "model": model, "phase": "ready",
@@ -562,11 +567,14 @@ def record_event(state):
         for previous in events.values():
             if previous["status"] in (*WATCH_EVENTS, "received", "unacknowledged"):
                 previous["status"] = "superseded"
+                timing.end(state, "callback:" + previous["id"], outcome="superseded")
         events[eid] = {"id": eid, "job_id": eid, "phase": state["phase"], "created_at": time.time(),
                        "status": "pending", "attempts": 0, "actions": {}, "model": state["model"],
                        'no_progress': progress_guard.blocked(state),
                        "project_id": state.get("project_id") if state.get("notification_only") else None}
     state["last_event_id"] = eid
+    timing.mark(state, "notification_queued", eid)
+    timing.begin(state, "callback_delivery", "callback:" + eid)
     timing.transition(state, timing.waiting_stage(state))
 
 
@@ -597,6 +605,9 @@ def record_action(state, event_id, kind, arguments, result):
     if event_id and event_id in state.get("events", {}):
         retire_reminders(state)
         event = state["events"][event_id]
+        for ident in list((state.get("stage_timeline") or {}).get("intervals", {})):
+            if ident.startswith("supervisor:"):
+                timing.end(state, ident)
         event["actions"][kind] = {"arguments_hash": digest(arguments), "result": result,
                                   'started_at': time.time(), 'action_id': digest([event_id, kind, arguments])}
         event.update(status="processed", processed_at=time.time())
@@ -623,6 +634,9 @@ def receive_event(sid, event_id, detail='full'):
             retire_reminders(state)
             event.setdefault('received_at', time.time())
             event.update(status="received", last_received_at=time.time())
+            timing.end(state, "callback:" + event_id)
+            timing.mark(state, "supervisor_received", event_id)
+            timing.begin(state, "supervisor_processing", "supervisor:" + event_id)
             if reminder:
                 reminder['status'] = 'processed'
             timing.transition(state, timing.waiting_stage(state))
@@ -648,6 +662,17 @@ def return_control(sid, action):
             raise GateError("Cancelled continuation cannot be revived; open a new task if authorized")
         state["continuation"] = {"pause": "paused", "resume": "active", "cancel": "cancelled"}[action]
         state["control_revision"] = state.get("control_revision", 0) + 1
+        if action != "resume":
+            for ident in list((state.get("stage_timeline") or {}).get("intervals", {})):
+                row = state['stage_timeline']['intervals'][ident]
+                if ident.startswith(("supervisor:", "callback:")) or row['category'] == 'scheduler_wait':
+                    timing.end(state, ident, outcome="stopped")
+        if action == "pause":
+            timing.begin(state, "paused", "pause:" + str(state["control_revision"]))
+        else:
+            for ident in list((state.get("stage_timeline") or {}).get("intervals", {})):
+                if ident.startswith("pause:"):
+                    timing.end(state, ident)
         owner = state.get("owner")
         receipt = {"action": action, "at": time.time(), "delivery_may_have_started": False,
                    "removed_queue_ids": [], "warnings": []}
@@ -796,7 +821,7 @@ def _deliver_once(sid):
                 return persist() and event['status'] == 'pending'
             event.pop('delivery_blocker', None)
             event.pop('retry_at', None)
-            if (owner.get("transport") == "desktop_ipc" and not was_submitted
+            if ((owner.get("transport") == "desktop_ipc" or state.get("auto_check") or state.get("coalesce_active")) and not was_submitted
                     and thread["status"]["type"] == "active"):
                 event["last_error"] = None
                 return persist()
@@ -1016,7 +1041,7 @@ def recover_progress(sid):
     # action event, preserving action deduplication even across receipt/crash gaps.
     with locked(sid) as root:
         state, _ = load_session(root)
-        if continuation.quiet(state):
+        if continuation.quiet(state) or check_runtime.pending(state):
             return
 
         event = state.get('events', {}).get(state.get('last_event_id'))
@@ -1135,13 +1160,18 @@ def start_job(sid, kind, message="", event_id=None, reasoning_effort=None, reaso
 
 
 def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None,
-               reasoning_effort=None, reasoning_reason=None, _continuation_id=None):
+               reasoning_effort=None, reasoning_reason=None, _continuation_id=None, _auto_check_id=None):
     with locked(sid) as root:
         state, contract = load_session(root)
         if state.get('archived'):
             raise GateError('Archived task is terminal; restore its bundle into a new task if needed')
         arguments = effort_policy.arguments(message, reasoning_effort, reasoning_reason)
-        if _continuation_id is not None:
+        if _auto_check_id is not None:
+            if kind != 'checks' or event_id is not None:
+                raise GateError('Internal check authorization is local-check-only')
+            check_runtime.authorize(bridge_services(), state, contract, _auto_check_id)
+            replay = None
+        elif _continuation_id is not None:
             if kind != 'send' or event_id is not None:
                 raise GateError('Internal continuation can only resume work')
             continuation.authorize(state, contract, _continuation_id)
@@ -1159,6 +1189,10 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
         if discussion and kind != 'send':
             raise GateError('Meeting opinions cannot be evaluated or accepted as implementation',
                             code='discussion_not_implementation', next_action='telos_meeting_conclude')
+        if kind == 'evaluate' and state.get('auto_check'):
+            gate = check_runtime.evaluate_gate(bridge_services(), state, contract)
+            if gate:
+                return gate
         if state["phase"] == "running":
             raise GateError("A job is already running; poll telos_status",
                             code='job_running', next_action='await_completion')
@@ -1176,13 +1210,17 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
         if state["phase"] == "awaiting_review":
             raise GateError("Grade the pending exam before sending more work",
                             code='review_required', next_action='telos_review_then_grade')
-        reasoning_decision = effort_policy.select(contract, state, reasoning_effort, reasoning_reason)
+        reuse_evidence = kind == 'evaluate' and (state.get('auto_check') or {}).get('status') == 'passed'
+        reuse_round = reuse_evidence and not state['auto_check'].get('evaluation_completed')
+        recheck = reuse_evidence and check_runtime.reuse_mode(bridge_services(), state, contract) == 'recheck'
+        reasoning_decision = None if kind == 'checks' else effort_policy.select(contract, state, reasoning_effort, reasoning_reason)
         from local_executor import assert_active
-        assert_active(bridge_services(), backend_bindings(contract)['executor'])
-        if not discussion and state["rounds"] >= contract["max_rounds"]:
+        if kind != 'checks':
+            assert_active(bridge_services(), backend_bindings(contract)['executor'])
+        if not discussion and not reuse_round and state["rounds"] >= contract["max_rounds"]:
             raise GateError("Maximum exam rounds reached; do not lower the threshold")
         try:
-            usage_ledger(state, contract).ensure_available('exam' if kind == 'evaluate' else 'work')
+            usage_ledger(state, contract).ensure_available('exam' if kind in ('evaluate', 'checks') else 'work')
         except BudgetExceeded:
             raise
         except (OSError, ValueError) as error:
@@ -1201,8 +1239,11 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
             state["turns"] += 1
             # Previous receipts remain durable, but cannot describe a new or
             # interrupted work turn as if it had delivered a fresh summary.
+            state.pop('auto_check', None)
             state['delivery'] = None
             state['last_result'] = None
+        elif kind == "checks":
+            state["rounds"] += 1
         elif kind == "evaluate":
             if state.get('infra_failures', 0) >= config()['infra_retry_limit']:
                 raise GateError("Infrastructure retry budget exhausted; code rounds were not consumed. Inspect service/configuration; repairs remain available.")
@@ -1213,12 +1254,23 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
             retry_exam = state["phase"] == "error" and state.get("job_kind") == "evaluate"
             if not state.get("thread_id") or not (state["phase"] in ("responded", "not_accepted") or retry_exam):
                 raise GateError("Evaluation requires a completed execution-model turn")
-            if state["rounds"] >= contract["max_rounds"]:
-                raise GateError("Maximum exam rounds reached")
-            state["rounds"] += 1
+            if not reuse_round:
+                if state["rounds"] >= contract["max_rounds"]:
+                    raise GateError("Maximum exam rounds reached")
+                state["rounds"] += 1
         else:
             raise GateError("Invalid job kind")
         job = uuid.uuid4().hex
+        if kind == 'checks':
+            state['auto_check'].update(status='running', job_id=job, round=state['rounds'], started_at=time.time())
+            state['auto_check_history'][_auto_check_id] = dict(state['auto_check'])
+            for ident, interval in (state.get('stage_timeline') or {}).get('intervals', {}).items():
+                if interval['category'] == 'scheduler_wait':
+                    timing.end(state, ident)
+        if reuse_evidence:
+            state['auto_check']['evaluation_job_id'] = job
+            if recheck:
+                state['auto_check'].update(recheck_used=True, status='running', job_id=job, started_at=time.time())
         if _continuation_id is not None:
             continuation.started(state, _continuation_id, job)
         elif continuation.pending(state):
@@ -1229,7 +1281,8 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
             plan = next(p for p in state['progress_guard']['plans'] if p['request_id'] == trial)
             message += '\nSupervisor adjusted plan (public):\n' + encoded(plan['fields'])
         # Roll back a spawn failure without refunding an explicitly granted trial.
-        progress_guard.consume(state)
+        if not reuse_round:
+            progress_guard.consume(state)
         if reasoning_decision is not None:
             reasoning_decision.update(job_id=job, kind=kind, contract_hash=state['contract_hash'], at=time.time())
             state['reasoning_decision'] = reasoning_decision
@@ -1240,10 +1293,13 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
                      active_provider=backend_bindings(contract)['exam' if kind == 'evaluate' else 'executor']['provider'])
         if _discussion_request_id is not None:
             state['discussion_request_id'] = _discussion_request_id
+        state['resource_kind'] = 'local_checks' if kind == 'checks' else 'model_job'
         timing.transition(state, 'work' if kind == 'send' else 'checks')
+        timing.begin(state, 'scheduler_wait', 'launch:' + job)
         watch_runtime.prepare(bridge_services(), state)
         state.pop("acceptance", None)
-        write_json(root / f"job-{job}.json", {"kind": kind, "message": message, "reserved_round": state['rounds'] if kind == 'evaluate' else None,
+        write_json(root / f"job-{job}.json", {"kind": kind, "message": message, "reserved_round": state['rounds'] if kind in ('evaluate', 'checks') else None,
+                   "reuse_round": reuse_round, "reuse_evidence": reuse_evidence, "recheck": recheck,
                    **({'reasoning_decision': reasoning_decision} if reasoning_decision is not None else {})})
         write_json(root / "state.json", state)
         import state_store
@@ -1563,11 +1619,17 @@ def _executable_checks(contract, target, temp, dependencies, env):
                    readable=[target, *dependencies], protected=[target, *dependency_roots],
                    service_ports=project_environment.service_ports(contract, 'checks'),
                    ipc_paths=[env['TMPDIR']] if (contract.get('environment_requirements') or {}).get('local_ipc') else [])
+        check_runtime.checkpoint()
         project_evidence = preflight.project(bridge_services(), contract, target, temp, env, profile, phase='checks')
+        check_runtime.checkpoint()
+        check_runtime.observe('end', check_runtime.observation_id('environment'))
+        check_runtime.observe('begin', 'local_checks', check_runtime.observation_id('check:' + check['id']))
+        check_runtime.observe('mark', 'checks_started', check_runtime.observation_id(check['id']))
         command = ["/usr/bin/sandbox-exec", "-p", profile, *argv]
         started = time.time()
         output_incomplete = False
-        p = subprocess.Popen(command, cwd=target, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
+        with check_runtime.launch_permission():
+            p = subprocess.Popen(command, cwd=target, env=env, stdout=subprocess.PIPE, stderr=subprocess.PIPE, start_new_session=True)
         try:
             out, err = p.communicate(timeout=check.get("timeout_seconds", 60))
             status = "passed" if p.returncode == 0 else "failed"
@@ -1575,7 +1637,9 @@ def _executable_checks(contract, target, temp, dependencies, env):
         except subprocess.TimeoutExpired as expired:
             out, err, output_incomplete = terminate_and_drain(p, expired)
             status, code = "timeout", None
-        results.append({"id": check["id"], "status": status, "returncode": code,
+        check_runtime.observe('end', check_runtime.observation_id('check:' + check['id']))
+        check_runtime.checkpoint()
+        results.append({"sandbox_hash": digest(profile.replace(str(target), '{source}').replace(str(temp), '{scratch}')), "id": check["id"], "status": status, "returncode": code,
                         "source_read_only": True,
                          **({"environment": project_evidence} if project_evidence is not None else {}),
                         "seconds": round(time.time() - started, 3),
@@ -1606,6 +1670,8 @@ def background_job(sid, job):
         state['execution_claim'] = job
         state['job_pid'] = os.getpid()
         state['execution_started_at'] = time.time()
+        timing.end(state, 'launch:' + job)
+        timing.begin(state, 'environment_preparation', job + ':environment')
         write_json(root / 'state.json', state)
         request = read_json(root / f"job-{job}.json")
     try:
@@ -1634,39 +1700,68 @@ def background_job(sid, job):
             if contract.get('task_type') == 'discussion':
                 update['phase'] = 'discussion_result'
         else:
+            if request.get('recheck'):
+                _, fresh_tree = snapshot(state, 'recheck-' + job)
+                state['auto_check']['snapshot'] = str(fresh_tree)
+                state['auto_check']['snapshot_hash'] = project_environment._tree_hash(fresh_tree, confined=fresh_tree)
+            if request['kind'] == 'checks' or request.get('recheck'):
+                check_evidence = check_runtime.run(bridge_services(), state, contract)
+                commit, tree = check_evidence['commit'], Path(state['auto_check']['snapshot'])
+                state['auto_check'].update(status='passed', finished_at=check_evidence['finished_at'], evidence_file='job-' + job + '-checks.json', evidence_hash=digest(check_evidence))
+                checks = check_evidence['checks']
+                submission = audit_evidence = None
+            elif request.get('reuse_evidence'):
+                check_evidence = check_runtime.read_evidence(bridge_services(), state, contract)
+                commit, checks = check_evidence['commit'], check_evidence['checks']
+                submission = audit_evidence = None
+                write_json(root / f"job-{job}-checks.json", check_evidence)
+            else:
+                check_evidence = None
             activity.status(bridge_services(), state, 'Running private executable checks')
-            commit, tree = snapshot(state, job)
-            submission = review_submission(state, contract, commit) if contract.get('assessment_mode') == 'code_review' else None
-            audit_evidence = None
-            if contract.get('task_type') == 'audit':
-                import audit as audit_runtime
-                audit_evidence, audit_check = audit_runtime.collect(bridge_services(), state, contract, tree)
-            checks = executable_checks(contract, tree)
-            if audit_evidence is not None:
-                checks.insert(0, audit_check)
-            check_evidence = {"commit": commit, "checks": checks, 'job_id': job, 'contract_hash': state['contract_hash'],
-                              'runtime': {'version': VERSION, 'python': sys.version, 'platform': sys.platform}}
-            write_json(root / f"attempt-{state['rounds']}-checks.json", check_evidence)
-            write_json(root / f"job-{job}-checks.json", check_evidence)
+            if check_evidence is None:
+                commit, tree = snapshot(state, job)
+                submission = review_submission(state, contract, commit) if contract.get('assessment_mode') == 'code_review' else None
+                audit_evidence = None
+                if contract.get('task_type') == 'audit':
+                    import audit as audit_runtime
+                    audit_evidence, audit_check = audit_runtime.collect(bridge_services(), state, contract, tree)
+                with check_runtime.execution_context(bridge_services(), state):
+                    checks = executable_checks(contract, tree)
+                if audit_evidence is not None:
+                    checks.insert(0, audit_check)
+                check_evidence = {"commit": commit, "checks": checks, 'job_id': job, 'contract_hash': state['contract_hash'],
+                                  'runtime': {'version': VERSION, 'python': sys.version, 'platform': sys.platform}}
+                write_json(root / f"attempt-{state['rounds']}-checks.json", check_evidence)
+                write_json(root / f"job-{job}-checks.json", check_evidence)
             checks_passed = bool(checks) and all(x['status'] == 'passed' for x in checks)
             activity.status(bridge_services(), state,
                             'Executable checks passed' if checks_passed else 'Executable checks failed; exam skipped')
-            if not checks_passed:
+            if request['kind'] == 'checks' and checks_passed:
+                exam = {'skipped': 'awaiting_supervisor_evaluate'}
+            elif not checks_passed:
                 exam = {'skipped': 'executable_checks_failed'}
             else:
                 with locked(sid) as phase_root:
                     current, _ = load_session(phase_root)
                     if current.get('job_id') == job:
+                        timing.end(current, job + ':environment')
+                        timing.begin(current, 'closed_book', 'exam:' + job)
+                        timing.mark(current, 'exam_started', job)
                         timing.transition(current, 'exam')
                         write_json(phase_root / 'state.json', current)
+                check_runtime.ensure_active(bridge_services(), state)
                 if contract.get('workflow_version') == 3:
                     exam = closed_book_exam(state, contract, commit)
                     if git(state['worktree'], 'rev-parse', 'HEAD') != commit or git(state['worktree'], 'status', '--porcelain'):
                         raise GateError('Code changed during closed-book examination; re-evaluate the new submission')
                 else:
                     exam = answer_exam({**contract, '_submission': submission})
+                timing.record(bridge_services(), state, 'end', 'exam:' + job)
+                timing.record(bridge_services(), state, 'mark', 'exam_finished', job)
             packet = {"session_id": sid, "round": state["rounds"], "commit": commit,
                       "contract_hash": state["contract_hash"], "checks": checks, "exam": exam}
+            if request.get('reuse_evidence'):
+                packet['check_evidence'] = check_runtime.packet_reference(state, not request.get('recheck'))
             if contract.get('reasoning_policy'):
                 packet.update(job_id=job, reasoning_decision=state['reasoning_decision'])
             import delivery
@@ -1679,13 +1774,13 @@ def background_job(sid, job):
                 packet['assessment_input_hash'] = digest(public_exam({**contract, '_submission': submission}))
             packet_id = digest(packet)
             write_json(root / f"attempt-{state['rounds']}.json", packet)
-            update = {"phase": "awaiting_review" if checks_passed else "not_accepted", "packet_id": packet_id, "submitted_commit": commit,
+            update = {"phase": ("responded" if request["kind"] == "checks" else "awaiting_review") if checks_passed else "not_accepted", "packet_id": packet_id, "submitted_commit": commit,
                       "delivery": packet['delivery'],
                       "next_retry_at": 0, "last_failure_kind": None if checks_passed else 'code_checks',
                       "last_result": {"round": state["rounds"], "checks_passed": checks_passed,
-                                      "exam_received": checks_passed, "exam_usage": exam.get("usage"),
+                                      "exam_received": checks_passed and request["kind"] != "checks", "exam_usage": exam.get("usage"),
                                       "exam_backend": exam.get("backend"),
-                                      "next_action": 'review_then_grade' if checks_passed else 'inspect_checks_then_send_public_repair'}}
+                                      'next_action': ('telos_evaluate' if request['kind'] == 'checks' else 'review_then_grade') if checks_passed else 'inspect_checks_then_send_public_repair'}}
             if contract.get('workflow_version') == 3:
                 update['last_result'].pop('exam_backend', None)
                 update['last_result'].update(executor_thread_id=state['thread_id'], assessment_mode='closed_book',
@@ -1706,7 +1801,7 @@ def background_job(sid, job):
             failures = state.get('infra_failures', 0) + (0 if exhausted else 1)
             retryable = (not exhausted and isinstance(error, (InfrastructureError, TimeoutError,
                                                                urllib.error.URLError, ExamFormatError)))
-            update.update(rounds=max(0, state['rounds'] - 1), infra_failures=failures,
+            update.update(rounds=state['rounds'] if request.get('reuse_round') else max(0, state['rounds'] - 1), infra_failures=failures,
                           last_failure_kind='budget' if exhausted else ('infrastructure' if retryable else 'evaluation_setup'),
                           next_retry_at=time.time() + min(300, config()['infra_backoff_seconds'] * 2 ** min(failures - 1, 5)) if retryable else 0)
             write_json(root / f'job-{job}-error.json', {'kind': update['last_failure_kind'], 'message': detail[:3000],
@@ -1734,16 +1829,40 @@ def background_job(sid, job):
         current, _ = load_session(root)
         if current.get("job_id") == job:
             current.update(update, job_finished=time.time())
+            timing.end(current, job + ':environment', outcome='interrupted' if update.get('last_error') else 'completed')
+            timing.end(current, 'exam:' + job, outcome='interrupted' if update.get('last_error') else 'completed')
+            if request.get('recheck'):
+                if 'check_evidence' in locals():
+                    current['auto_check'].update(state['auto_check'])
+                    current['auto_check']['status'] = 'passed' if checks_passed else 'failed'
+                else:
+                    current['auto_check'].update(status='blocked', diagnostic=current.get('last_error'), finished_at=time.time())
+                current['auto_check_history'][current['auto_check']['source_job_id']] = dict(current['auto_check'])
+            if request['kind'] == 'evaluate' and request.get('reuse_evidence') and current['phase'] == 'awaiting_review':
+                current['auto_check']['evaluation_completed'] = True
+                current['auto_check_history'][current['auto_check']['source_job_id']] = dict(current['auto_check'])
+            if request['kind'] == 'checks':
+                if 'check_evidence' in locals():
+                    check_runtime.finish(bridge_services(), current, check_evidence)
+                else:
+                    current['auto_check'].update(status='blocked', diagnostic=current.get('last_error'), finished_at=time.time())
+                    current['auto_check_history'][current['auto_check']['source_job_id']] = dict(current['auto_check'])
+                timing.mark(current, 'checks_finished', job)
+            if request['kind'] == 'send':
+                timing.mark(current, 'delivery_completed', job)
             for action in current.get('auto_continuations', {}).values():
                 if action.get('job_id') == job:
                     action.update(status='finished', result_phase=current['phase'], finished_at=time.time())
             environment_path = root / f'job-{job}-environment.json'
             if environment_path.exists():
                 current['environment'] = read_json(environment_path)
-            progress_guard.completed(bridge_services(), current, contract, request)
+            if not request.get('reuse_evidence') or request.get('recheck'):
+                progress_guard.completed(bridge_services(), current, contract, request)
             import state_store
             state_store.lease(bridge_services(), root, current)
             continuation.prepare(current, contract)
+            if request['kind'] == 'send':
+                check_runtime.prepare(bridge_services(), current, contract)
             if continuation.quiet(current):
                 timing.transition(current, timing.waiting_stage(current), current['job_finished'])
             else:
@@ -1756,7 +1875,7 @@ def background_job(sid, job):
                 recorder.emit('error', update['last_error'] if request['kind'] == 'send'
                               else 'Evaluation failed; inspect private review through the supervisor.',
                               status=update.get('last_failure_kind'))
-    if request['kind'] == 'evaluate' and 'tree' in locals():
+    if request['kind'] in ('evaluate', 'checks') and 'tree' in locals():
         # Immutable Git refs and private evidence retain the exact input without
         # retaining a full copy for each evaluation.
         shutil.rmtree(tree)
@@ -1766,7 +1885,7 @@ def background_job(sid, job):
         project_manager().continue_pending(sid)
         with locked(sid) as root:
             current, _ = load_session(root)
-        if current.get('owner') and not continuation.quiet(current) and current['phase'] != 'running':
+        if current.get('owner') and not continuation.quiet(current) and (current['phase'] != 'running' or current.get('job_kind') == 'checks'):
             spawn_dispatch(sid)
 
 
@@ -1793,14 +1912,16 @@ def status(sid, detail='full'):
                 elif time.time() - state.get('job_started', time.time()) > 30:
                     raise ProcessLookupError()
             except ProcessLookupError:
-                state.update(phase="error", last_error="Background process exited without a result; no acceptance")
+                recovered_checks = check_runtime.recover(bridge_services(), state, contract)
+                if not recovered_checks:
+                    state.update(phase="error", last_error="Background process exited without a result; no acceptance")
                 for action in state.get('auto_continuations', {}).values():
                     if action.get('job_id') == state.get('job_id'):
                         action.update(status='uncertain', diagnostic='Continuation job disappeared without a result; inspect retained job evidence, never resend automatically')
                 timing.transition(state, 'supervisor_wait', interrupted=True)
                 request_path = root / f"job-{state.get('job_id')}.json"
                 request = read_json(request_path) if request_path.exists() else {}
-                if state.get('job_kind') == 'evaluate' and request.get('reserved_round') == state['rounds']:
+                if state.get('job_kind') == 'evaluate' and not request.get('reuse_round') and request.get('reserved_round') == state['rounds']:
                     state.update(rounds=max(0, state['rounds'] - 1), infra_failures=state.get('infra_failures', 0) + 1,
                                  last_failure_kind='infrastructure')
                 progress_guard.completed(bridge_services(), state, contract,
@@ -1828,6 +1949,12 @@ def status(sid, detail='full'):
                       timing=timing.snapshot(state),
                       next_action=next_action_for(state['phase']))
         result['task_type'] = contract.get('task_type', 'implementation')
+        result['auto_run_checks'] = contract.get('auto_run_checks', False)
+        result['automatic_checks'] = check_runtime.public(state)
+        if (state.get('auto_check') or {}).get('status') in ('queued', 'running'):
+            result['next_action'] = 'await_checks_completion'
+        result['timing'] = timing.snapshot(state, requests=result['usage'].get('request_intervals'))
+        result['timing']['stages']['model_requests_complete'] = result['usage'].get('request_latency', {}).get('complete', False)
         result['auto_continue_checkpoints'] = contract.get('auto_continue_checkpoints', False)
         result['auto_continue_pending'] = continuation.pending(state)
         result['auto_continuations'] = state.get('auto_continuations', {})
@@ -1862,6 +1989,7 @@ def status(sid, detail='full'):
         if result["accepted"]:
             packet = read_json(root / f"attempt-{state['rounds']}.json")
             verdict = read_json(root / f"grade-{state['rounds']}.json")
+            check_runtime.verify_retained(bridge_services(), state, packet)
             if digest(packet) != state["packet_id"] or any(verdict.get(k) != v for k, v in state["acceptance"].items()):
                 raise GateError("Accepted evidence changed; acceptance is invalid")
             if contract.get('task_type') == 'audit':
@@ -1884,6 +2012,8 @@ def review_packet(sid, detail='full'):
         packet = read_json(root / f"attempt-{state['rounds']}.json")
         if digest(packet) != state["packet_id"]:
             raise GateError("Exam evidence changed")
+        if state["phase"] == "awaiting_review":
+            check_runtime.verify_packet(bridge_services(), state, contract, packet)
         instruction = ("This submission was rejected. Inspect the private evidence, then send only public symptoms/requirements/code locations through telos_repair or send. Do not grade this rejected packet again. "
                        if state['phase'] == 'not_accepted' else
                        "Inspect the pinned code and review input coverage, then grade each answer against its frozen reference with scores, rationales and blockers. ")
@@ -1899,7 +2029,7 @@ def review_packet(sid, detail='full'):
                   "session_id": sid, "worktree": state.get('worktree'), "submitted_commit": packet.get('commit'),
                   "contract_hash": state.get('contract_hash'), "budget": contract.get('budget'),
                   "usage": usage_snapshot(state, contract), "acceptance": verdict,
-                  "timing": timing.snapshot(state),
+                  "timing": timing.snapshot(state, requests=usage_snapshot(state, contract).get("request_intervals")),
                   "blockers": verdict.get('blockers', []),
                   "identity": {"session_id": packet.get('session_id'), "packet_id": state["packet_id"],
                                "commit": packet.get('commit'), "contract_hash": packet.get('contract_hash'),
@@ -1946,6 +2076,7 @@ def _grade(sid, packet_id, scores, blockers, event_id=None, public_lessons=None,
         packet = read_json(root / f"attempt-{state['rounds']}.json")
         if digest(packet) != packet_id:
             raise GateError("Exam evidence changed")
+        check_runtime.verify_packet(bridge_services(), state, contract, packet)
         if contract.get('task_type') == 'audit':
             import audit as audit_runtime
             audit_runtime.verify(bridge_services(), state, contract, packet['audit'])
@@ -1992,6 +2123,7 @@ def _grade(sid, packet_id, scores, blockers, event_id=None, public_lessons=None,
             (root / ('audit-report-' + str(state['rounds']) + '.md')).write_text(audit_runtime.summary_markdown(packet['audit'], audit_review))
         write_json(root / f"grade-{state['rounds']}.json", {**verdict, "scores": scores})
         state.update(phase="accepted" if passed else "not_accepted", acceptance=verdict)
+        timing.mark(state, "review_completed", packet_id)
         timing.transition(state, None if passed else 'supervisor_wait')
         if public_lessons is not None:
             state['public_lessons'] = public_lessons
@@ -2086,7 +2218,8 @@ BUDGET = {"type": "object", "additionalProperties": False, "properties": {
     ('max_requests', 'max_input_tokens', 'max_uncached_input_tokens', 'max_output_tokens', 'max_total_tokens',
      'exam_reserve_requests', 'exam_reserve_tokens', 'closeout_reserve_seconds')}}
 QUESTION = obj({"id": STR, "prompt": STR, "reference": STR, "points": {"type": "integer"}, "minimum": {"type": "integer"}}, ["id", "prompt", "reference", "points"])
-CHECK = obj({"id": STR, "argv": {"type": "array", "items": STR}, "timeout_seconds": {"type": "integer"}, "network": {"type": "boolean"}}, ["id", "argv"])
+FRESHNESS = obj({"mode": {"enum": ["never", "snapshot", "max_age"]}, "max_age_seconds": {"type": "integer", "minimum": 1, "maximum": 3600}}, ["mode"])
+CHECK = obj({"freshness": FRESHNESS, "id": STR, "argv": {"type": "array", "items": STR}, "timeout_seconds": {"type": "integer"}, "network": {"type": "boolean"}}, ["id", "argv"])
 TOOLS = [
     {"name": "telos_open", "description": ("Start an independent coding conversation for a user-requested telos collaboration. Creates an isolated git worktree from a CLEAN "
         "repository and freezes private questions, reference answers, and executable acceptance checks BEFORE sending work. Not a subagent or "
@@ -2263,7 +2396,7 @@ TOOLS += [
 
 for schema in (TOOLS[0]['inputSchema'], PROJECT_TASK,
                next(t for t in TOOLS if t['name'] == 'telos_project_open')['inputSchema']):
-    schema['properties'].update({'auto_continue_checkpoints': {'type':'boolean'},
+    schema['properties'].update({'auto_run_checks': {'type':'boolean'}, 'auto_continue_checkpoints': {'type':'boolean'},
                                  'environment_requirements': project_environment.schema(obj)})
 for name in ('telos_open', 'telos_project_open'):
     tool = next(t for t in TOOLS if t['name'] == name)
@@ -2274,6 +2407,18 @@ for name in ('telos_open', 'telos_project_open'):
         'environment_requirements declares only relevant tools, lock/config files, read-only download sources, loopback services, browsers '
         'and explicitly authorized bootstrap argv. Probe inside actual work/check sandboxes before inference; no new dependency or permission is inferred. '
         'Project-level requirements are inherited by implementation children; dependency_paths permissions must also be explicitly declared.')
+for name in ('telos_open', 'telos_project_open'):
+    next(t for t in TOOLS if t['name'] == name)['description'] += (
+        ' Optional auto_run_checks freezes authorization to pin valid completed work and run only frozen local checks automatically. '
+        'It never invokes models/exams, receives events or accepts; existing capacity/control/budget/progress gates apply. '
+        'Queued project children freeze the policy at creation. Old contracts keep the original workflow. '
+        'Check freshness defaults to never: snapshot explicitly asserts deterministic declared inputs; max_age requires 1-3600 seconds. '
+        'Unverifiable/expired freshness allows one explicit same-round recheck; tampered or changed identity blocks.')
+next(t for t in TOOLS if t['name'] == 'telos_evaluate')['description'] += (
+    ' For automatic checks: running returns await_checks_completion without another job. Matching complete fresh evidence is reused; '
+    'otherwise freshness alone permits one local recheck in the same round. Failed, modified, mismatched or uncertain evidence blocks. '
+    'Original-supervisor receipt, same-executor closed-book exam, review and grade remain mandatory.')
+
 SERVER_INSTRUCTIONS = (
     'Use the telos skill. Only the original supervisor accepts; keep references/checks private. '
     'Follow proceed, next_action and returned event IDs; await callbacks. Honor pause/cancel. '

@@ -50,5 +50,6 @@
   "watch": {
     "auto_tmux": true
   },
-  "auto_continue_checkpoints": false
+  "auto_continue_checkpoints": false,
+  "auto_run_checks": false
 }

@@ -10,6 +10,7 @@ import uuid
 import activity
 import delivery
 import preflight
+import timing
 import project_environment
 import providers
 from processes import terminate_and_drain
@@ -335,6 +336,7 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
     prompt = (initial if not state.get("thread_id") else "") + guidance + "Codex message:\n" + message
     command = ["/usr/bin/sandbox-exec", "-p", profile, *args]
     recorder = activity.for_state(b, state, phase, secrets=(key, probe['token'] if probe else ''))
+    timing.record(b, state, 'end', state.get('job_id', '') + ':environment')
     with _launch_permission(b, state):
         if closeout is not None:
             closeout.start(cfg["job_timeout"])

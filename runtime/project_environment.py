@@ -294,7 +294,7 @@ def _lock(path):
         yield
 
 
-def _tree_hash(root, *, confined=None):
+def _tree_hash(root, *, confined=None, include_git=False):
     root = Path(root)
     boundary = Path(confined).absolute() if confined is not None else None
     budget = {'files': 0, 'bytes': 0}
@@ -327,8 +327,8 @@ def _tree_hash(root, *, confined=None):
         return digest(first)
     rows = [['.', first]]
     for base, dirs, files in os.walk(root, followlinks=False):
-        dirs[:] = sorted(n for n in dirs if n != '.git')
-        for name in sorted(dirs + [n for n in files if n != '.git']):
+        dirs[:] = sorted(n for n in dirs if include_git or n != '.git')
+        for name in sorted(dirs + [n for n in files if include_git or n != '.git']):
             path = Path(base) / name
             rows.append([str(path.relative_to(root)), entry(path)])
     return digest(rows)

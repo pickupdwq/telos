@@ -244,7 +244,8 @@ class UsageLedger:
         result = {'version': data.get('version', 1), 'budget': budget,
                   'totals': totals, 'phases': phases, 'unknown_fields': unknown_fields,
                   'budget_state': budget_state,
-                  'request_latency': timing.request_latency(data['requests'].values())}
+                  'request_latency': timing.request_latency(data['requests'].values()),
+                  'request_intervals': timing.request_intervals(data['requests'].values())}
         work_limits = {limit: budget[limit] - budget[reserve]
                        for reserve, limit in EXAM_RESERVES.items() if budget and reserve in budget}
         if work_limits:

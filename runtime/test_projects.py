@@ -1104,5 +1104,49 @@ def load_tests(loader, tests, pattern):
                 suite.addTest(cls(name))
     return suite
 
+
+class AutoCheckProjectTests(unittest.TestCase):
+    setUp = ProjectTests.setUp
+    tearDown = ProjectTests.tearDown
+    task = ProjectTests.task
+    create = ProjectTests.create
+    start = ProjectTests.start
+    state = ProjectTests.state
+    child = ProjectTests.child
+    submit = ProjectTests.submit
+    scores = ProjectTests.scores
+
+    def test_queued_policy_is_frozen_before_configuration_changes(self):
+        b.write_json(b.CONFIG, {'auto_run_checks': True})
+        pid = self.create([self.task('a'), self.task('b', deps=['a'])])
+        self.assertTrue(all(t['auto_run_checks'] for t in self.state(pid)['tasks']))
+        b.write_json(b.CONFIG, {'auto_run_checks': False})
+        self.start(pid)
+        self.submit(pid, 'a')
+        self.start(pid)
+        for name in ('a', 'b'):
+            child = self.child(pid, name)
+            self.assertTrue(b.read_json(b.run_dir(child['session_id'])/'contract.json')['auto_run_checks'])
+
+    def test_local_stage_respects_project_capacity_and_separate_job_accounting(self):
+        from test_telos import AutoChecksTests
+        fixture = AutoChecksTests(); fixture.base = self.base
+        check = dict(self.checks[0], freshness={'mode': 'snapshot'})
+        pid = self.create([self.task('a', checks=[check])], auto_run_checks=True, max_parallel=1)
+        self.start(pid); child = self.child(pid, 'a'); sid = child['session_id']
+        reply = {'status':'completed','protocol_version':2,'summary':'Ready', 'changed_files':[],
+                 'checks_performed':[], 'remaining_issues':[], 'clarification_questions':[]}
+        with fixture.offline_jobs(), patch.object(b,'peer_turn',return_value={'thread_id':OTHER,'summary':json.dumps(reply)}):
+            b.background_job(sid, child['job_id'])
+        self.assertEqual(self.state(pid)['jobs_started'], 1)
+        self.assertEqual(self.state(pid)['local_checks_started'], 1)
+        with b.project_manager().lock():
+            self.assertFalse(b.project_manager().capacity(self.state(pid), child['provider']))
+        fixture.complete_checks(sid)
+        done = fixture.evaluate(sid)
+        self.assertEqual(done['rounds'], 1)
+        self.assertEqual(self.state(pid)['jobs_started'], 2)
+        self.assertEqual(self.state(pid)['local_checks_started'], 1)
+
 if __name__ == '__main__':
     unittest.main()

@@ -1,3 +1,10 @@
+# 3.11.0
+
+- Opt-in frozen automatic checks for sessions and queued project children; original supervisor acceptance remains mandatory.
+- Attempt-bound evidence reuse, declared freshness and one bounded same-round freshness recheck.
+- Durable stage intervals, overlap, request-ledger model timing and linked requirement/lifecycle wall time.
+- Offline comparison and real Git/macOS sandbox regression coverage; no live-model acceleration claim.
+
 # Changelog / 更新记录
 
 ## 3.10.1 — 2026-10-28

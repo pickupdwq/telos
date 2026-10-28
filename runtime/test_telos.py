@@ -9,6 +9,7 @@ import sys
 import tempfile
 import unittest
 from unittest.mock import patch
+from unittest.mock import Mock
 
 spec = importlib.util.spec_from_file_location("bridge", Path(__file__).with_name("telos.py"))
 b = importlib.util.module_from_spec(spec)
@@ -285,6 +286,273 @@ class BridgeTests(unittest.TestCase):
             d['provider']['huoshancodingplan']['options']['baseURL']='https://other.example/api'
             p.write_text(json.dumps(d))
             with self.assertRaises(b.GateError):b.credential()
+
+
+
+class AutoChecksTests(unittest.TestCase):
+    """Real Git and macOS check sandbox; only execution-model boundaries are offline."""
+    setUp = BridgeTests.setUp
+    tearDown = BridgeTests.tearDown
+    scores = BridgeTests.scores
+
+    def create(self, **kw):
+        checks = [dict(c, freshness={'mode': 'snapshot'}) for c in self.checks]
+        return b.create_session(repo=str(self.repo), task='Implement addition', questions=self.q,
+            checks=kw.pop('checks', checks), notify=False, auto_run_checks=kw.pop('auto_run_checks', True), **kw)['session_id']
+
+    def state(self, sid):
+        return b.read_json(b.run_dir(sid) / 'state.json')
+
+    @contextlib.contextmanager
+    def offline_jobs(self):
+        real = subprocess.Popen
+        def launch(argv, **kw):
+            if '_job' in argv:
+                return Mock(pid=os.getpid())
+            return real(argv, **kw)
+        with patch.object(b.subprocess, 'Popen', side_effect=launch), patch.object(b, 'spawn_dispatch'):
+            yield
+
+    def deliver(self, sid, status='completed'):
+        reply = dict(protocol_version=2, status=status, summary='Addition implemented',
+            changed_files=['calc.py'], checks_performed=[], remaining_issues=[], clarification_questions=[])
+        if status == 'checkpoint':
+            reply.update(completed_work=[], remaining_work=['Finish addition'], next_step='Finish addition', evidence_paths=[])
+        if status == 'blocked_environment':
+            reply.update(blockers=['Missing tool'], repair_actions=['Restore tool'], evidence_paths=[])
+        if status == 'needs_clarification':
+            reply['clarification_questions'] = ['Which addition behavior?']
+        with self.offline_jobs():
+            job = b.start_job(sid, 'send', 'Implement addition')['job_id']
+            with patch.object(b, 'peer_turn', return_value={'thread_id': '00000000-0000-4000-8000-000000000001',
+                    'summary': json.dumps(reply) if status != 'protocol_error' else 'broken'}):
+                b.background_job(sid, job)
+        return job
+
+    def complete_checks(self, sid):
+        state = self.state(sid)
+        with self.offline_jobs(), patch.object(b, 'peer_turn', side_effect=AssertionError('No model in checks')):
+            b.background_job(sid, state['job_id'])
+        return self.state(sid)
+
+    def evaluate(self, sid):
+        with self.offline_jobs():
+            job = b.start_job(sid, 'evaluate')['job_id']
+            with patch.object(b, 'closed_book_exam', side_effect=synthetic_exam):
+                b.background_job(sid, job)
+        return self.state(sid)
+
+    def test_new_contract_freezes_disabled_default_without_changing_legacy(self):
+        sid = b.create_session(repo=str(self.repo), task='Addition', questions=self.q,
+                               checks=self.checks, notify=False)['session_id']
+        contract = b.read_json(b.run_dir(sid) / 'contract.json')
+        self.assertIn('auto_run_checks', contract)
+        self.assertIs(contract['auto_run_checks'], False)
+        legacy = BridgeTests.create(self, notify=False)
+        self.assertNotIn('auto_run_checks', b.read_json(b.run_dir(legacy) / 'contract.json'))
+
+    def test_completed_starts_once_without_receive_or_model_then_reuses_and_grades(self):
+        sid = self.create()
+        source = self.deliver(sid)
+        running = self.state(sid)
+        self.assertEqual(running['job_kind'], 'checks')
+        self.assertEqual(running['auto_check']['source_job_id'], source)
+        self.assertEqual(running['rounds'], 1)
+        self.assertFalse(running['events'])  # manual fixture; no invented receipts
+        with self.offline_jobs():
+            b.project_manager().continue_pending(sid)
+        self.assertEqual(self.state(sid)['job_id'], running['job_id'])
+        done = self.complete_checks(sid)
+        self.assertEqual(done['auto_check']['status'], 'passed')
+        self.assertEqual(done['phase'], 'responded')
+        self.assertEqual(b.status(sid)['usage']['totals']['requests'], 0)
+        with patch.object(b, 'executable_checks', side_effect=AssertionError('Successful evidence must be reused')):
+            reviewed = self.evaluate(sid)
+        self.assertEqual(reviewed['phase'], 'awaiting_review', reviewed.get('last_error'))
+        self.assertEqual(reviewed['rounds'], 1)
+        packet = b.review_packet(sid)
+        self.assertTrue(packet['evidence']['check_evidence']['reused'])
+        self.assertTrue(b.grade(sid, packet['packet_id'], self.scores(), [])['accepted'])
+
+    def test_other_statuses_never_start_checks(self):
+        for status in ('checkpoint', 'blocked_environment', 'needs_clarification', 'protocol_error'):
+            with self.subTest(status=status):
+                sid = self.create(auto_continue_checkpoints=False)
+                # Protocol correction is separately authorized; prevent its launch in this assertion.
+                with patch.object(b.project_manager().__class__, 'continue_pending'):
+                    self.deliver(sid, status)
+                self.assertNotIn('auto_check', self.state(sid))
+                self.assertEqual(self.state(sid)['rounds'], 0)
+
+    def test_running_evaluate_returns_status_without_new_job_or_round(self):
+        sid = self.create(); self.deliver(sid)
+        before = self.state(sid)
+        with self.offline_jobs():
+            result = b.start_job(sid, 'evaluate')
+        self.assertEqual(result['next_action'], 'await_checks_completion')
+        self.assertEqual(self.state(sid)['job_id'], before['job_id'])
+        self.assertEqual(self.state(sid)['rounds'], before['rounds'])
+
+    def test_failed_and_timed_out_checks_never_enter_exam(self):
+        for program, expected in [('assert False', 'failed'), ('import time; time.sleep(5)', 'timeout')]:
+            sid = self.create(checks=[{'id': 'failure', 'argv': ['{python}', '-c', program],
+                                      'timeout_seconds': 1, 'freshness': {'mode': 'snapshot'}}])
+            self.deliver(sid); done = self.complete_checks(sid)
+            self.assertEqual(done['phase'], 'not_accepted')
+            self.assertEqual(b.review_packet(sid)['evidence']['checks'][0]['status'], expected)
+            with self.offline_jobs(), self.assertRaises(b.GateError):
+                b.start_job(sid, 'evaluate')
+            self.assertFalse(b.status(sid)['accepted'])
+
+    def test_source_or_evidence_change_blocks_reuse(self):
+        for change in ('source', 'evidence', 'runner', 'environment'):
+            with self.subTest(change=change):
+                sid = self.create(); self.deliver(sid); done = self.complete_checks(sid)
+                if change == 'source':
+                    (Path(done['worktree']) / 'calc.py').write_text('def add(a,b): return 0\n')
+                elif change == 'evidence':
+                    p = b.run_dir(sid) / done['auto_check']['evidence_file']
+                    d = b.read_json(p); d['checks'][0]['stdout'] = 'modified'; b.write_json(p, d)
+                import check_runtime
+                with contextlib.ExitStack() as stack:
+                    if change == 'runner': stack.enter_context(patch.object(check_runtime, 'runner_identity', return_value={'changed': True}))
+                    if change == 'environment': stack.enter_context(patch.object(check_runtime, 'environment_identity', return_value={'changed': True}))
+                    stack.enter_context(self.offline_jobs())
+                    with self.assertRaises(b.GateError): b.start_job(sid, 'evaluate')
+                self.assertEqual(self.state(sid)['rounds'], 1)
+
+    def test_pause_cancel_before_check_execution_never_runs_program(self):
+        for action in ('pause', 'cancel'):
+            sid = self.create(); self.deliver(sid)
+            with patch.object(b, 'spawn_dispatch'): b.return_control(sid, action)
+            with patch.object(b, 'executable_checks', side_effect=AssertionError('Stopped checks executed')):
+                done = self.complete_checks(sid)
+            self.assertNotEqual(done['auto_check']['status'], 'passed')
+            self.assertFalse(b.status(sid)['accepted'])
+
+    def test_crashed_check_without_durable_result_is_uncertain_and_not_replayed(self):
+        sid = self.create(); self.deliver(sid)
+        state = self.state(sid); state['execution_claim'] = state['job_id']; b.write_json(b.run_dir(sid)/'state.json', state)
+        with patch.object(b, 'process_running', return_value=False): b.status(sid)
+        with self.offline_jobs(): b.project_manager().continue_pending(sid)
+        self.assertEqual(self.state(sid)['auto_check']['status'], 'uncertain')
+        self.assertEqual(self.state(sid)['rounds'], 1)
+
+    def test_expired_or_undeclared_freshness_rechecks_once_in_same_round(self):
+        for freshness in (None, {'mode': 'max_age', 'max_age_seconds': 1}):
+            checks = [dict(self.checks[0])]
+            if freshness: checks[0]['freshness'] = freshness
+            sid = self.create(checks=checks); self.deliver(sid); done = self.complete_checks(sid)
+            import check_runtime
+            with patch.object(check_runtime.time, 'time', return_value=done['auto_check']['finished_at'] + 2):
+                with patch.object(b, 'executable_checks', wraps=b.executable_checks) as checks_run:
+                    reviewed = self.evaluate(sid)
+                self.assertEqual(checks_run.call_count, 1)
+                self.assertEqual(reviewed['rounds'], 1)
+                self.assertEqual(reviewed['phase'], 'awaiting_review')
+
+
+    def test_durable_result_recovers_without_reexecution(self):
+        sid = self.create(); self.deliver(sid)
+        state = self.state(sid); write = b.write_json
+        def crash(path, value):
+            if str(path).endswith('state.json') and value.get('job_kind') == 'checks' and value.get('phase') == 'responded':
+                raise RuntimeError('fixture crash after durable result')
+            return write(path, value)
+        with self.offline_jobs(), patch.object(b, 'write_json', side_effect=crash):
+            with self.assertRaises(RuntimeError): b.background_job(sid, state['job_id'])
+        with patch.object(b, 'process_running', return_value=False), patch.object(b, 'executable_checks', side_effect=AssertionError('replay')):
+            recovered = b.status(sid)
+        self.assertEqual(recovered['automatic_checks']['status'], 'passed')
+        self.assertEqual(recovered['rounds'], 1)
+        self.assertEqual(self.evaluate(sid)['phase'], 'awaiting_review')
+
+    def test_concurrent_dispatch_claims_only_one_check_job(self):
+        import concurrent.futures
+        from projects import Projects
+        sid = self.create()
+        with patch.object(Projects, 'continue_pending'):
+            self.deliver(sid)
+        source = self.state(sid)['job_id']
+        with self.offline_jobs():
+            with concurrent.futures.ThreadPoolExecutor(max_workers=2) as pool:
+                list(pool.map(lambda _: b.project_manager().continue_pending(sid), range(2)))
+        state = self.state(sid)
+        self.assertNotEqual(state['job_id'], source)
+        self.assertEqual(state['rounds'], 1)
+        self.assertEqual(state['auto_check']['status'], 'running')
+        self.assertEqual(len([p for p in b.run_dir(sid).glob('job-*.json') if len(p.stem) == 36]), 2)
+
+    def test_source_changes_while_program_runs_never_bind_to_new_commit(self):
+        sid = self.create(); self.deliver(sid); before = self.state(sid)
+        real = b.executable_checks
+        def checks(contract, tree):
+            result = real(contract, tree)
+            (Path(before['worktree']) / 'calc.py').write_text('def add(a,b): return -1\n')
+            return result
+        with patch.object(b, 'executable_checks', side_effect=checks): done = self.complete_checks(sid)
+        self.assertEqual(done['auto_check']['status'], 'blocked')
+        self.assertFalse(b.status(sid)['accepted'])
+
+    def test_environment_block_prevents_checks_and_exam(self):
+        sid = self.create(); self.deliver(sid)
+        with patch.object(b, 'executable_checks', side_effect=b.project_environment.EnvironmentBlocked('fixture', 'Unavailable tool')):
+            done = self.complete_checks(sid)
+        self.assertEqual(done['phase'], 'blocked_environment')
+        self.assertEqual(done['auto_check']['status'], 'blocked')
+        with self.offline_jobs(), self.assertRaises(b.GateError): b.start_job(sid, 'evaluate')
+
+    def test_last_round_can_continue_exam_but_cannot_allocate_more_checks(self):
+        sid = self.create(max_rounds=1); self.deliver(sid); self.complete_checks(sid)
+        done = self.evaluate(sid)
+        self.assertEqual(done['phase'], 'awaiting_review')
+        self.assertEqual(done['rounds'], 1)
+        b.grade(sid, done['packet_id'], self.scores(0, 0), [])
+        with self.offline_jobs(), self.assertRaises(b.GateError): b.start_job(sid, 'send', 'Try again')
+
+    def test_contract_and_check_definition_tampering_cannot_reuse(self):
+        for field in ('task', 'checks'):
+            sid = self.create(); self.deliver(sid); self.complete_checks(sid)
+            path = b.run_dir(sid) / 'contract.json'; contract = b.read_json(path)
+            if field == 'task': contract['task'] += ' changed'
+            else: contract['checks'][0]['argv'][2] = 'pass'
+            b.write_json(path, contract)
+            with self.offline_jobs(), self.assertRaises(b.GateError): b.start_job(sid, 'evaluate')
+
+    def test_grade_rejects_evidence_modified_after_exam(self):
+        sid = self.create(); self.deliver(sid); self.complete_checks(sid); done = self.evaluate(sid)
+        p = b.run_dir(sid) / done['auto_check']['evidence_file']; evidence = b.read_json(p)
+        evidence['checks'][0]['status'] = 'failed'; b.write_json(p, evidence)
+        with self.assertRaises(b.GateError): b.grade(sid, done['packet_id'], self.scores(), [])
+
+
+    def test_snapshot_modified_after_queue_is_not_labeled_as_original_commit(self):
+        sid = self.create(); self.deliver(sid); state = self.state(sid)
+        (Path(state['auto_check']['snapshot']) / 'calc.py').write_text('def add(a,b): return 99\n')
+        done = self.complete_checks(sid)
+        self.assertEqual(done['auto_check']['status'], 'blocked')
+        self.assertEqual(done['last_failure_kind'], 'execution')
+
+    def test_pause_during_preflight_prevents_command_launch(self):
+        sid = self.create(); self.deliver(sid)
+        def stop(*args, **kwargs):
+            b.return_control(sid, 'pause')
+        with patch.object(b.preflight, 'project', side_effect=stop):
+            done = self.complete_checks(sid)
+        self.assertEqual(done['auto_check']['status'], 'blocked')
+        self.assertFalse((b.run_dir(sid) / done['auto_check'].get('evidence_file', 'missing')).is_file())
+
+
+    def test_rejected_grade_requires_a_new_round_even_with_reused_checks(self):
+        sid = self.create(max_rounds=2); self.deliver(sid); self.complete_checks(sid)
+        first = self.evaluate(sid)
+        b.grade(sid, first['packet_id'], self.scores(0,0), [])
+        with patch.object(b, 'executable_checks', side_effect=AssertionError('Fresh checks already exist')):
+            second = self.evaluate(sid)
+        self.assertEqual(second['rounds'], 2)
+        self.assertEqual(second['phase'], 'awaiting_review')
+        b.grade(sid, second['packet_id'], self.scores(0,0), [])
+        with self.offline_jobs(), self.assertRaises(b.GateError): b.start_job(sid, 'evaluate')
 
 
 if __name__ == "__main__":

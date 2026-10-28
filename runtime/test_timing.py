@@ -420,3 +420,75 @@ class ProjectSchedulerTimingTests(unittest.TestCase):
         self.assertEqual(final['timing']['child_phase_seconds']['work'],10)
         self.assertEqual(final['timing']['child_phase_seconds']['scheduler_wait'],75)
         self.assertEqual(final['timing']['child_phase_seconds']['paused'],20)
+
+
+class ParallelStageTimingTests(unittest.TestCase):
+    def test_overlapping_stages_have_union_and_overlap_separate_from_lifecycle(self):
+        state = {'created_at': 10, 'phase': 'running'}
+        timing.initialize(state, 10)
+        timing.begin(state, 'local_checks', 'check', at=12)
+        timing.begin(state, 'supervisor_processing', 'review', at=14)
+        timing.end(state, 'check', at=20)
+        timing.end(state, 'review', at=22)
+        timing.mark(state, 'review_completed', 'review', at=22)
+        result = timing.snapshot(state, 25)['stages']
+        self.assertEqual(result['cumulative_seconds']['local_checks'], 8)
+        self.assertEqual(result['cumulative_seconds']['supervisor_processing'], 8)
+        self.assertEqual(result['union_seconds'], 10)
+        self.assertEqual(result['overlap_seconds'], 6)
+        self.assertEqual(result['milestones'][0]['at'], 22)
+
+    def test_missing_legacy_and_interrupted_spans_are_not_invented(self):
+        state = {'created_at': 1, 'phase': 'running'}
+        self.assertIsNone(timing.snapshot(state, 10)['stages']['tracked_since'])
+        timing.begin(state, 'environment_preparation', 'env', at=10)
+        timing.end(state, 'env', at=20, outcome='interrupted')
+        timing.begin(state, 'local_checks', 'checks', at=20)
+        value = timing.snapshot(state, 25)['stages']
+        self.assertFalse(value['complete'])
+        self.assertEqual(value['in_progress'], ['checks'])
+        self.assertEqual(value['intervals'][0]['outcome'], 'interrupted')
+        self.assertEqual(value['cumulative_seconds']['model_work'], 0)
+
+    def test_duplicate_marks_and_spans_do_not_double_count(self):
+        state = {'created_at': 1, 'phase': 'running'}
+        timing.initialize(state, 1)
+        timing.begin(state, 'scheduler_wait', 'q', at=2)
+        timing.begin(state, 'scheduler_wait', 'q', at=3)
+        timing.mark(state, 'checks_queued', 'q', at=2)
+        timing.mark(state, 'checks_queued', 'q', at=3)
+        timing.end(state, 'q', at=5); timing.end(state, 'q', at=7)
+        value = timing.snapshot(state, 8)['stages']
+        self.assertEqual(value['cumulative_seconds']['scheduler_wait'], 3)
+        self.assertEqual(len(value['milestones']), 1)
+
+
+class TimingOriginTests(unittest.TestCase):
+    def test_project_origin_does_not_load_its_unpersisted_self(self):
+        bridge = Mock()
+        bridge.project_manager.side_effect = AssertionError('Unpersisted project lookup')
+        project = {'project_id': 'a'*32, 'created_at': 10, 'phase': 'running'}
+        timing.attach_origin(bridge, project)
+        self.assertEqual(project['requirement_started_at'], 10)
+        self.assertEqual(timing.requirement_elapsed(project, 25), 15)
+
+    def test_linked_meeting_origin_and_unknown_legacy_remain_distinct(self):
+        bridge = Mock()
+        bridge.project_manager.return_value.load.return_value = {'created_at': 10}
+        state = {'session_id':'a'*32, 'created_at':20, 'phase':'running'}
+        timing.attach_origin(bridge, state, {'meeting_id':'b'*32})
+        self.assertEqual(timing.requirement_elapsed(state, 30), 20)
+        self.assertEqual(state['requirement_time_source'], 'meeting_created')
+        self.assertIsNone(timing.requirement_elapsed({'created_at':10}, 30))
+
+
+class RequestIntervalScopeTests(unittest.TestCase):
+    def test_reassignment_does_not_count_prior_or_future_model_requests_twice(self):
+        state = {'created_at':20,'phase':'accepted'}
+        timing.initialize(state,20);timing.transition(state,None,40)
+        rows = [{'id':'old','category':'model_work','started_at':10,'finished_at':15,'outcome':'completed'},
+                {'id':'own','category':'model_work','started_at':25,'finished_at':30,'outcome':'completed'},
+                {'id':'next','category':'model_work','started_at':45,'finished_at':50,'outcome':'completed'}]
+        result = timing.snapshot(state,60,requests=rows)['stages']
+        self.assertEqual(result['cumulative_seconds']['model_work'],5)
+        self.assertEqual([r['id'] for r in result['intervals']],['own'])

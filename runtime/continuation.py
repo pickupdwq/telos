@@ -81,6 +81,10 @@ def message(state):
 
 def started(state, source, job):
     row = state['auto_continuations'][source]
+    import timing
+    for ident, interval in (state.get('stage_timeline') or {}).get('intervals', {}).items():
+        if interval['category'] == 'scheduler_wait':
+            timing.end(state, ident)
     row.update(status='launching', job_id=job, claimed_at=time.time(),
                action_id=digest([state['session_id'], source, row['delivery_id'], job]))
     state.pop('auto_continue_pending', None)

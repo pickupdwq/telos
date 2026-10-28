@@ -2,7 +2,7 @@
 name: telos
 description: "Supervise Telos delegated development, scoped system audits (code, APIs, page interactions and visual evidence), and confirmed-bug repairs through MCP. Use for requests to use Telos, coordinate independent executors with evidence-based acceptance, or continue an existing TELOS_EVENT. Ordinary coding, general review and questions about Telos do not by themselves authorize starting an executor."
 metadata:
-  version: "3.10.1"
+  version: "3.11.0"
 ---
 
 # Telos
@@ -94,3 +94,29 @@ waiting for admission; do not attribute it to executor work or supervisor review
 Pause/resume/cancel and launch/failure boundaries remain separate. Old timing
 counters retain their recorded attribution; scheduler_wait_tracked_since identifies
 when the new metric starts, and a missing boundary means historical wait is unknown.
+
+
+## Automatically prepared checks
+
+New implementation tasks may freeze `auto_run_checks=true`, including children still
+queued in a project. Valid completed work pins a snapshot and starts only the frozen
+local checks, within existing capacity, pause/cancel, budget and progress gates.
+This stage calls no model, creates no supervisor receipt and never accepts work.
+Use the delivery notification to prepare/read code while checks run. Read current
+status via the normal tool results; await the completion callback, not repeated polling.
+The original supervisor still receives the actionable event, calls `telos_evaluate`,
+reviews the packet and grades. Active original chats coalesce automatic-stage notices.
+
+Declare check `freshness` truthfully before freezing: `snapshot` only for deterministic
+checks whose relevant inputs are all in the snapshot or declared dependencies/tools;
+`max_age` with `max_age_seconds` for explicitly bounded external/time-sensitive inputs;
+omission/`never` requires a fresh check at evaluation. Never declare deterministic
+behavior merely to gain reuse. An expired/undeclared freshness permits one explicit
+same-round recheck, not unlimited retries. Changed/tampered/incomplete evidence blocks.
+Private check programs, references and raw failures stay with the supervisor.
+
+`timing.stages` reports independent real intervals, overlap and milestones, separately
+from lifecycle wall time and legacy exclusive counters. Model intervals come from
+actual request records. Unknown/missing/interrupted history is not invented. The earliest
+known requirement boundary is meeting/task creation, not an unobserved user message.
+See [acceptance](references/acceptance.md) for the installed workflow.

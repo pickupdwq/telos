@@ -460,5 +460,45 @@ class CallbackTests(unittest.TestCase):
         self.assertEqual(result["events"]["c" * 32]["status"], "pending")
 
 
+
+class AutoCheckCallbackTests(unittest.TestCase):
+    setUp = CallbackTests.setUp
+    tearDown = CallbackTests.tearDown
+    state = CallbackTests.state
+    added = CallbackTests.added
+
+    def test_original_owner_receipts_and_coalesced_actionable_completion(self):
+        from test_telos import AutoChecksTests, synthetic_exam
+        helper = AutoChecksTests()
+        sid = b.create_session(repo=str(self.repo), task='Implement addition', questions=self.q,
+            checks=[dict(c, freshness={'mode':'snapshot'}) for c in self.checks],
+            notify=True, owner_thread_id=OWNER, auto_run_checks=True)['session_id']
+        source = helper.deliver(sid)
+        self.assertEqual(self.state(sid)['events'][source]['status'], 'pending')
+        with helper.offline_jobs(), self.assertRaises(b.GateError): b.start_job(sid, 'evaluate', event_id=source)
+        received = b.receive_event(sid, source)
+        self.assertTrue(received['proceed'])
+        with helper.offline_jobs(): pending = b.start_job(sid, 'evaluate', event_id=source)
+        self.assertEqual(pending['next_action'], 'await_checks_completion')
+        self.assertEqual(self.state(sid)['events'][source]['actions'], {})
+        helper.complete_checks(sid)
+        current = self.state(sid)['job_id']
+        self.assertFalse(b.receive_event(sid, source)['proceed'])
+        self.db['thread']['status']['type'] = 'active'
+        b.deliver_once(sid); b.deliver_once(sid)
+        self.assertEqual(self.added(), [])
+        self.db['thread']['status']['type'] = 'idle'
+        b.deliver_once(sid); b.deliver_once(sid)
+        self.assertEqual(len(self.added()), 1)
+        text = self.added()[0]['input'][0]['text']
+        self.assertNotIn(self.checks[0]['argv'][2], text)
+        self.assertTrue(b.receive_event(sid, current)['proceed'])
+        with helper.offline_jobs():
+            job = b.start_job(sid, 'evaluate', event_id=current)['job_id']
+            with patch.object(b, 'closed_book_exam', side_effect=synthetic_exam): b.background_job(sid, job)
+        self.assertTrue(b.receive_event(sid, job)['proceed'])
+        packet = b.review_packet(sid)
+        self.assertTrue(b.grade(sid, packet['packet_id'], BridgeTests.scores(self), [], event_id=job)['accepted'])
+
 if __name__ == "__main__":
     unittest.main(verbosity=2)
