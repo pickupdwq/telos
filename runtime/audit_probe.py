@@ -134,7 +134,10 @@ def browser_probe(b, policy, request, folder):
     app = next((p for p in executable.parents if p.suffix == '.app'), executable.parent)
     dependencies = [module.parent.parent, app, driver, Path(node).resolve()]
     env = b.minimal_env()
-    env.update(HOME=str(folder), TMPDIR=str(folder), TMPPREFIX=str(folder / 'tmp'))
+    env.update(HOME=str(folder), TMPDIR=str(folder), TMPPREFIX=str(folder / 'tmp'),
+               # Chromium's GetTempDir on macOS reads MAC_CHROMIUM_TMPDIR, not TMPDIR;
+               # force the staging folder even when the parent env carries a value.
+               MAC_CHROMIUM_TMPDIR=str(folder))
     command = ['/usr/bin/sandbox-exec', '-p', b.sandbox_profile(network=True, writable=[folder],
                readable=dependencies), node, str(driver)]
     payload = {'policy': policy, 'request': request, 'folder': str(folder)}

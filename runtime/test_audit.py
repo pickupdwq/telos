@@ -4,9 +4,11 @@ from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
 import os
 import shlex
+import shutil
 from pathlib import Path
 import subprocess
 import sys
+import tempfile
 import threading
 import time
 import unittest
@@ -250,6 +252,63 @@ class AuditTests(unittest.TestCase):
             'viewport': 'desktop', 'evidence': 'probe.json', 'files': {n: files[n]['sha256'] for n in ('probe.json', 'screenshot.png')}}]})
         with self.assertRaisesRegex(b.GateError, 'viewport'):
             audit.validate_report(b, state, contract, root, files)
+
+    def test_browser_probe_forces_staging_chromium_tempdir_and_private_writable_root(self):
+        policy = boundary(); policy['checklist'][0]['kind'] = 'visual'
+        policy['targets'] = [{'origin': 'http://127.0.0.1:8000', 'path_prefix': '/ui', 'methods': ['GET']}]
+        policy['browser'] = {'module_path': str(Path(__file__).resolve()), 'executable_path': str(Path(sys.executable).resolve()),
+                             'actions': ['screenshot'], 'viewports': [{'name': 'desktop', 'width': 1280, 'height': 800}]}
+        sid = self.create(policy); _, contract = self.data(sid)
+        request = {'request_id': 'probe', 'check_id': 'addition', 'kind': 'browser', 'url': 'http://127.0.0.1:8000/ui',
+                   'viewport': 'desktop', 'steps': []}
+        audit_probe.validate_request(contract['audit'], request)
+        folder = Path(tempfile.mkdtemp(prefix='telos-audit-test-')).resolve()
+        captured = {}
+        real_popen = subprocess.Popen
+
+        class FakeProcess:
+            returncode = 0
+
+            def __enter__(self):
+                return self
+
+            def __exit__(self, *_):
+                return False
+
+            def communicate(self, data, timeout=None):
+                captured['payload'] = json.loads(data)
+                return json.dumps({'outcome': 'passed'}).encode(), b''
+
+        def launch(argv, **kwargs):
+            if Path(argv[0]).name != 'sandbox-exec':
+                return real_popen(argv, **kwargs)
+            captured.update(argv=argv, kwargs=kwargs)
+            return FakeProcess()
+
+        try:
+            # Simulate an inherited external value: the browser child env must
+            # overwrite it with this probe's staging folder, never pass it on.
+            inherited = {'PATH': os.environ.get('PATH', '/usr/bin'), 'MAC_CHROMIUM_TMPDIR': '/inherited/leak'}
+            with patch.object(b, 'minimal_env', return_value=dict(inherited)), \
+                    patch.object(audit_probe.subprocess, 'Popen', side_effect=launch):
+                result = audit_probe.browser_probe(b, contract['audit'], request, folder)
+        finally:
+            shutil.rmtree(folder, ignore_errors=True)
+        self.assertEqual(result['kind'], 'browser'); self.assertEqual(result['outcome'], 'passed')
+        env = captured['kwargs']['env']
+        self.assertEqual(env['MAC_CHROMIUM_TMPDIR'], str(folder))
+        self.assertEqual(env['HOME'], str(folder)); self.assertEqual(env['TMPDIR'], str(folder))
+        self.assertEqual(Path(captured['kwargs']['cwd']).resolve(), folder)
+        self.assertEqual(captured['payload']['folder'], str(folder))
+        self.assertEqual(captured['kwargs']['stdin'], subprocess.PIPE)
+        argv = captured['argv']
+        self.assertEqual(argv[:2], ['/usr/bin/sandbox-exec', '-p'])
+        self.assertEqual(argv[-1], str(Path(audit_probe.__file__).with_name('audit_browser.cjs')))
+        profile = argv[2]
+        writable = {json.loads(line[len('(allow file-write* (subpath '):].rstrip('))'))
+                    for line in profile.splitlines() if line.startswith('(allow file-write* (subpath ')}
+        self.assertEqual(writable, {str(folder)})
+        self.assertNotIn('(deny network*)', profile.splitlines())
 
     def test_audit_archive_preserves_report_screenshots_and_acceptance(self):
         sid = self.create(); self.report(sid); self.evaluate(sid); self.accept(sid)
