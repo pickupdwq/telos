@@ -22,6 +22,7 @@ EXPECTED_MODULES = [
     'test_callbacks',
     'test_repairs',
     'test_projects',
+    'test_project_budget',
     'test_experience',
     'test_rsi',
     'test_providers',

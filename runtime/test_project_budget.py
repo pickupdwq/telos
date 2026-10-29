@@ -10,6 +10,7 @@ from unittest.mock import Mock, patch
 import test_telos
 import project_budget
 import progress_guard
+import usage
 
 b = test_telos.b
 OWNER = '00000000-0000-4000-8000-000000000001'
@@ -167,6 +168,11 @@ class JobBudgetTests(unittest.TestCase):
         child = b.read_json(b.STATE / 'runs' / task['session_id'] / 'state.json')
         self.assertIsInstance(child, dict)
         self.assertTrue(child)
+        self.assertEqual(child.get('session_id', child.get('id')), task['session_id'])
+        self.assertIn(child.get('job_kind', child.get('kind')), ('send', 'work'))
+        self.assertEqual(child.get('project_id', pid), pid)
+        self.assertIn(child.get('phase'), ('running', 'error', 'accepted', 'checkpoint'))
+        self.assertGreater(current['jobs_started'], current['max_jobs'])
         self.assertGreaterEqual(current['jobs_started'], 41)
         summary = project_budget.summary(current)
         self.assertEqual(summary['jobs_started'], current['jobs_started'])
@@ -258,3 +264,26 @@ class JobBudgetTests(unittest.TestCase):
 
 if __name__ == '__main__':
     unittest.main()
+    def test_child_request_budget_exhaustion_blocks_unlimited_launch(self):
+        pid = self.create(max_jobs=1)
+        manager = b.project_manager()
+        p = manager.load(pid)
+        p['jobs_started'] = 1
+        manager.save(p)
+        self.request(pid)
+        current = manager.load(pid)
+        self.assertIsNone(project_budget.effective_max_jobs(current))
+        self.assertTrue(manager.capacity(current, 'ark'))
+        owner = {'thread_id': OWNER, 'cwd': str(self.repo), 'socket': '/fixture',
+                 'transport': 'cli_queue'}
+        exceeded = usage.BudgetExceeded('Task budget exhausted (max_requests)')
+        with patch.object(usage.UsageLedger, 'begin', side_effect=exceeded), \
+                patch.object(b, 'spawn_dispatch'), patch.object(b, 'bind_owner', return_value=owner):
+            try:
+                manager.tick(pid)
+            except (b.GateError, usage.BudgetExceeded):
+                pass
+        after = manager.load(pid)
+        self.assertEqual(after['jobs_started'], 1)
+        self.assertNotEqual(after['phase'], 'accepted')
+        self.assertIsNone(project_budget.validate_project(after))
