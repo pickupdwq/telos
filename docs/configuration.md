@@ -335,6 +335,23 @@ accepts or deploys work. Accepted, cancelled, discussion and damaged-policy
 projects are rejected. Status and compact/final-review views expose the
 initial/effective ceiling, used jobs and authorization history.
 
+An explicit `include_work_turns=true` call records only the separate versioned
+`work_turn_budget_policy` scope and requires an already valid unlimited
+`job_budget_policy` (the v1 object is preserved byte-for-byte). It binds
+project, owner, contract, the original `max_turns` snapshot, current job count
+and the prior v1-policy digest, with a scope-aware canonical argument digest
+and append-only history. Request IDs are unique across both scopes; identical
+replays write nothing, while changed scope/arguments or damaged records fail
+closed. It exempts only the `max_turns` admission gate for current bound
+implementation children of that project (explicit sends/repairs and automatic
+checkpoint continuations, decided under the coordinator lock); exam rounds,
+request/token budgets, no-progress, concurrency, timeouts, model settings,
+pause/cancel and acceptance gates are unchanged. Counts keep incrementing
+(20→21, jobs 62→63) with no reset. It may be recorded while paused but never
+resumes or dispatches; standalone, foreign-project and discussion
+participants are never exempt. Only an absent sibling key is legacy; an
+explicit null is damaged.
+
 中文：`telos_project_budget` 是唯一可审计的项目作业准入上限变更入口，仅原 owner
 可用且当前只支持 `unlimited`。必须提供稳定的 `request_id`、`reason` 和
 `user_authorization`；策略与只追加授权历史写入同一个原子 `project.json`，保留原

@@ -1160,11 +1160,25 @@ def start_job(sid, kind, message="", event_id=None, reasoning_effort=None, reaso
 
 
 def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None,
-               reasoning_effort=None, reasoning_reason=None, _continuation_id=None, _auto_check_id=None):
+               reasoning_effort=None, reasoning_reason=None, _continuation_id=None, _auto_check_id=None,
+               _work_turns=None):
     with locked(sid) as root:
         state, contract = load_session(root)
         if state.get('archived'):
             raise GateError('Archived task is terminal; restore its bundle into a new task if needed')
+        work_turns_exempt = False
+        if _work_turns is not None:
+            owner_id = (state.get('owner') or {}).get('thread_id')
+            if not (isinstance(_work_turns, dict)
+                    and _work_turns.get('scope') == 'work_turns'
+                    and _work_turns.get('exempt') is True
+                    and _work_turns.get('project_id') == state.get('project_id')
+                    and _work_turns.get('session_id') == state.get('session_id')
+                    and _work_turns.get('child_contract_hash') == state.get('contract_hash')
+                    and owner_id and _work_turns.get('owner_thread_id') == owner_id):
+                raise GateError('Internal work-turn admission decision is not bound to this task',
+                                code='invalid_budget_policy')
+            work_turns_exempt = kind == 'send'
         arguments = effort_policy.arguments(message, reasoning_effort, reasoning_reason)
         if _auto_check_id is not None:
             if kind != 'checks' or event_id is not None:
@@ -1230,7 +1244,7 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
                 raise BudgetExceeded(message, None) from None
             raise GateError(message) from None
         if kind == "send":
-            if not discussion and state["turns"] >= config()["max_turns"]:
+            if not discussion and not work_turns_exempt and state["turns"] >= config()["max_turns"]:
                 raise GateError("Maximum conversation turns reached")
             if not isinstance(message, str) or not message.strip():
                 raise GateError("A nonempty message is required")
@@ -2326,9 +2340,10 @@ TOOLS += [
  {'name': 'telos_project_finish', 'description': ('Original supervisor scores every final criterion, supplies blockers and an overall rationale. Enforces tests, unchanged accepted task commits, unchanged integrated commit and score threshold. Passing produces an accepted scratch integration commit, never automatic source-branch merge or deployment.'), 'inputSchema': obj({**PID, 'packet_id': STR, 'scores': SCORES, 'blockers': {'type': 'array', 'items': STR}, 'rationale': STR})}
 ]
 TOOLS.append({'name': 'telos_project_budget',
-    'description': ('Original supervisor only: record an explicitly user-authorized, audited job-admission policy change for one project. Only strategy=unlimited is supported; it raises the effective job ceiling to unlimited while preserving max_jobs, jobs_started, the frozen contract/hash, task identities and all history. Requires a stable request_id, reason and user_authorization. Same request_id with identical arguments is an idempotent replay; different arguments are rejected. Rejects accepted, cancelled, discussion and damaged-policy projects. A paused project stays paused; this never starts, resumes, accepts or deploys work. Projects without this policy keep their original max_jobs.'),
+    'description': ('Original supervisor only: record an explicitly user-authorized, audited job-admission policy change for one project. Only strategy=unlimited is supported; it raises the effective job ceiling to unlimited while preserving max_jobs, jobs_started, the frozen contract/hash, task identities and all history. Requires a stable request_id, reason and user_authorization. Same request_id with identical arguments is an idempotent replay; different arguments are rejected. Rejects accepted, cancelled, discussion and damaged-policy projects. A paused project stays paused; this never starts, resumes, accepts or deploys work. Projects without this policy keep their original max_jobs. Optional include_work_turns=true additionally records a separate versioned work-turn scope (requires a valid prior unlimited job policy) so bound project children may continue work beyond max_turns while every other gate stays unchanged; it never resumes or dispatches, and omitted/false keeps legacy behavior.'),
     'inputSchema': obj({**PID, 'strategy': {'enum': ['unlimited']}, 'request_id': STR, 'reason': STR,
-                        'user_authorization': STR}, ['project_id', 'request_id', 'reason', 'user_authorization'])})
+                        'user_authorization': STR, 'include_work_turns': {'type': 'boolean'}},
+                       ['project_id', 'request_id', 'reason', 'user_authorization'])})
 TOOLS += [
  {'name': 'telos_experience_search', 'description': ('Read repository-scoped experience and provenance. Default only previously accepted and project-verified lessons; include_candidates=true exposes unsuccessful or not-yet-integrated metadata for supervisor analysis. No private exam answers, checks or logs are stored. Relevant verified experience is injected automatically when new sessions start.'), 'inputSchema': obj({'repo': STR, 'paths': {'type': 'array', 'items': STR}, 'limit': {'type': 'integer'}, 'include_candidates': {'type': 'boolean'}}, ['repo'])},
  {'name': 'telos_experience_forget', 'description': ('Disable an outdated or incorrect experience entry. Disabled entries are no longer used in new tasks; provenance remains for audit.'), 'inputSchema': obj({'experience_id': STR})}

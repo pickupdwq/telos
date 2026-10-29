@@ -3177,7 +3177,7 @@
     },
     {
       "name": "telos_project_budget",
-      "description": "Original supervisor only: record an explicitly user-authorized, audited job-admission policy change for one project. Only strategy=unlimited is supported; it raises the effective job ceiling to unlimited while preserving max_jobs, jobs_started, the frozen contract/hash, task identities and all history. Requires a stable request_id, reason and user_authorization. Same request_id with identical arguments is an idempotent replay; different arguments are rejected. Rejects accepted, cancelled, discussion and damaged-policy projects. A paused project stays paused; this never starts, resumes, accepts or deploys work. Projects without this policy keep their original max_jobs.",
+      "description": "Original supervisor only: record an explicitly user-authorized, audited job-admission policy change for one project. Only strategy=unlimited is supported; it raises the effective job ceiling to unlimited while preserving max_jobs, jobs_started, the frozen contract/hash, task identities and all history. Requires a stable request_id, reason and user_authorization. Same request_id with identical arguments is an idempotent replay; different arguments are rejected. Rejects accepted, cancelled, discussion and damaged-policy projects. A paused project stays paused; this never starts, resumes, accepts or deploys work. Projects without this policy keep their original max_jobs. Optional include_work_turns=true additionally records a separate versioned work-turn scope (requires a valid prior unlimited job policy) so bound project children may continue work beyond max_turns while every other gate stays unchanged; it never resumes or dispatches, and omitted/false keeps legacy behavior.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3197,6 +3197,9 @@
           },
           "user_authorization": {
             "type": "string"
+          },
+          "include_work_turns": {
+            "type": "boolean"
           }
         },
         "required": [

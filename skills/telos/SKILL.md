@@ -145,6 +145,13 @@ initial/effective ceiling, used jobs and authorization history.
 已用次数与授权历史。
 
 Hardening: only an absent `job_budget_policy` key preserves legacy behavior.
+Optional `include_work_turns=true` on the same owner-only tool records only the
+sibling versioned `work_turn_budget_policy` (requires a prior valid unlimited
+job policy; v1 bytes preserved). It exempts only the `max_turns` gate for
+bound project child work/automatic checkpoints, decided under the coordinator
+lock; every other gate and all counts stay unchanged, and it never resumes or
+dispatches. Request IDs are globally unique across both scopes; damaged/null
+records fail closed and absent means legacy.
 An explicit null, unknown kind/version, missing or extra fields, mismatched
 project identity, owner, contract hash, `max_jobs`/`jobs_started` snapshot or a
 recomputed canonical argument digest is rejected as damaged. The owner is

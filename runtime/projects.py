@@ -49,6 +49,7 @@ class Projects:
         # to the legacy ceiling or to unlimited admission.
         try:
             project_budget.validate_project(p)
+            project_budget.validate_work_project(p)
         except ValueError as error:
             raise self.b.GateError(str(error), code='invalid_budget_policy') from None
         return p
@@ -398,6 +399,8 @@ class Projects:
                                    'decision_reason', 'max_parallel', 'max_jobs', 'jobs_started', 'base_commit')}
         result['contract_hash'] = p.get('contract_hash')
         result['job_budget'] = project_budget.summary(p)
+        result['work_turn_budget'] = project_budget.work_turn_summary(
+            p, int(self.b.config()['max_turns']))
         if p.get('kind') == 'discussion':
             from meetings import Meetings
             result['discussion'] = Meetings(self.b).view(p)
@@ -564,7 +567,8 @@ class Projects:
                 raise self.b.GateError('Project job budget exhausted; no more model jobs')
         return True
 
-    def budget(self, pid, request_id, reason, user_authorization, strategy='unlimited', caller=None):
+    def budget(self, pid, request_id, reason, user_authorization, strategy='unlimited',
+               include_work_turns=False, caller=None):
         """Original-supervisor-only, audited job ceiling policy change.
 
         Only the one-way ``unlimited`` strategy is supported.  The frozen
@@ -572,6 +576,10 @@ class Projects:
         a paused project remains paused and nothing is started or accepted.
         """
         with self.lock():
+            if type(include_work_turns) is not bool:
+                raise self.b.GateError('include_work_turns must be a boolean',
+                                       code='invalid_arguments',
+                                       next_action='correct_arguments')
             p = self.load(pid)
             if not p.get('owner'):
                 raise self.b.GateError('Only the original owner can change the job budget policy',
@@ -588,10 +596,25 @@ class Projects:
                 raise self.b.GateError('Cancelled or accepted projects cannot change budget policy',
                                        code='project_terminal')
             try:
-                updated, replayed, policy = project_budget.authorize(
-                    p, owner_thread_id=caller, strategy=strategy,
-                    request_id=request_id, reason=reason,
-                    user_authorization=user_authorization, now=time.time())
+                if include_work_turns is True:
+                    # This call records only the sibling work-turn scope; the
+                    # existing v1 object (and its request ids) stays byte-for-byte.
+                    if project_budget.validate_project(p) is None:
+                        raise ValueError('A valid unlimited job budget policy is required first')
+                    snapshot = self._turns_snapshot(p)
+                    updated, work_replayed, work_turns = project_budget.authorize_work(
+                        p, owner_thread_id=caller, request_id=request_id,
+                        reason=reason, user_authorization=user_authorization,
+                        now=time.time(), original_max_turns=int(self.b.config()['max_turns']),
+                        turns_snapshot=snapshot)
+                    replayed, policy = work_replayed, project_budget.summary(updated)
+                else:
+                    updated, replayed, policy = project_budget.authorize(
+                        p, owner_thread_id=caller, strategy=strategy,
+                        request_id=request_id, reason=reason,
+                        user_authorization=user_authorization, now=time.time())
+                    work_turns = project_budget.work_turn_summary(
+                        updated, int(self.b.config()['max_turns']))
             except ValueError as error:
                 raise self.b.GateError(str(error), code='invalid_budget_policy') from None
             if not replayed:
@@ -600,7 +623,23 @@ class Projects:
                     'continuation': p['continuation'], 'phase': p['phase'],
                     'max_jobs': p['max_jobs'], 'jobs_started': p['jobs_started'],
                     'contract_hash': p.get('contract_hash'),
-                    'tasks_unchanged': True, 'job_budget': policy}
+                    'tasks_unchanged': True, 'job_budget': policy,
+                    'work_turn_budget': work_turns}
+
+    def _turns_snapshot(self, p):
+        """Actual per-child turn counts; unreadable sessions remain explicitly null."""
+        snapshot = {}
+        for task in p.get('tasks', []):
+            sid = task.get('session_id')
+            if not sid:
+                continue
+            try:
+                state = self.b.read_json(self.b.run_dir(sid) / 'state.json')
+                turns = state.get('turns')
+                snapshot[sid] = turns if type(turns) is int and turns >= 0 else None
+            except (OSError, ValueError):
+                snapshot[sid] = None
+        return snapshot or {'unknown': None}
 
     def launch(self, p, sid, kind, message='', event_id=None, discussion_request_id=None,
                reasoning_effort=None, reasoning_reason=None, automatic=False, continuation_id=None):
@@ -614,6 +653,16 @@ class Projects:
                 extra['_continuation_id'] = continuation_id
             if reasoning_effort is not None or reasoning_reason is not None:
                 extra.update(reasoning_effort=reasoning_effort, reasoning_reason=reasoning_reason)
+            try:
+                decision = (project_budget.work_turn_decision(
+                                p, session_id=sid,
+                                child_contract_hash=before.get('contract_hash'),
+                                child_owner_thread_id=(before.get('owner') or {}).get('thread_id'))
+                            if kind == 'send' else None)
+            except ValueError as error:
+                raise self.b.GateError(str(error), code='invalid_budget_policy') from None
+            if decision is not None:
+                extra['_work_turns'] = decision
             result = self.b._start_job(sid, kind, message, event_id, **extra)
         except Exception as error:
             # Validation and definite spawn failure leave the old job identity.
@@ -1270,6 +1319,8 @@ class Projects:
                     'project_id': pid, 'worktree': p['integration'].get('worktree'), 'commit': packet.get('commit'),
                     'pins': p['integration'].get('pins'), 'contract_hash': p.get('contract_hash'),
                     'job_budget': project_budget.summary(p),
+                    'work_turn_budget': project_budget.work_turn_summary(
+                        p, int(self.b.config()['max_turns'])),
                     'blockers': (p.get('final_review') or {}).get('blockers', []),
                     'final_review': p.get('final_review'), 'usage': self._usage(p),
                     'timing': self._timing(p),
