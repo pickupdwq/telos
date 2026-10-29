@@ -261,29 +261,53 @@ class JobBudgetTests(unittest.TestCase):
             manager.capacity(manager.load(pid), 'ark')
         self.assertTrue(manager.capacity(manager.load(pid), 'ark', local_checks=True))
 
-
-if __name__ == '__main__':
-    unittest.main()
     def test_child_request_budget_exhaustion_blocks_unlimited_launch(self):
-        pid = self.create(max_jobs=1)
+        task = {'id': 'a', 'task': 'Implement a', 'message': 'Implement the assigned change.',
+                'depends_on': [], 'allowed_paths': ['a.py'], 'questions': copy.deepcopy(self.q),
+                'checks': copy.deepcopy(self.checks), 'assessment_mode': 'closed_book',
+                'budget': {'max_requests': 1}}
+        pid = b.project_manager().create(repo=str(self.repo), task='Complete project', tasks=[task],
+            questions=self.q, checks=self.checks, decision_reason='Single independent file',
+            strategy='single', max_jobs=1, notify=False)['project_id']
         manager = b.project_manager()
         p = manager.load(pid)
+        p['owner'] = {'thread_id': OWNER}
         p['jobs_started'] = 1
         manager.save(p)
         self.request(pid)
         current = manager.load(pid)
         self.assertIsNone(project_budget.effective_max_jobs(current))
         self.assertTrue(manager.capacity(current, 'ark'))
+        self.assertEqual(current['tasks'][0]['budget'], {'max_requests': 1})
+        task_state = current['tasks'][0]
+        usage_id = task_state.get('usage_id') or task_state['session_id']
+        # Real isolated child ledger with the frozen limited request budget.
+        ledger = usage.UsageLedger(b.usage_path(usage_id), {'max_requests': 1})
+        first = ledger.begin('work')
+        ledger.finish(first, {'input_tokens': 5, 'output_tokens': 3})
+        self.assertEqual(ledger.snapshot()['budget_state']['state'], 'exceeded')
         owner = {'thread_id': OWNER, 'cwd': str(self.repo), 'socket': '/fixture',
                  'transport': 'cli_queue'}
-        exceeded = usage.BudgetExceeded('Task budget exhausted (max_requests)')
-        with patch.object(usage.UsageLedger, 'begin', side_effect=exceeded), \
-                patch.object(b, 'spawn_dispatch'), patch.object(b, 'bind_owner', return_value=owner):
+        with patch.object(b, 'spawn_dispatch'), patch.object(b, 'bind_owner', return_value=owner):
             try:
                 manager.tick(pid)
             except (b.GateError, usage.BudgetExceeded):
                 pass
+        # The exhausted child request budget leaves no running model job behind.
+        self.assertEqual(usage.UsageLedger(b.usage_path(usage_id)).snapshot()['budget_state']['state'],
+                         'exceeded')
         after = manager.load(pid)
         self.assertEqual(after['jobs_started'], 1)
         self.assertNotEqual(after['phase'], 'accepted')
-        self.assertIsNone(project_budget.validate_project(after))
+        self.assertNotIn('running', {t['phase'] for t in after['tasks']})
+        policy = project_budget.validate_project(after)
+        self.assertIsNotNone(policy)
+        self.assertEqual(policy['strategy'], 'unlimited')
+        self.assertIsNone(policy['effective_max_jobs'])
+        self.assertEqual([r['request_id'] for r in policy['history']], ['req-1'])
+        self.assertEqual(policy['history'][0]['jobs_started'], 1)
+        self.assertNotEqual([r['request_id'] for r in policy['history']], [])
+
+
+if __name__ == '__main__':
+    unittest.main()
