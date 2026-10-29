@@ -773,6 +773,12 @@ class _ProjectViewBridge:
         return self.couriers[root.name], {}
 
     @staticmethod
+    def config():
+        # Project-view tests exercise the real configured turn ceiling without
+        # collapsing event identity or privacy assertions.
+        return {'max_turns': 20}
+
+    @staticmethod
     def return_health(state):
         continuation = state.get('continuation', 'active')
         if continuation != 'active':
