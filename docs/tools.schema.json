@@ -3176,6 +3176,39 @@
       }
     },
     {
+      "name": "telos_task_budget",
+      "description": "Original supervisor only: explicitly authorize unlimited work turns for one existing standalone task. Records a versioned policy and exact user authorization; preserves original contract, turns, rounds, usage, model, history and every other gate. Stable request_id with identical parameters is read-only; different parameters and damaged records fail closed. Project children use telos_project_budget. Paused remains paused; terminal/discussion tasks rejected. Never dispatches, resumes or accepts.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "strategy": {
+            "enum": [
+              "unlimited"
+            ]
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "user_authorization": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "request_id",
+          "reason",
+          "user_authorization"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "telos_project_budget",
       "description": "Original supervisor only: record an explicitly user-authorized, audited job-admission policy change for one project. Only strategy=unlimited is supported; it raises the effective job ceiling to unlimited while preserving max_jobs, jobs_started, the frozen contract/hash, task identities and all history. Requires a stable request_id, reason and user_authorization. Same request_id with identical arguments is an idempotent replay; different arguments are rejected. Rejects accepted, cancelled, discussion and damaged-policy projects. A paused project stays paused; this never starts, resumes, accepts or deploys work. Projects without this policy keep their original max_jobs. Optional include_work_turns=true additionally records a separate versioned work-turn scope (requires a valid prior unlimited job policy) so bound project children may continue work beyond max_turns while every other gate stays unchanged; it never resumes or dispatches, and omitted/false keeps legacy behavior.",
       "inputSchema": {

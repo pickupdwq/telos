@@ -473,6 +473,8 @@ def load_session(root):
     except (OSError, ValueError) as error:
         raise state_store.quarantine(bridge_services(), root, error) from None
     try:
+        import task_budget
+        task_budget.validate(state, contract)
         import audit_check_correction, test_path_correction
         correction = test_path_correction if test_path_correction.KEY in state else audit_check_correction
         contract = correction.effective(bridge_services(), state, contract)
@@ -1169,7 +1171,7 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
         state, contract = load_session(root)
         if state.get('archived'):
             raise GateError('Archived task is terminal; restore its bundle into a new task if needed')
-        work_turns_exempt = False
+        work_turns_exempt = kind == 'send' and 'task_work_turn_policy' in state
         if _work_turns is not None:
             owner_id = (state.get('owner') or {}).get('thread_id')
             if not (isinstance(_work_turns, dict)
@@ -1963,6 +1965,8 @@ def status(sid, detail='full'):
         result['audit_check_correction'] = audit_check_correction.public(state)
         import test_path_correction
         result['test_path_correction'] = test_path_correction.public(state)
+        import task_budget
+        result['work_turn_budget'] = task_budget.summary(state, config()['max_turns'])
         result['environment'] = state.get('environment')
         result['version'] = VERSION
         result.update(base_commit=state.get('base_commit'), submitted_commit=state.get('submitted_commit'),
@@ -2063,6 +2067,8 @@ def review_packet(sid, detail='full'):
         result['audit_check_correction'] = audit_check_correction.public(state)
         import test_path_correction
         result['test_path_correction'] = test_path_correction.public(state)
+        import task_budget
+        result['work_turn_budget'] = task_budget.summary(state, config()['max_turns'])
         if detail == 'summary':
             return compact_views.review(result)
         result['detail'] = 'full'
@@ -2353,6 +2359,11 @@ TOOLS += [
      " marked."), 'inputSchema': obj(PID)},
  {'name': 'telos_project_finish', 'description': ('Original supervisor scores every final criterion, supplies blockers and an overall rationale. Enforces tests, unchanged accepted task commits, unchanged integrated commit and score threshold. Passing produces an accepted scratch integration commit, never automatic source-branch merge or deployment.'), 'inputSchema': obj({**PID, 'packet_id': STR, 'scores': SCORES, 'blockers': {'type': 'array', 'items': STR}, 'rationale': STR})}
 ]
+TOOLS.append({'name': 'telos_task_budget',
+    'description': 'Original supervisor only: explicitly authorize unlimited work turns for one existing standalone task. Records a versioned policy and exact user authorization; preserves original contract, turns, rounds, usage, model, history and every other gate. Stable request_id with identical parameters is read-only; different parameters and damaged records fail closed. Project children use telos_project_budget. Paused remains paused; terminal/discussion tasks rejected. Never dispatches, resumes or accepts.',
+    'inputSchema': obj({**SID, 'strategy': {'enum': ['unlimited']}, 'request_id': STR,
+                        'reason': STR, 'user_authorization': STR},
+                       ['session_id', 'request_id', 'reason', 'user_authorization'])})
 TOOLS.append({'name': 'telos_project_budget',
     'description': ('Original supervisor only: record an explicitly user-authorized, audited job-admission policy change for one project. Only strategy=unlimited is supported; it raises the effective job ceiling to unlimited while preserving max_jobs, jobs_started, the frozen contract/hash, task identities and all history. Requires a stable request_id, reason and user_authorization. Same request_id with identical arguments is an idempotent replay; different arguments are rejected. Rejects accepted, cancelled, discussion and damaged-policy projects. A paused project stays paused; this never starts, resumes, accepts or deploys work. Projects without this policy keep their original max_jobs. Optional include_work_turns=true additionally records a separate versioned work-turn scope (requires a valid prior unlimited job policy) so bound project children may continue work beyond max_turns while every other gate stays unchanged; it never resumes or dispatches, and omitted/false keeps legacy behavior.'),
     'inputSchema': obj({**PID, 'strategy': {'enum': ['unlimited']}, 'request_id': STR, 'reason': STR,
@@ -2561,6 +2572,9 @@ def call_tool(name, args, meta=None):
                                 code='owner_mismatch', next_action='use_original_supervisor')
             if name == 'telos_return_control' and state.get('project_id'):
                 raise GateError('Use telos_project_control for project-owned sessions')
+    if name == 'telos_task_budget':
+        import task_budget
+        return invoke_tool(lambda session_id, **kw: task_budget.authorize(bridge_services(), session_id, caller=caller, **kw), args)
     if name == 'telos_correct_audit_status':
         import audit_check_correction
         return invoke_tool(lambda session_id, **kw:

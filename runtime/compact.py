@@ -141,7 +141,7 @@ def status(full):
         'session_id', 'phase', 'accepted', 'model', 'worktree', 'base_commit',
         'submitted_commit', 'packet_id', 'contract_hash', 'turns', 'rounds',
         'job_id', 'job_kind', 'infra_failures', 'next_retry_at', 'last_failure_kind',
-        'project_id', 'task_type', 'discussion_complete', 'version', 'workflow', 'executor', 'budget', 'usage', 'timing',
+        'project_id', 'task_type', 'discussion_complete', 'version', 'workflow', 'executor', 'budget', 'work_turn_budget', 'usage', 'timing',
         'next_action', 'clarification', 'archived', 'audit_artifacts', 'audit_report', 'message',
         'reasoning_policy', 'reasoning_decision', 'progress_guard', 'environment',
         'auto_continue_checkpoints', 'auto_continue_pending', 'auto_continuations', 'auto_run_checks', 'automatic_checks', 'audit_check_correction', 'test_path_correction') if key in full}
@@ -175,7 +175,7 @@ def status(full):
 def review(full):
     result = {key: full.get(key) for key in (
         'packet_id', 'questions', 'instruction', 'session_id', 'worktree', 'submitted_commit',
-        'contract_hash', 'identity', 'blockers', 'acceptance', 'budget', 'usage', 'timing', 'audit_check_correction', 'test_path_correction') if key in full}
+        'contract_hash', 'identity', 'blockers', 'acceptance', 'budget', 'work_turn_budget', 'usage', 'timing', 'audit_check_correction', 'test_path_correction') if key in full}
     result['evidence'] = _evidence(full.get('evidence'))
     result['detail'] = 'summary'
     result['detail_hint'] = ('Call telos_review with detail="full" for complete successful logs, '

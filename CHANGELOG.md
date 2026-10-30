@@ -1,3 +1,10 @@
+## 3.11.3 — standalone task work-turn policy
+
+Add owner-authorized `telos_task_budget` for one existing standalone task. Retain
+original contract, spent turns, rounds, usage, executor and history; a canonical
+versioned policy exempts only work-turn admission. Other gates stay unchanged.
+No global maximum, private contract or acceptance result is rewritten.
+
 ## 3.11.2 — 2026-10-30
 
 - Add an original-supervisor-only preview/apply operation for one fixed historical

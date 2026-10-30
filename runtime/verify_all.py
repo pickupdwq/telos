@@ -25,6 +25,7 @@ MODULES = [
     'test_projects',
     'test_project_budget',
     'test_work_turn_budget',
+    'test_task_budget',
     'test_experience',
     'test_rsi',
     'test_providers',

@@ -2,7 +2,7 @@
 name: telos
 description: "Supervise Telos delegated development, scoped system audits (code, APIs, page interactions and visual evidence), and confirmed-bug repairs through MCP. Use for requests to use Telos, coordinate independent executors with evidence-based acceptance, or continue an existing TELOS_EVENT. Ordinary coding, general review and questions about Telos do not by themselves authorize starting an executor."
 metadata:
-  version: "3.11.2"
+  version: "3.11.3"
 ---
 
 # Telos
@@ -169,3 +169,16 @@ Preserve original contracts, counters and history; never use this entry point
 to edit general check programs or relax business criteria. Restore at most five
 rounds supported by retained missing-path/no-tests evidence. Correction itself
 never starts or accepts work; normal same-task acceptance remains mandatory.
+
+
+## Standalone task work-turn policy
+
+`telos_task_budget` is the original-owner-only management entry for an explicitly
+authorized unlimited work-turn policy on an existing standalone session. Record
+the user's actual instruction, a reason and stable request ID. Preserve original
+contract bytes, used turns, rounds, model, usage and history. The policy changes
+only work-turn admission, not token/request budgets, concurrency, timeouts,
+no-progress or acceptance. A paused task stays paused. Project-owned tasks still
+use `telos_project_budget`; never detach or recreate tasks to reset limits.
+The call never dispatches or accepts work. Receive the current event, then use
+the normal same-session send/evaluate/review/grade flow.

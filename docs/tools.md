@@ -197,3 +197,9 @@ Required / 必填：`session_id`, `request_id`, `blocker`, `approach`, `evidence
 Run a bounded HTTP or declarative browser probe within an active audit contract. Original supervisor only; executors use their authenticated local probe service. Runs before evaluation; request_id deduplicates operations, including uncertain outcomes. Captures evidence; business failures are findings, not acceptance. No arbitrary JS, redirects, WebSockets, installations or target/permission expansion.
 
 Required / 必填：`session_id`, `request`
+
+## `telos_task_budget`
+
+Original supervisor only: explicitly authorize unlimited work turns for one existing standalone task. Records a versioned policy and exact user authorization; preserves original contract, turns, rounds, usage, model, history and every other gate. Stable request_id with identical parameters is read-only; different parameters and damaged records fail closed. Project children use telos_project_budget. Paused remains paused; terminal/discussion tasks rejected. Never dispatches, resumes or accepts.
+
+Required: `session_id`, `request_id`, `reason`, `user_authorization`. Strategy: `unlimited`.
