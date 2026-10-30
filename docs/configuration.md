@@ -319,3 +319,52 @@ or tampered evidence blocks. Old contracts retain their original workflow.
 Inspect `automatic_checks` and `timing.stages`; distinguish cumulative/overlap time
 from lifecycle wall time. Follow existing pause/cancel, capacity, budgets and
 no-progress gates; never forward private check programs or raw failures.
+
+## Project job-budget policy / 项目作业预算策略
+
+`telos_project_budget` is the only audited entry point for changing a project's
+effective job-admission ceiling. It is owner-only and currently supports only
+`strategy="unlimited"`. It requires a stable `request_id`, `reason` and
+`user_authorization`, and writes one versioned `job_budget_policy` plus an
+append-only authorization history into the single atomic `project.json`. The
+original `max_jobs`, `jobs_started`, frozen contract/hash, task identities and
+history are preserved. Identical replays are idempotent; the same `request_id`
+with different arguments is rejected. Projects without this policy keep their
+original cap. A paused project stays paused; the call never starts, resumes,
+accepts or deploys work. Accepted, cancelled, discussion and damaged-policy
+projects are rejected. Status and compact/final-review views expose the
+initial/effective ceiling, used jobs and authorization history.
+
+An explicit `include_work_turns=true` call records only the separate versioned
+`work_turn_budget_policy` scope and requires an already valid unlimited
+`job_budget_policy` (the v1 object is preserved byte-for-byte). It binds
+project, owner, contract, the original `max_turns` snapshot, current job count
+and the prior v1-policy digest, with a scope-aware canonical argument digest
+and append-only history. Request IDs are unique across both scopes; identical
+replays write nothing, while changed scope/arguments or damaged records fail
+closed. It exempts only the `max_turns` admission gate for current bound
+implementation children of that project (explicit sends/repairs and automatic
+checkpoint continuations, decided under the coordinator lock); exam rounds,
+request/token budgets, no-progress, concurrency, timeouts, model settings,
+pause/cancel and acceptance gates are unchanged. Counts keep incrementing
+(20→21, jobs 62→63) with no reset. It may be recorded while paused but never
+resumes or dispatches; standalone, foreign-project and discussion
+participants are never exempt. Only an absent sibling key is legacy; an
+explicit null is damaged.
+
+中文：`telos_project_budget` 是唯一可审计的项目作业准入上限变更入口，仅原 owner
+可用且当前只支持 `unlimited`。必须提供稳定的 `request_id`、`reason` 和
+`user_authorization`；策略与只追加授权历史写入同一个原子 `project.json`，保留原
+`max_jobs`、已用次数、冻结合同/哈希、任务身份与历史。相同参数重放幂等，异参重放
+拒绝；未调用入口的项目保持原上限。暂停项目保持暂停，绝不自动启动、恢复、接受或部署。
+已接受、已取消、讨论项目或损坏策略一律拒绝。状态及最终审阅展示初始/有效额度、
+已用次数与授权历史。
+
+Hardening: only an absent `job_budget_policy` key preserves legacy behavior.
+An explicit null, unknown kind/version, missing or extra fields, mismatched
+project identity, owner, contract hash, `max_jobs`/`jobs_started` snapshot or a
+recomputed canonical argument digest is rejected as damaged. The owner is
+re-verified from trusted MCP metadata while holding the coordinator lock;
+`caller` is not an MCP argument. `request_id` with surrounding whitespace is
+rejected. Status summaries report the current `jobs_started`; authorization
+history retains the count captured at authorization time.

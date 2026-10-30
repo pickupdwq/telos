@@ -280,6 +280,9 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
                + "Task:\n" + contract["task"] + "\nPublic context:\n" + contract["context"] + "\n")
     if contract.get('allowed_paths'):
         initial += "Allowed change paths (enforced at submission): " + encoded(contract['allowed_paths']) + "\n"
+    if not exam and contract.get('role_snapshot'):
+        from roles import prompt as role_prompt
+        initial += '\nPublic job guidance:\n' + role_prompt(contract['role_snapshot'])
     if contract.get('experience_context'):
         initial += "\nExperience reference:\n" + contract['experience_context'] + "\n"
     if probe:

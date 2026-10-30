@@ -2,7 +2,7 @@
 name: telos
 description: "Supervise Telos delegated development, scoped system audits (code, APIs, page interactions and visual evidence), and confirmed-bug repairs through MCP. Use for requests to use Telos, coordinate independent executors with evidence-based acceptance, or continue an existing TELOS_EVENT. Ordinary coding, general review and questions about Telos do not by themselves authorize starting an executor."
 metadata:
-  version: "3.11.0"
+  version: "3.12.0"
 ---
 
 # Telos
@@ -15,6 +15,7 @@ The current conversation is the supervisor. Understand the user's goal, coordina
 - For a new delegated requirement, begin with [multi-executor meetings](references/meetings.md), then freeze implementation scope using [planning](references/planning.md).
 - For system walkthroughs, code/API/page audits or audit-to-repair work, also read [audits](references/audits.md).
 - Before dispatching a new task, read [executors](references/executors.md) to reuse the installed configuration.
+- For role-based assignments and reusable lessons, read [roles and shared experience](references/roles-experience.md). Use `telos_roles` to choose only the jobs the task needs; preserve existing model preferences and acceptance gates.
 - For any completion event, repair loop or final acceptance, read [acceptance](references/acceptance.md). Resume the existing task rather than opening a replacement.
 
 Read only the references relevant to this stage. Use the connected `telos_*` tool schemas for current arguments; this skill is workflow guidance, not another tool catalog. Explicit user instructions and already granted authorization take precedence over skill preferences; runtime constraints still apply.
@@ -120,3 +121,42 @@ from lifecycle wall time and legacy exclusive counters. Model intervals come fro
 actual request records. Unknown/missing/interrupted history is not invented. The earliest
 known requirement boundary is meeting/task creation, not an unobserved user message.
 See [acceptance](references/acceptance.md) for the installed workflow.
+
+## Project job-budget policy / 项目作业预算策略
+
+`telos_project_budget` is the only audited entry point for changing a project's
+effective job-admission ceiling. It is owner-only and currently supports only
+`strategy="unlimited"`. It requires a stable `request_id`, `reason` and
+`user_authorization`, and writes one versioned `job_budget_policy` plus an
+append-only authorization history into the single atomic `project.json`. The
+original `max_jobs`, `jobs_started`, frozen contract/hash, task identities and
+history are preserved. Identical replays are idempotent; the same `request_id`
+with different arguments is rejected. Projects without this policy keep their
+original cap. A paused project stays paused; the call never starts, resumes,
+accepts or deploys work. Accepted, cancelled, discussion and damaged-policy
+projects are rejected. Status and compact/final-review views expose the
+initial/effective ceiling, used jobs and authorization history.
+
+中文：`telos_project_budget` 是唯一可审计的项目作业准入上限变更入口，仅原 owner
+可用且当前只支持 `unlimited`。必须提供稳定的 `request_id`、`reason` 和
+`user_authorization`；策略与只追加授权历史写入同一个原子 `project.json`，保留原
+`max_jobs`、已用次数、冻结合同/哈希、任务身份与历史。相同参数重放幂等，异参重放
+拒绝；未调用入口的项目保持原上限。暂停项目保持暂停，绝不自动启动、恢复、接受或部署。
+已接受、已取消、讨论项目或损坏策略一律拒绝。状态及最终审阅展示初始/有效额度、
+已用次数与授权历史。
+
+Hardening: only an absent `job_budget_policy` key preserves legacy behavior.
+Optional `include_work_turns=true` on the same owner-only tool records only the
+sibling versioned `work_turn_budget_policy` (requires a prior valid unlimited
+job policy; v1 bytes preserved). It exempts only the `max_turns` gate for
+bound project child work/automatic checkpoints, decided under the coordinator
+lock; every other gate and all counts stay unchanged, and it never resumes or
+dispatches. Request IDs are globally unique across both scopes; damaged/null
+records fail closed and absent means legacy.
+An explicit null, unknown kind/version, missing or extra fields, mismatched
+project identity, owner, contract hash, `max_jobs`/`jobs_started` snapshot or a
+recomputed canonical argument digest is rejected as damaged. The owner is
+re-verified from trusted MCP metadata while holding the coordinator lock;
+`caller` is not an MCP argument. `request_id` with surrounding whitespace is
+rejected. Status summaries report the current `jobs_started`; authorization
+history retains the count captured at authorization time.

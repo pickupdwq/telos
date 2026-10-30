@@ -23,6 +23,8 @@ import effort_policy
 import progress_guard
 import continuation
 import check_runtime
+import project_budget
+import roles
 
 
 class Projects:
@@ -44,6 +46,13 @@ class Projects:
         p = self.b.read_json(self.path(pid))
         if self.b.digest(p['contract']) != p['contract_hash']:
             raise self.b.GateError('Project acceptance contract changed')
+        # A stored policy that cannot be trusted must never silently fall back
+        # to the legacy ceiling or to unlimited admission.
+        try:
+            project_budget.validate_project(p)
+            project_budget.validate_work_project(p)
+        except ValueError as error:
+            raise self.b.GateError(str(error), code='invalid_budget_policy') from None
         return p
 
     def save(self, p):
@@ -91,6 +100,8 @@ class Projects:
                     raise self.b.GateError('Each task needs task and public message')
             if t.get('task_type', 'implementation') == 'audit':
                 import audit
+                if t.get('environment_requirements') is not None:
+                    raise self.b.GateError('Project environment preparation is for implementation tasks only')
                 if t.get('allowed_paths') not in (None, []) or t.get('command_network', False) or any(c.get('network', False) for c in t.get('checks', [])):
                     raise self.b.GateError('Audit children are read-only and use scoped probes, not unrestricted network')
                 t['allowed_paths'] = []
@@ -114,10 +125,14 @@ class Projects:
             except ValueError as error:
                 raise self.b.GateError('Invalid task budget: ' + str(error)) from None
             if any(k in t for k in ('exam_profile', 'exam_provider', 'exam_model', 'exam_reasoning_effort',
-                                     'backends', 'executor', 'workflow_version', '_workflow_version')):
+                                     'backends', 'executor', 'workflow_version', '_workflow_version', 'role_snapshot')):
                 raise self.b.GateError('New project tasks configure one executor; internal/legacy bindings are not task inputs')
-            t['executor'] = self.b.providers.resolve_executor(self.b.config(), **{k: t.get(k) for k in (
-                'executor_profile', 'provider', 'model', 'reasoning_effort')})
+            role = roles.freeze(self.b.config(), t.get('role_profile'))
+            if role:
+                t['role_snapshot'] = role
+            t['experience_tags'] = roles.tags(t.get('experience_tags'))
+            t['executor'] = self.b.providers.resolve_executor(self.b.config(), **roles.executor_options(
+                role, **{k: t.get(k) for k in ('executor_profile', 'provider', 'model', 'reasoning_effort')}))
             t['workflow_version'] = 3
             t['work_reply_version'] = 2
             t['auto_continue_checkpoints'] = continuation.freeze(t.get('auto_continue_checkpoints'), self.b.config())
@@ -169,6 +184,10 @@ class Projects:
 
     def validate_public_task(self, t, private_contract):
         fields = {key: t.get(key, '') for key in ('task', 'context', 'message')}
+        if t.get('role_snapshot'):
+            fields['role_guidance'] = roles.prompt(t['role_snapshot'])
+            if not self.b.experience_manager().safe_public(fields['role_guidance'], [private_contract]):
+                raise self.b.GateError('Role guidance must exclude private acceptance material and credentials')
         fields['allowed_paths'] = self.b.encoded(t.get('allowed_paths'))
         if t.get('environment_requirements') is not None:
             fields['environment_requirements'] = self.b.encoded(t['environment_requirements'])
@@ -282,6 +301,7 @@ class Projects:
                 t['progress_guard'] = stat.get('progress_guard')
                 t['auto_continue_pending'] = stat.get('auto_continue_pending')
                 t['automatic_checks'] = stat.get('automatic_checks')
+                t['audit_check_correction'] = stat.get('audit_check_correction')
                 if t['phase'] != 'ready' and not t.get('discussion_pending'):
                     t.pop('start_error', None)
                 # A rejected start never reaches the child's execution state.
@@ -390,6 +410,9 @@ class Projects:
         result = {k: p[k] for k in ('project_id', 'phase', 'continuation', 'execution_mode', 'strategy',
                                    'decision_reason', 'max_parallel', 'max_jobs', 'jobs_started', 'base_commit')}
         result['contract_hash'] = p.get('contract_hash')
+        result['job_budget'] = project_budget.summary(p)
+        result['work_turn_budget'] = project_budget.work_turn_summary(
+            p, int(self.b.config()['max_turns']))
         if p.get('kind') == 'discussion':
             from meetings import Meetings
             result['discussion'] = Meetings(self.b).view(p)
@@ -404,7 +427,8 @@ class Projects:
             item = {k: t.get(k) for k in ('id', 'task', 'depends_on', 'allowed_paths', 'provider', 'model',
                                            'executor_profile', 'workflow_version', 'reasoning_effort',
                                            'session_id', 'phase', 'accepted_commit', 'event_id', 'error',
-                                           'budget', 'revision', 'reasoning_policy', 'auto_run_checks', 'automatic_checks')}
+                                           'budget', 'revision', 'reasoning_policy', 'auto_run_checks', 'automatic_checks', 'audit_check_correction',
+                                           'role_snapshot', 'experience_tags')}
             item['progress_guard'] = t.get('progress_guard')
             if p.get('kind') == 'discussion':
                 item.update(role=t['role'], active=t.get('active', True), queued_followup=bool(t.get('discussion_pending')))
@@ -417,6 +441,7 @@ class Projects:
                         item['clarification'] = observed['clarification']
                     item['environment'] = observed.get('environment')
                     item['auto_continue_pending'] = observed.get('auto_continue_pending')
+                    item['audit_check_correction'] = observed.get('audit_check_correction')
                     item['budget'] = observed['budget']
                     item['usage'] = observed['usage']
                     snapshots[t['session_id']] = item['usage']
@@ -437,6 +462,8 @@ class Projects:
                     snapshots[t['session_id']] = item['usage']
                     item['timing'] = timing.snapshot(child, requests=item['usage'].get('request_intervals'))
                     item['automatic_checks'] = check_runtime.public(child)
+                    import audit_check_correction
+                    item['audit_check_correction'] = audit_check_correction.public(child)
                     if child.get('delivery'):
                         from delivery import summary
                         item['delivery'] = summary(child['delivery'])
@@ -547,9 +574,88 @@ class Projects:
             return False
         if sum(s.get('capacity_unknown') or s.get('active_provider', s.get('provider', 'ark')) == provider for s in running) >= self.b.config().get('provider_max_parallel', 3):
             return False
-        if not local_checks and p is not None and p.get('max_jobs') is not None and p['jobs_started'] >= p['max_jobs']:
-            raise self.b.GateError('Project job budget exhausted; no more model jobs')
+        if not local_checks and p is not None:
+            try:
+                ceiling = project_budget.effective_max_jobs(p)
+            except ValueError as error:
+                raise self.b.GateError(str(error), code='invalid_budget_policy') from None
+            if ceiling is not None and p['jobs_started'] >= ceiling:
+                raise self.b.GateError('Project job budget exhausted; no more model jobs')
         return True
+
+    def budget(self, pid, request_id, reason, user_authorization, strategy='unlimited',
+               include_work_turns=False, caller=None):
+        """Original-supervisor-only, audited job ceiling policy change.
+
+        Only the one-way ``unlimited`` strategy is supported.  The frozen
+        contract, max_jobs, jobs_started, tasks and continuation stay untouched;
+        a paused project remains paused and nothing is started or accepted.
+        """
+        with self.lock():
+            if type(include_work_turns) is not bool:
+                raise self.b.GateError('include_work_turns must be a boolean',
+                                       code='invalid_arguments',
+                                       next_action='correct_arguments')
+            p = self.load(pid)
+            if not p.get('owner'):
+                raise self.b.GateError('Only the original owner can change the job budget policy',
+                                       code='owner_required', next_action='use_original_supervisor')
+            # Re-check the trusted metadata-derived caller under the same lock as
+            # the mutation. There is no MCP argument that can supply this value.
+            if not isinstance(caller, str) or caller != p['owner']['thread_id']:
+                raise self.b.GateError('Project belongs to another supervisor thread',
+                                       code='owner_mismatch', next_action='use_original_supervisor')
+            if p.get('kind') == 'discussion':
+                raise self.b.GateError('Discussion projects have no job budget policy',
+                                       code='unsupported_project_kind')
+            if p['phase'] == 'accepted' or p['continuation'] == 'cancelled' or p.get('phase') == 'cancelled':
+                raise self.b.GateError('Cancelled or accepted projects cannot change budget policy',
+                                       code='project_terminal')
+            try:
+                if include_work_turns is True:
+                    # This call records only the sibling work-turn scope; the
+                    # existing v1 object (and its request ids) stays byte-for-byte.
+                    if project_budget.validate_project(p) is None:
+                        raise ValueError('A valid unlimited job budget policy is required first')
+                    snapshot = self._turns_snapshot(p)
+                    updated, work_replayed, work_turns = project_budget.authorize_work(
+                        p, owner_thread_id=caller, request_id=request_id,
+                        reason=reason, user_authorization=user_authorization,
+                        now=time.time(), original_max_turns=int(self.b.config()['max_turns']),
+                        turns_snapshot=snapshot)
+                    replayed, policy = work_replayed, project_budget.summary(updated)
+                else:
+                    updated, replayed, policy = project_budget.authorize(
+                        p, owner_thread_id=caller, strategy=strategy,
+                        request_id=request_id, reason=reason,
+                        user_authorization=user_authorization, now=time.time())
+                    work_turns = project_budget.work_turn_summary(
+                        updated, int(self.b.config()['max_turns']))
+            except ValueError as error:
+                raise self.b.GateError(str(error), code='invalid_budget_policy') from None
+            if not replayed:
+                self.save(updated)
+            return {'project_id': pid, 'replayed': replayed, 'strategy': strategy,
+                    'continuation': p['continuation'], 'phase': p['phase'],
+                    'max_jobs': p['max_jobs'], 'jobs_started': p['jobs_started'],
+                    'contract_hash': p.get('contract_hash'),
+                    'tasks_unchanged': True, 'job_budget': policy,
+                    'work_turn_budget': work_turns}
+
+    def _turns_snapshot(self, p):
+        """Actual per-child turn counts; unreadable sessions remain explicitly null."""
+        snapshot = {}
+        for task in p.get('tasks', []):
+            sid = task.get('session_id')
+            if not sid:
+                continue
+            try:
+                state = self.b.read_json(self.b.run_dir(sid) / 'state.json')
+                turns = state.get('turns')
+                snapshot[sid] = turns if type(turns) is int and turns >= 0 else None
+            except (OSError, ValueError):
+                snapshot[sid] = None
+        return snapshot or {'unknown': None}
 
     def launch(self, p, sid, kind, message='', event_id=None, discussion_request_id=None,
                reasoning_effort=None, reasoning_reason=None, automatic=False, continuation_id=None):
@@ -563,6 +669,16 @@ class Projects:
                 extra['_continuation_id'] = continuation_id
             if reasoning_effort is not None or reasoning_reason is not None:
                 extra.update(reasoning_effort=reasoning_effort, reasoning_reason=reasoning_reason)
+            try:
+                decision = (project_budget.work_turn_decision(
+                                p, session_id=sid,
+                                child_contract_hash=before.get('contract_hash'),
+                                child_owner_thread_id=(before.get('owner') or {}).get('thread_id'))
+                            if kind == 'send' else None)
+            except ValueError as error:
+                raise self.b.GateError(str(error), code='invalid_budget_policy') from None
+            if decision is not None:
+                extra['_work_turns'] = decision
             result = self.b._start_job(sid, kind, message, event_id, **extra)
         except Exception as error:
             # Validation and definite spawn failure leave the old job identity.
@@ -691,6 +807,7 @@ class Projects:
                                          _session_id=t['session_id'], _base_commit=base, _project_id=pid,
                                          _usage_id=t.get('usage_id'), _budget=t.get('budget'),
                                          _reasoning_policy=t.get('reasoning_policy'),
+                                         _role_snapshot=t.get('role_snapshot'), experience_tags=t.get('experience_tags'),
                                           auto_continue_checkpoints=t.get('auto_continue_checkpoints', False),
                                           auto_run_checks=t.get('auto_run_checks', False),
                                           _work_reply_version=t.get('work_reply_version', 1),
@@ -969,6 +1086,27 @@ class Projects:
             task[field] = binding[field]
         task['executor_profile'] = binding['profile']
 
+    def unstarted_audit_normalization(self, p, t, old):
+        if t.get('task_type') != 'audit' or t.get('environment_requirements') is None:
+            return None
+        reason = 'Project environment preparation is for implementation tasks only'
+        prior = [h for h in p.get('history', []) if h.get('task_id') == t['id']]
+        session_ids = {t['session_id']} | {h['previous_session_id'] for h in prior if h.get('previous_session_id')}
+        usage_ids = session_ids | {t.get('usage_id') or t['session_id']}
+        paths = ([self.b.run_dir(sid) for sid in session_ids]
+                 + [self.b.usage_path(sid) for sid in usage_ids])
+        # This legacy error happened before create_session wrote anything. Any
+        # child, ledger or residual artifact makes "never executed" uncertain;
+        # do not reinterpret an existing frozen contract as a setup-only error.
+        if (t.get('phase') != 'setup_error' or old is not None or t.get('error') != reason
+                or any(t.get(key) for key in ('base_commit', 'accepted_commit', 'event_id'))
+                or any(h.get('previous_worktree') for h in prior)
+                or any(path.exists() or path.is_symlink() for path in paths)):
+            raise self.b.GateError('Cannot normalize audit environment requirements unless setup failed before any session or execution evidence')
+        return {'field': 'environment_requirements', 'previous_value': copy.deepcopy(t['environment_requirements']),
+                'reason': reason, 'previous_phase': t['phase'], 'previous_error': t.get('error'),
+                'previous_start_error': copy.deepcopy(t.get('start_error'))}
+
     def reassign(self, pid, task_id, decision_reason, provider=None, model=None, message=None,
                  executor_profile=None, reasoning_effort=None):
         with self.lock():
@@ -982,7 +1120,11 @@ class Projects:
                 raise self.b.GateError('Only unstarted, failed or returned nonaccepted tasks can be reassigned; grade pending work first')
             if t['revision'] >= 3:
                 raise self.b.GateError('Task reassignment limit reached')
+            old = self.child(t)
+            normalization = self.unstarted_audit_normalization(p, t, old)
             new = dict(t)
+            if normalization:
+                new.pop('environment_requirements')
             binding = self.b.backend_bindings(t)['executor']
             if executor_profile is not None or (provider is not None and provider != binding['provider']):
                 binding = self.b.providers.resolve_executor(self.b.config(), executor_profile=executor_profile,
@@ -1012,11 +1154,13 @@ class Projects:
                 new['message'] = message
             self.validate_public_task(new, new)
             self.validate_public_task(new, p['contract'])
-            old = self.child(t)
             if old:
                 self.b.return_control(t['session_id'], 'cancel')
-            p['history'].append({'at': time.time(), 'task_id': task_id, 'previous_session_id': t['session_id'],
-                                 'previous_worktree': old.get('worktree') if old else None, 'reason': decision_reason})
+            entry = {'at': time.time(), 'task_id': task_id, 'previous_session_id': t['session_id'],
+                     'previous_worktree': old.get('worktree') if old else None, 'reason': decision_reason}
+            if normalization:
+                entry['normalizations'] = [normalization]
+            p['history'].append(entry)
             if not new.get('usage_id'):
                 # Legacy task: its prior ledger is keyed by the old session ID.
                 new['usage_id'] = t['session_id']
@@ -1161,6 +1305,7 @@ class Projects:
             state = {'session_id': pid, 'worktree': p['integration']['worktree']}
             commit, target = b.snapshot(state, ident)
             audit_reports = {}
+            audit_corrections = {}
             deliveries = {}
             for task in p['tasks']:
                 child_state, child_contract = b.load_session(b.run_dir(task['session_id']))
@@ -1172,6 +1317,9 @@ class Projects:
                     'delivery': child_packet.get('delivery')}
                 if child_contract.get('task_type') == 'audit':
                     import audit
+                    import audit_check_correction
+                    if correction := audit_check_correction.public(child_state):
+                        audit_corrections[task['id']] = correction
                     evidence = child_packet['audit']
                     audit.verify(b, child_state, child_contract, evidence)
                     audit_reports[task['id']] = {'evidence': evidence, 'review': child_state['acceptance']['audit_review']}
@@ -1184,6 +1332,8 @@ class Projects:
                       'dependency_contracts': dependency_contracts}
             if audit_reports:
                 packet['audits'] = audit_reports
+            if audit_corrections:
+                packet['audit_check_corrections'] = audit_corrections
             b.write_json(self.path(pid).parent / 'integration-review.json', packet)
             phase = 'awaiting_final_review' if all(x['status'] == 'passed' for x in checks) else 'integration_failed'
             update = {'commit': commit, 'packet_id': b.digest(packet)}
@@ -1218,6 +1368,9 @@ class Projects:
                     'instruction': 'Supervisor must inspect the integrated code and answer each final acceptance criterion with evidence before finish. These private references must not be forwarded to workers.',
                     'project_id': pid, 'worktree': p['integration'].get('worktree'), 'commit': packet.get('commit'),
                     'pins': p['integration'].get('pins'), 'contract_hash': p.get('contract_hash'),
+                    'job_budget': project_budget.summary(p),
+                    'work_turn_budget': project_budget.work_turn_summary(
+                        p, int(self.b.config()['max_turns'])),
                     'blockers': (p.get('final_review') or {}).get('blockers', []),
                     'final_review': p.get('final_review'), 'usage': self._usage(p),
                     'timing': self._timing(p),
@@ -1313,6 +1466,14 @@ class Projects:
         if 'project_id' not in args:
             raise self.b.GateError('project_id is required', code='invalid_arguments', next_action='correct_arguments')
         pid = args['project_id']
+        if name == 'telos_project_budget':
+            rest = {k: v for k, v in args.items() if k != 'project_id'}
+            try:
+                inspect.signature(self.budget).bind(pid, caller=caller, **rest)
+            except TypeError:
+                raise self.b.GateError('Missing required or unsupported tool arguments; consult the tool schema',
+                                       code='invalid_arguments', next_action='correct_arguments') from None
+            return self.budget(pid, caller=caller, **rest)
         self.authorize(self.load(pid), caller)
         rest = {k: v for k, v in args.items() if k != 'project_id'}
         mapping = {'start': self.tick, 'status': self.status, 'receive': self.receive, 'update': self.update,

@@ -6,6 +6,7 @@ import time
 import uuid
 import effort_policy
 import progress_guard
+import roles
 
 
 GUIDANCE = (
@@ -60,15 +61,16 @@ class Meetings:
             raise b.GateError('A meeting supports at most 30 participants; concurrency is separate')
         out = []
         for raw in values:
-            if not isinstance(raw, dict) or set(raw) - {'id', 'role', 'executor_profile', 'provider', 'model', 'reasoning_effort', 'reasoning_policy'}:
+            if not isinstance(raw, dict) or set(raw) - {'id', 'role', 'executor_profile', 'provider', 'model', 'reasoning_effort', 'reasoning_policy', 'role_profile', 'experience_tags'}:
                 raise b.GateError('Invalid meeting participant fields')
             ident, role = raw.get('id'), raw.get('role')
             if (not isinstance(ident, str) or not re.fullmatch(r'[a-zA-Z0-9_-]{1,64}', ident)
                     or ident in ids or not isinstance(role, str) or not role.strip()):
                 raise b.GateError('Participants need unique IDs and concrete roles')
             ids.add(ident)
-            binding = b.providers.resolve_executor(b.config(), **{k: raw.get(k) for k in
-                ('executor_profile', 'provider', 'model', 'reasoning_effort')})
+            snapshot = roles.freeze(b.config(), raw.get('role_profile'))
+            binding = b.providers.resolve_executor(b.config(), **roles.executor_options(snapshot,
+                **{k: raw.get(k) for k in ('executor_profile', 'provider', 'model', 'reasoning_effort')}))
             task = {'id': ident, 'role': role, 'task': 'Design assessment: ' + role,
                     'message': 'Independently assess the requirement from your role. Inspect relevant code and return your report.',
                     'depends_on': [], 'allowed_paths': [], 'questions': [], 'checks': [],
@@ -77,6 +79,10 @@ class Meetings:
                     'budget': None, 'usage_id': uuid.uuid4().hex,
                     'session_id': uuid.uuid4().hex, 'phase': 'pending', 'revision': 1, 'active': True}
             self.projects.backend_fields(task)
+            if snapshot:
+                task['role_snapshot'] = snapshot
+            task['experience_tags'] = roles.tags(raw.get('experience_tags'))
+            self.projects.validate_public_task(task, task)
             task['reasoning_policy'] = effort_policy.freeze(binding, b.config(), raw.get('reasoning_policy'))
             out.append(task)
         return out

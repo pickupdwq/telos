@@ -50,10 +50,10 @@ def main():
         responses = {r["id"]: r["result"] for r in map(json.loads, probe.stdout.splitlines())}
         tools = [x["name"] for x in responses[2]["tools"]]
         require(responses[1]["serverInfo"]["name"] == "telos" and responses[1]["serverInfo"]["version"] == VERSION, "MCP 名称或版本不匹配。")
-        require(len(tools) == 29 and {"telos_receive", "telos_return_control", 'telos_replan', 'telos_audit_probe',
+        require(len(tools) == 33 and {"telos_receive", "telos_return_control", 'telos_replan', 'telos_audit_probe', 'telos_project_budget', 'telos_correct_audit_status', 'telos_roles', 'telos_experience_publish',
                 'telos_meeting_open', 'telos_meeting_round', 'telos_meeting_conclude'} <= set(tools), "MCP 工具不完整。")
         require(responses[3]["isError"] and "trusted MCP" in responses[3]["content"][0]["text"], "来源绑定没有拒绝无来源请求。")
-        print("MCP 版本、29 个工具和来源绑定检查通过。", flush=True)
+        print("MCP 版本、33 个工具和来源绑定检查通过。", flush=True)
         tests = subprocess.run([python, str(install / "test_callbacks.py")],
                                env=env, capture_output=True, text=True, timeout=90)
         if tests.returncode:

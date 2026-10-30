@@ -47,6 +47,9 @@
   "exam_max_tokens": 8192,
   "exam_format_attempts": 3,
   "experience_enabled": true,
+  "roles_enabled": true,
+  "role_profiles": {},
+  "shared_experience_enabled": true,
   "watch": {
     "auto_tmux": true
   },

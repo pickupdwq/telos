@@ -1,3 +1,31 @@
+## 3.12.0 — 2026-10-30
+
+- Add versioned public designer/developer/tester profiles, custom job templates,
+  explicit model override precedence and frozen guidance for queued tasks/meetings.
+- Preserve existing repository experience and add owner-reviewed shared lessons
+  with applicability tags, source revalidation, concurrent deduplication, disablement
+  and bounded injection receipts. No automatic promotion of private/business-specific
+  records, no live task updates, and no extra model calls.
+- Keep original supervisor ownership, private checks, closed-book examinations,
+  project acceptance, permissions, budgets and no-progress guards.
+- Add native CLI, real Git/project acceptance, legacy compatibility and installer
+  regressions; update the supervisor Skill and generated MCP reference.
+
+## 3.11.1 — 2026-10-29
+
+- Add the owner-only, audited `telos_project_budget` API with the one-way
+  `unlimited` strategy. The versioned policy and append-only authorization
+  history live in the single atomic project record; `max_jobs`, `jobs_started`,
+  the frozen contract/hash, task identities and history are preserved.
+- Admission uses the policy's effective ceiling; projects without a policy keep
+  their original cap. Unknown or damaged policies fail closed. Paused projects
+  remain paused and no work is started, resumed, accepted or deployed.
+- Validate policy version/type/required fields, recomputed argument digests,
+  project identity, owner, contract and budget snapshots. Only a missing policy
+  preserves legacy behavior; explicit null is damaged. Re-verify the trusted
+  caller under the coordinator lock, reject whitespace-normalized request IDs,
+  and report current `jobs_started` while retaining authorization snapshots.
+
 # 3.11.0
 
 - Opt-in frozen automatic checks for sessions and queued project children; original supervisor acceptance remains mandatory.
