@@ -300,7 +300,8 @@ def effective(b, state, original):
             or (result.get('correction') or {}).get('proposal_hash') != row['proposal_hash']):
         raise ValueError('Correction authorization no longer matches its retained event action')
     fixed, change = corrected_contract(original)
-    if row['change'] != change or row['effective_contract_hash'] != b.digest(fixed) or state['contract_hash'] != b.digest(fixed):
+    if (row['change'] != change or row['effective_contract_hash'] != b.digest(fixed)
+            or ('check_revision' not in state and state['contract_hash'] != b.digest(fixed))):
         raise ValueError('Correction differs from its fixed AST rule')
     proof = row['source_proof']
     if not isinstance(proof, dict) or proof != source_proof(b, state, proof.get('submission')):
@@ -353,6 +354,8 @@ def correct(b, sid, request_id, reason, user_authorization, event_id, caller, ap
             raise ValueError('Apply requires the exact reviewed proposal_hash')
         with b.project_manager().lock(), b.locked(sid) as root:
             state, contract = b.load_session(root)
+            if 'check_revision' in state:
+                raise ValueError('A generic check revision exists; the fixed historical correction cannot be applied afterwards')
             owner = (state.get('owner') or {}).get('thread_id')
             if not owner or owner != caller:
                 raise b.GateError('Path correction requires the original trusted supervisor', code='owner_mismatch')

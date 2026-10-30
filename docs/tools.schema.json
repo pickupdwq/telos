@@ -3684,6 +3684,96 @@
       }
     },
     {
+      "name": "telos_preflight_checks",
+      "description": "Pure read-only check-configuration preflight. Parses and compiles inline Python checks without executing them or writing state. Hard-rejects only deterministic syntax/compile failures and provable direct conflicts with the shared audit report top-level schema; missing paths and dynamic expressions are advisory because implementations may generate them. Accepts an existing session_id or an explicit contract/checks proposal. Never dispatches, accepts, installs or changes contracts.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "contract": {
+            "type": "object"
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "root": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "contract",
+          "checks",
+          "root"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "telos_revise_checks",
+      "description": "Original supervisor only: preview or apply one versioned revision of an existing check's inline Python argv[2] program. Preview is read-only and shows complete before/after/diff plus a proposal_hash bound to identity, original contract, effective hash, received event, submission and prior evidence hashes. Apply recomputes under project/session locks and requires the reviewed proposal_hash, user_authorization, a standard-preservation reason and evidence references. All other contract fields and original contract bytes stay unchanged; assertion nodes cannot be removed. Preserves counters/budget/history, invalidates only current packet/acceptance/auto-check pointers, and leaves fresh checks, same-executor exam, supervisor grade and project final binding mandatory. Stable request_id is idempotent; different arguments and stale/tampered proposals are rejected. Never dispatches, resumes, accepts or merges.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "user_authorization": {
+            "type": "string"
+          },
+          "event_id": {
+            "type": "string"
+          },
+          "check_id": {
+            "type": "string"
+          },
+          "before_program": {
+            "type": "string"
+          },
+          "after_program": {
+            "type": "string"
+          },
+          "preservation_reason": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "apply": {
+            "type": "boolean",
+            "default": false
+          },
+          "proposal_hash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "request_id",
+          "reason",
+          "user_authorization",
+          "event_id",
+          "check_id",
+          "before_program",
+          "after_program",
+          "preservation_reason",
+          "evidence"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "telos_correct_audit_status",
       "description": "Original supervisor only: explicitly record one versioned correction of the invalid historical audit status whitelist literal pass to canonical passed. Fixed AST rule only; accepts no replacement code. Preserves original contract.json, task/session identity, evidence files, counters, budgets, thresholds and all other criteria. Requires completed unaccepted audit work, received event, no running job or exam, reason and user_authorization. Stable request_id is idempotent. Invalidates current check/packet pointers; normal new checks, same-executor exam and supervisor grade remain mandatory. Never dispatches, resumes, accepts or changes report contents.",
       "inputSchema": {

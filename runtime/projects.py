@@ -214,6 +214,16 @@ class Projects:
                 t['context'] = context + '\nTask context:\n' + t['context']
         b = self.b
         dependency_paths = b.validate_dependencies([] if dependency_paths is None else dependency_paths)
+        import check_preflight
+        try:
+            check_preflight.require_valid({'task_type': 'implementation', 'checks': checks}, root=repo)
+            for t in tasks:
+                check_preflight.require_valid(
+                    {'task_type': t.get('task_type', 'implementation'),
+                     'checks': t.get('checks') or []}, root=repo)
+        except (ValueError, TypeError, SyntaxError) as error:
+            raise b.GateError(str(error), code='check_preflight_failed',
+                              next_action='correct_checks') from None
         b.validate_exam(questions, checks, 90, 5)
         final_contract = {'questions': questions, 'checks': checks}
         b.validate_public_material(final_contract, task=task, context=context)
@@ -458,6 +468,8 @@ class Projects:
                     item['audit_check_correction'] = audit_check_correction.public(child)
                     import test_path_correction
                     item['test_path_correction'] = test_path_correction.public(child)
+                    import check_revision
+                    item['check_revision'] = check_revision.public(child)
                     if child.get('delivery'):
                         from delivery import summary
                         item['delivery'] = summary(child['delivery'])
@@ -1060,6 +1072,12 @@ class Projects:
                             if key in p['contract']:
                                 task.setdefault(key, p['contract'][key])
                 tasks = self.validate_tasks(additions, p['tasks'])
+                import check_preflight
+                try:
+                    for t in tasks:
+                        check_preflight.require_valid(t, root=p['repo'])
+                except ValueError as error:
+                    raise self.b.GateError(str(error), code='check_preflight_failed') from None
                 for t in tasks:
                     self.validate_public_task(t, p['contract'])
                 for t in tasks:
@@ -1300,12 +1318,16 @@ class Projects:
             audit_reports = {}
             audit_corrections = {}
             path_corrections = {}
+            check_revisions = {}
             deliveries = {}
             for task in p['tasks']:
                 child_state, child_contract = b.load_session(b.run_dir(task['session_id']))
                 import test_path_correction
                 if correction := test_path_correction.public(child_state):
                     path_corrections[task['id']] = correction
+                import check_revision
+                if revision := check_revision.public(child_state):
+                    check_revisions[task['id']] = revision
                 child_packet = b.read_json(b.run_dir(task['session_id']) / f"attempt-{child_state['rounds']}.json")
                 if b.digest(child_packet) != child_state.get('packet_id') or child_packet.get('commit') != p['integration']['pins'][task['id']]:
                     raise b.GateError('Child delivery/evidence changed after acceptance')
@@ -1333,6 +1355,8 @@ class Projects:
                 packet['audit_check_corrections'] = audit_corrections
             if path_corrections:
                 packet['test_path_corrections'] = path_corrections
+            if check_revisions:
+                packet['check_revisions'] = check_revisions
             b.write_json(self.path(pid).parent / 'integration-review.json', packet)
             phase = 'awaiting_final_review' if all(x['status'] == 'passed' for x in checks) else 'integration_failed'
             update = {'commit': commit, 'packet_id': b.digest(packet)}

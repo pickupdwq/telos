@@ -5,6 +5,7 @@ No third-party Python dependencies. No native Codex subagents or OMX team worker
 """
 from __future__ import annotations
 import argparse
+import copy
 import contextlib
 import fcntl
 import inspect
@@ -313,6 +314,12 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
             raise GateError('Discussion sessions are read-only meeting participants without acceptance material')
     elif task_type not in ('implementation', 'audit'):
         raise GateError('task_type must be implementation or audit')
+    import check_preflight
+    try:
+        check_preflight.require_valid({'task_type': task_type, 'checks': checks}, root=repo)
+    except (ValueError, TypeError, SyntaxError) as error:
+        raise GateError(str(error), code='check_preflight_failed',
+                        next_action='correct_checks') from None
     if task_type == 'audit':
         if _workflow_version != 3 or command_network or any(c.get('network', False) for c in checks) or repair_of is not None:
             raise GateError('Audit tasks use the current workflow, scoped probes and network-free quality checks')
@@ -463,24 +470,54 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
             "return_channel": {"enabled": bool(owner), "owner_thread_id": owner["thread_id"] if owner else None}}
 
 
-def load_session(root):
+def load_session(root, *, read_only=False):
     import state_store
-    state = state_store.read(bridge_services(), root)
+    if read_only:
+        try:
+            state = state_store.validate(read_json(root / 'state.json'), root.name)
+        except (OSError, ValueError, TypeError, OverflowError) as error:
+            raise GateError('Invalid session state: ' + str(error)[:300]) from None
+    else:
+        state = state_store.read(bridge_services(), root)
     try:
         contract = read_json(root / "contract.json")
         if not isinstance(contract, dict):
             raise ValueError('Invalid contract object')
     except (OSError, ValueError) as error:
+        if read_only:
+            raise GateError('Invalid session contract: ' + str(error)[:300]) from None
         raise state_store.quarantine(bridge_services(), root, error) from None
     try:
         import task_budget
         task_budget.validate(state, contract)
-        import audit_check_correction, test_path_correction
+        import audit_check_correction, check_revision, test_path_correction
+        raw_contract = contract
         correction = test_path_correction if test_path_correction.KEY in state else audit_check_correction
-        contract = correction.effective(bridge_services(), state, contract)
+        if check_revision.KEY in state:
+            row = state[check_revision.KEY]
+            if (row is None or not isinstance(row, dict)
+                    or not isinstance(row.get('revisions'), list) or not row['revisions']
+                    or not isinstance(row['revisions'][0], dict)
+                    or not isinstance(row['revisions'][0].get('base_effective_hash'), str)):
+                raise ValueError('Check revision record is null or invalid')
+            # Validate the historical fixed correction / original hash against
+            # an in-memory base view only. The frozen files and real state are
+            # never migrated or rewritten by loading.
+            legacy_state = copy.deepcopy(state)
+            legacy_state.pop(check_revision.KEY, None)
+            legacy_state['contract_hash'] = row['revisions'][0]['base_effective_hash']
+            base = correction.effective(bridge_services(), legacy_state, raw_contract)
+            if digest(base) != legacy_state['contract_hash']:
+                raise ValueError('Check revision base contract hash changed')
+            contract = check_revision.effective(bridge_services(), state, raw_contract, base)
+        else:
+            contract = correction.effective(bridge_services(), state, raw_contract)
     except (ValueError, TypeError, KeyError, SyntaxError) as error:
+        if read_only:
+            raise GateError('Invalid session contract: ' + str(error)[:300]) from None
         raise state_store.quarantine(bridge_services(), root, error) from None
-    (STATE / 'quarantine' / (root.name + '.json')).unlink(missing_ok=True)
+    if not read_only:
+        (STATE / 'quarantine' / (root.name + '.json')).unlink(missing_ok=True)
     return state, contract
 
 
@@ -1967,6 +2004,8 @@ def status(sid, detail='full'):
         result['test_path_correction'] = test_path_correction.public(state)
         import task_budget
         result['work_turn_budget'] = task_budget.summary(state, config()['max_turns'])
+        import check_revision
+        result['check_revision'] = check_revision.public(state)
         result['environment'] = state.get('environment')
         result['version'] = VERSION
         result.update(base_commit=state.get('base_commit'), submitted_commit=state.get('submitted_commit'),
@@ -1977,7 +2016,7 @@ def status(sid, detail='full'):
         result['task_type'] = contract.get('task_type', 'implementation')
         result['auto_run_checks'] = contract.get('auto_run_checks', False)
         result['automatic_checks'] = check_runtime.public(state)
-        if (state.get('audit_check_correction') or state.get('test_path_correction')) and not state.get('packet_id') and state['phase'] == 'not_accepted':
+        if (state.get('audit_check_correction') or state.get('test_path_correction') or state.get('check_revision')) and not state.get('packet_id') and state['phase'] == 'not_accepted':
             result['next_action'] = 'telos_evaluate'
         if (state.get('auto_check') or {}).get('status') in ('queued', 'running'):
             result['next_action'] = 'await_checks_completion'
@@ -2069,6 +2108,8 @@ def review_packet(sid, detail='full'):
         result['test_path_correction'] = test_path_correction.public(state)
         import task_budget
         result['work_turn_budget'] = task_budget.summary(state, config()['max_turns'])
+        import check_revision
+        result['check_revision'] = check_revision.public(state)
         if detail == 'summary':
             return compact_views.review(result)
         result['detail'] = 'full'
@@ -2434,6 +2475,16 @@ OPEN_TOOL['description'] += (' Optional reasoning_policy.allowed_efforts freezes
                            'unknown capabilities remain fixed unless explicitly configured locally. No token cap is required.')
 
 TOOLS += [
+    {"name": "telos_preflight_checks", "description": ("Pure read-only check-configuration preflight. Parses and compiles inline Python checks without executing them or writing state. Hard-rejects only deterministic syntax/compile failures and provable direct conflicts with the shared audit report top-level schema; missing paths and dynamic expressions are advisory because implementations may generate them. Accepts an existing session_id or an explicit contract/checks proposal. Never dispatches, accepts, installs or changes contracts."),
+     "inputSchema": obj({**SID, "contract": {"type": "object"}, "checks": {"type": "array", "items": {"type": "object"}},
+                         "root": STR})},
+    {"name": "telos_revise_checks", "description": ("Original supervisor only: preview or apply one versioned revision of an existing check's inline Python argv[2] program. Preview is read-only and shows complete before/after/diff plus a proposal_hash bound to identity, original contract, effective hash, received event, submission and prior evidence hashes. Apply recomputes under project/session locks and requires the reviewed proposal_hash, user_authorization, a standard-preservation reason and evidence references. All other contract fields and original contract bytes stay unchanged; assertion nodes cannot be removed. Preserves counters/budget/history, invalidates only current packet/acceptance/auto-check pointers, and leaves fresh checks, same-executor exam, supervisor grade and project final binding mandatory. Stable request_id is idempotent; different arguments and stale/tampered proposals are rejected. Never dispatches, resumes, accepts or merges."),
+     "inputSchema": obj({**SID, "request_id": STR, "reason": STR, "user_authorization": STR,
+                         "event_id": STR, "check_id": STR, "before_program": STR,
+                         "after_program": STR, "preservation_reason": STR, "evidence": STR,
+                         "apply": {"type": "boolean", "default": False}, "proposal_hash": STR},
+                        ['session_id', 'request_id', 'reason', 'user_authorization', 'event_id',
+                         'check_id', 'before_program', 'after_program', 'preservation_reason', 'evidence'])},
     {"name": "telos_correct_audit_status", "description": ("Original supervisor only: explicitly record one versioned correction of the invalid historical audit status whitelist literal pass to canonical passed. Fixed AST rule only; accepts no replacement code. Preserves original contract.json, task/session identity, evidence files, counters, budgets, thresholds and all other criteria. Requires completed unaccepted audit work, received event, no running job or exam, reason and user_authorization. Stable request_id is idempotent. Invalidates current check/packet pointers; normal new checks, same-executor exam and supervisor grade remain mandatory. Never dispatches, resumes, accepts or changes report contents."),
      "inputSchema": obj({**SID, "request_id": STR, "reason": STR, "user_authorization": STR, "event_id": STR})},
     {"name": "telos_correct_test_path", "description": ("Original supervisor only: preview or apply one fixed missing pytest path correction from tests/test_device_import_preview.py to tests/test_device_template.py under ai-device-risk. No arbitrary code/path input. Requires received event and completed unaccepted implementation, static supported invocation and immutable Git proof. Preview is read-only; apply requires its proposal_hash. Preserves original contract, identities, counters and evidence. At most five additional evaluation rounds are recovered solely from retained missing-path/zero-tests failures; original max_rounds stays unchanged and recovery is consumed only above it. Does not relax other controls, dispatch, resume or accept. Fresh checks, same-executor exam and supervisor grade remain mandatory."),
@@ -2566,7 +2617,8 @@ def call_tool(name, args, meta=None):
         args["owner_thread_id"] = caller if args["notify"] else None
     elif args.get("session_id"):
         with locked(args["session_id"]) as root:
-            state, _ = load_session(root)
+            read_only = name == 'telos_preflight_checks' or (name == 'telos_revise_checks' and not args.get('apply'))
+            state, _ = load_session(root, read_only=read_only)
             if state.get("owner") and caller != state["owner"]["thread_id"]:
                 raise GateError("This event and its private review belong to another Codex thread",
                                 code='owner_mismatch', next_action='use_original_supervisor')
@@ -2579,6 +2631,14 @@ def call_tool(name, args, meta=None):
         import audit_check_correction
         return invoke_tool(lambda session_id, **kw:
                            audit_check_correction.correct(bridge_services(), session_id, caller=caller, **kw), args)
+    if name == 'telos_preflight_checks':
+        import check_preflight
+        return invoke_tool(lambda contract=None, checks=None, root=None, session_id=None:
+                           check_preflight.preflight(bridge_services(), session_id, contract, checks, root), args)
+    if name == 'telos_revise_checks':
+        import check_revision
+        return invoke_tool(lambda session_id, **kw:
+                           check_revision.revise(bridge_services(), session_id, caller=caller, **kw), args)
     if name == 'telos_correct_test_path':
         import test_path_correction
         return invoke_tool(lambda session_id, **kw:

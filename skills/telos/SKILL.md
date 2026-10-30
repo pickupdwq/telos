@@ -2,7 +2,7 @@
 name: telos
 description: "Supervise Telos delegated development, scoped system audits (code, APIs, page interactions and visual evidence), and confirmed-bug repairs through MCP. Use for requests to use Telos, coordinate independent executors with evidence-based acceptance, or continue an existing TELOS_EVENT. Ordinary coding, general review and questions about Telos do not by themselves authorize starting an executor."
 metadata:
-  version: "3.11.3"
+  version: "3.11.4"
 ---
 
 # Telos
@@ -159,6 +159,12 @@ re-verified from trusted MCP metadata while holding the coordinator lock;
 `caller` is not an MCP argument. `request_id` with surrounding whitespace is
 rejected. Status summaries report the current `jobs_started`; authorization
 history retains the count captured at authorization time.
+
+## Preflight and supervised check revision (3.11.4)
+
+Use `telos_preflight_checks` for a pure read-only parse/compile check of a proposed configuration or existing session. It never executes user programs. Only deterministic syntax/compile failures and proven direct conflicts with the shared audit report top level are hard errors; missing paths may be implementation outputs and dynamic semantics are advisory. It does not claim semantic correctness.
+
+Use `telos_revise_checks` only with explicit user authorization and the original supervisor identity. Preview is read-only and returns complete before/after/diff plus a `proposal_hash`. Apply requires that exact hash, a received event, active project/session, completed unaccepted work, a standard-preservation reason and evidence references. Only one existing check's inline Python `argv[2]` changes; original contract bytes, all other fields, counters, budget, usage and history remain. Assertion-node reduction is rejected, but equal counts are not a semantic-equivalence proof; review the diff yourself. Fresh checks, same-executor closed-book exam, supervisor grading and project final binding remain mandatory. Never dispatch, resume, accept, merge or deploy.
 
 ## Restricted acceptance configuration recovery (3.11.2)
 

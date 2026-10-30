@@ -291,8 +291,8 @@ def validate_report(b, state, contract, root, files):
     if 'report.json' not in files or files['report.json']['bytes'] > 2_000_000:
         raise GateError('A bounded audit report.json is required')
     report = json.loads(read_regular(root, 'report.json', 2_000_000))
-    fields(report, ('source_commit', 'environment', 'results', 'findings'),
-           ('source_commit', 'environment', 'results', 'findings'), 'audit report')
+    from audit_schema import REPORT_TOP_LEVEL
+    fields(report, REPORT_TOP_LEVEL, REPORT_TOP_LEVEL, 'audit report')
     if report['source_commit'] != state['base_commit'] or report['environment'] != contract['audit']['environment']:
         raise GateError('Audit report source/environment does not match the frozen task')
     checklist = {i['id']: i for i in contract['audit']['checklist']}

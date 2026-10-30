@@ -1,3 +1,12 @@
+## 3.11.4 — 2026-10-30
+
+- Add `telos_preflight_checks`: read-only parse/compile preflight for check configurations. It never executes user programs, rejects only deterministic syntax/compile failures and proven direct audit-report top-level conflicts, and reports missing generated paths and dynamic semantics as advisory.
+- Share the audit report top-level schema constant between runtime validation and preflight.
+- Add `telos_revise_checks`: original-supervisor-only preview/apply of one existing inline Python check's `argv[2]`. Preview is read-only and binds a proposal hash to identity, contract, effective hash, event, submitted commit and prior evidence hashes; apply recomputes under project/session locks, preserves original contract bytes, counters, budget and history, rejects assertion reduction, and invalidates only current packet/acceptance/auto-check pointers.
+- Validate fixed historical corrections first, then an explicit generic revision chain; once a generic revision exists, historical corrections cannot be written back.
+
+新增只读检查配置预检与受控的单个检查程序版本修订，保留原合同、预算、计数和历史。修订不声明语义等价，仍需新检查、同一执行者闭卷与监督评分。
+
 ## 3.11.3 — standalone task work-turn policy
 
 Add owner-authorized `telos_task_budget` for one existing standalone task. Retain

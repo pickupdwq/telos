@@ -2,9 +2,9 @@
 
 [English README](../README.md) · [中文 README](../README.zh-CN.md)
 
-Generated from `runtime/telos.py`. These 32 tools are intended for the original Codex supervisor; task ownership requires trusted MCP thread metadata. See [machine-readable schemas](tools.schema.json) for all fields.
+Generated from `runtime/telos.py`. These 35 tools are intended for the original Codex supervisor; task ownership requires trusted MCP thread metadata. See [machine-readable schemas](tools.schema.json) for all fields.
 
-由运行时自动生成，共 32 个工具，供原始 Codex 大总管使用；任务绑定依赖可信会话元数据。完整参数见 JSON schema。
+由运行时自动生成，共 35 个工具，供原始 Codex 大总管使用；任务绑定依赖可信会话元数据。完整参数见 JSON schema。
 
 ## `telos_open`
 
@@ -126,6 +126,12 @@ Original supervisor scores every final criterion, supplies blockers and an overa
 
 Required / 必填：`project_id`, `packet_id`, `scores`, `blockers`, `rationale`
 
+## `telos_task_budget`
+
+Original supervisor only: explicitly authorize unlimited work turns for one existing standalone task. Records a versioned policy and exact user authorization; preserves original contract, turns, rounds, usage, model, history and every other gate. Stable request_id with identical parameters is read-only; different parameters and damaged records fail closed. Project children use telos_project_budget. Paused remains paused; terminal/discussion tasks rejected. Never dispatches, resumes or accepts.
+
+Required / 必填：`session_id`, `request_id`, `reason`, `user_authorization`
+
 ## `telos_project_budget`
 
 Original supervisor only: record an explicitly user-authorized, audited job-admission policy change for one project. Only strategy=unlimited is supported; it raises the effective job ceiling to unlimited while preserving max_jobs, jobs_started, the frozen contract/hash, task identities and all history. Requires a stable request_id, reason and user_authorization. Same request_id with identical arguments is an idempotent replay; different arguments are rejected. Rejects accepted, cancelled, discussion and damaged-policy projects. A paused project stays paused; this never starts, resumes, accepts or deploys work. Projects without this policy keep their original max_jobs. Optional include_work_turns=true additionally records a separate versioned work-turn scope (requires a valid prior unlimited job policy) so bound project children may continue work beyond max_turns while every other gate stays unchanged; it never resumes or dispatches, and omitted/false keeps legacy behavior.
@@ -174,6 +180,18 @@ Original supervisor freezes the public implementation plan after reviewing indep
 
 Required / 必填：`meeting_id`, `plan`, `rationale`, `answers`
 
+## `telos_preflight_checks`
+
+Pure read-only check-configuration preflight. Parses and compiles inline Python checks without executing them or writing state. Hard-rejects only deterministic syntax/compile failures and provable direct conflicts with the shared audit report top-level schema; missing paths and dynamic expressions are advisory because implementations may generate them. Accepts an existing session_id or an explicit contract/checks proposal. Never dispatches, accepts, installs or changes contracts.
+
+Required / 必填：`session_id`, `contract`, `checks`, `root`
+
+## `telos_revise_checks`
+
+Original supervisor only: preview or apply one versioned revision of an existing check's inline Python argv[2] program. Preview is read-only and shows complete before/after/diff plus a proposal_hash bound to identity, original contract, effective hash, received event, submission and prior evidence hashes. Apply recomputes under project/session locks and requires the reviewed proposal_hash, user_authorization, a standard-preservation reason and evidence references. All other contract fields and original contract bytes stay unchanged; assertion nodes cannot be removed. Preserves counters/budget/history, invalidates only current packet/acceptance/auto-check pointers, and leaves fresh checks, same-executor exam, supervisor grade and project final binding mandatory. Stable request_id is idempotent; different arguments and stale/tampered proposals are rejected. Never dispatches, resumes, accepts or merges.
+
+Required / 必填：`session_id`, `request_id`, `reason`, `user_authorization`, `event_id`, `check_id`, `before_program`, `after_program`, `preservation_reason`, `evidence`
+
 ## `telos_correct_audit_status`
 
 Original supervisor only: explicitly record one versioned correction of the invalid historical audit status whitelist literal pass to canonical passed. Fixed AST rule only; accepts no replacement code. Preserves original contract.json, task/session identity, evidence files, counters, budgets, thresholds and all other criteria. Requires completed unaccepted audit work, received event, no running job or exam, reason and user_authorization. Stable request_id is idempotent. Invalidates current check/packet pointers; normal new checks, same-executor exam and supervisor grade remain mandatory. Never dispatches, resumes, accepts or changes report contents.
@@ -197,9 +215,3 @@ Required / 必填：`session_id`, `request_id`, `blocker`, `approach`, `evidence
 Run a bounded HTTP or declarative browser probe within an active audit contract. Original supervisor only; executors use their authenticated local probe service. Runs before evaluation; request_id deduplicates operations, including uncertain outcomes. Captures evidence; business failures are findings, not acceptance. No arbitrary JS, redirects, WebSockets, installations or target/permission expansion.
 
 Required / 必填：`session_id`, `request`
-
-## `telos_task_budget`
-
-Original supervisor only: explicitly authorize unlimited work turns for one existing standalone task. Records a versioned policy and exact user authorization; preserves original contract, turns, rounds, usage, model, history and every other gate. Stable request_id with identical parameters is read-only; different parameters and damaged records fail closed. Project children use telos_project_budget. Paused remains paused; terminal/discussion tasks rejected. Never dispatches, resumes or accepts.
-
-Required: `session_id`, `request_id`, `reason`, `user_authorization`. Strategy: `unlimited`.

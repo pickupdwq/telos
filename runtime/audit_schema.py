@@ -1,6 +1,11 @@
 """MCP schemas for audit boundaries, review and constrained probes."""
 STR = {'type': 'string'}
 
+# The report top level is shared by runtime validation and the non-executing
+# configuration preflight.  It deliberately contains only fields the runtime
+# can prove are required; nested per-result/finding schemas stay in audit.py.
+REPORT_TOP_LEVEL = ('source_commit', 'environment', 'results', 'findings')
+
 
 def obj(properties, required=()):
     return {'type': 'object', 'properties': properties, 'required': list(required), 'additionalProperties': False}

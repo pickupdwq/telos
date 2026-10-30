@@ -37,7 +37,7 @@ class IdentityTests(unittest.TestCase):
         replies = {x['id']: x['result'] for x in map(json.loads, result.stdout.splitlines())}
         self.assertEqual(replies[1]['serverInfo'], {'name': 'telos', 'title': 'TELOS', 'version': VERSION})
         names = {t['name'] for t in replies[2]['tools']}
-        self.assertEqual(len(names), 33)
+        self.assertEqual(len(names), 35)
         self.assertIn('telos_project_budget', names)
         self.assertIn('telos_correct_audit_status', names)
         self.assertIn('telos_correct_test_path', names)

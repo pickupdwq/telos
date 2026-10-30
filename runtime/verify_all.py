@@ -37,6 +37,8 @@ MODULES = [
     'test_audit',
     'test_audit_check_correction',
     'test_test_path_correction',
+    'test_check_preflight',
+    'test_check_revision',
     'test_local_executor',
     'test_usage',
     'test_timing',
