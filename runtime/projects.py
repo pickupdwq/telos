@@ -99,6 +99,8 @@ class Projects:
                     raise self.b.GateError('Each task needs task and public message')
             if t.get('task_type', 'implementation') == 'audit':
                 import audit
+                if t.get('environment_requirements') is not None:
+                    raise self.b.GateError('Project environment preparation is for implementation tasks only')
                 if t.get('allowed_paths') not in (None, []) or t.get('command_network', False) or any(c.get('network', False) for c in t.get('checks', [])):
                     raise self.b.GateError('Audit children are read-only and use scoped probes, not unrestricted network')
                 t['allowed_paths'] = []
@@ -1069,6 +1071,27 @@ class Projects:
             task[field] = binding[field]
         task['executor_profile'] = binding['profile']
 
+    def unstarted_audit_normalization(self, p, t, old):
+        if t.get('task_type') != 'audit' or t.get('environment_requirements') is None:
+            return None
+        reason = 'Project environment preparation is for implementation tasks only'
+        prior = [h for h in p.get('history', []) if h.get('task_id') == t['id']]
+        session_ids = {t['session_id']} | {h['previous_session_id'] for h in prior if h.get('previous_session_id')}
+        usage_ids = session_ids | {t.get('usage_id') or t['session_id']}
+        paths = ([self.b.run_dir(sid) for sid in session_ids]
+                 + [self.b.usage_path(sid) for sid in usage_ids])
+        # This legacy error happened before create_session wrote anything. Any
+        # child, ledger or residual artifact makes "never executed" uncertain;
+        # do not reinterpret an existing frozen contract as a setup-only error.
+        if (t.get('phase') != 'setup_error' or old is not None or t.get('error') != reason
+                or any(t.get(key) for key in ('base_commit', 'accepted_commit', 'event_id'))
+                or any(h.get('previous_worktree') for h in prior)
+                or any(path.exists() or path.is_symlink() for path in paths)):
+            raise self.b.GateError('Cannot normalize audit environment requirements unless setup failed before any session or execution evidence')
+        return {'field': 'environment_requirements', 'previous_value': copy.deepcopy(t['environment_requirements']),
+                'reason': reason, 'previous_phase': t['phase'], 'previous_error': t.get('error'),
+                'previous_start_error': copy.deepcopy(t.get('start_error'))}
+
     def reassign(self, pid, task_id, decision_reason, provider=None, model=None, message=None,
                  executor_profile=None, reasoning_effort=None):
         with self.lock():
@@ -1082,7 +1105,11 @@ class Projects:
                 raise self.b.GateError('Only unstarted, failed or returned nonaccepted tasks can be reassigned; grade pending work first')
             if t['revision'] >= 3:
                 raise self.b.GateError('Task reassignment limit reached')
+            old = self.child(t)
+            normalization = self.unstarted_audit_normalization(p, t, old)
             new = dict(t)
+            if normalization:
+                new.pop('environment_requirements')
             binding = self.b.backend_bindings(t)['executor']
             if executor_profile is not None or (provider is not None and provider != binding['provider']):
                 binding = self.b.providers.resolve_executor(self.b.config(), executor_profile=executor_profile,
@@ -1112,11 +1139,13 @@ class Projects:
                 new['message'] = message
             self.validate_public_task(new, new)
             self.validate_public_task(new, p['contract'])
-            old = self.child(t)
             if old:
                 self.b.return_control(t['session_id'], 'cancel')
-            p['history'].append({'at': time.time(), 'task_id': task_id, 'previous_session_id': t['session_id'],
-                                 'previous_worktree': old.get('worktree') if old else None, 'reason': decision_reason})
+            entry = {'at': time.time(), 'task_id': task_id, 'previous_session_id': t['session_id'],
+                     'previous_worktree': old.get('worktree') if old else None, 'reason': decision_reason}
+            if normalization:
+                entry['normalizations'] = [normalization]
+            p['history'].append(entry)
             if not new.get('usage_id'):
                 # Legacy task: its prior ledger is keyed by the old session ID.
                 new['usage_id'] = t['session_id']

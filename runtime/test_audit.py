@@ -18,6 +18,7 @@ import audit
 import audit_probe
 from test_telos import b, BridgeTests, synthetic_exam
 from test_projects import ProjectTests
+from projects import Projects
 from test_closed_book import WorkflowTests, message
 from test_providers import configured
 
@@ -465,6 +466,207 @@ class AuditProjectTests(AuditTests):
         self.assertEqual(set(packet['evidence']['audits']), {'one', 'two'})
         result = b.project_manager().finish(pid, packet['packet_id'], self.scores(), [], 'Inspected both reports and integrated coverage')
         self.assertEqual(result['phase'], 'accepted')
+
+
+class AuditProjectEnvironmentTests(unittest.TestCase):
+    setUp = BridgeTests.setUp
+    tearDown = BridgeTests.tearDown
+    task = ProjectTests.task
+    create = ProjectTests.create
+    start = ProjectTests.start
+    state = ProjectTests.state
+    child = ProjectTests.child
+    submit = ProjectTests.submit
+    scores = BridgeTests.scores
+    data = AuditTests.data
+    review = AuditTests.review
+
+    def audit_task(self, **kwargs):
+        return self.task('audit', task_type='audit', audit=boundary(), checks=QUALITY,
+                         allowed_paths=[], **kwargs)
+
+    def legacy_error(self, pid):
+        # Reproduce the state persisted by older project validation, exclusively
+        # in the temporary fixture. Production recovery goes through reassign.
+        p = self.state(pid)
+        task = next(t for t in p['tasks'] if t['id'] == 'audit')
+        task.update(environment_requirements={'version': 1, 'variables': {'CI': '1'}},
+                    phase='setup_error', error='Project environment preparation is for implementation tasks only')
+        task['start_error'] = b.errors.payload(b.GateError(task['error']))['error']
+        b.project_manager().save(p)
+        return p, copy.deepcopy(task)
+
+    def reassign_without_start(self, pid):
+        with patch.object(Projects, 'tick', return_value={}) as tick:
+            result = b.project_manager().reassign(pid, 'audit', 'Correct the rejected audit setup parameters')
+        tick.assert_called_once_with(pid)
+        return result
+
+    def test_audit_environment_is_rejected_before_create_or_update_persists(self):
+        bad = self.audit_task(environment_requirements={'version': 1})
+        with self.assertRaisesRegex(b.GateError, 'implementation tasks only'):
+            self.create([bad])
+        self.assertEqual(list((b.STATE / 'projects').glob('*/project.json')), [])
+        self.assertEqual(list((b.STATE / 'runs').glob('*/state.json')), [])
+        pid = self.create([self.task('existing')])
+        path = b.project_manager().path(pid)
+        before = path.read_bytes()
+        with patch.object(Projects, 'tick') as tick:
+            with self.assertRaisesRegex(b.GateError, 'implementation tasks only'):
+                b.project_manager().update(pid, 'Add a read-only audit', strategy='single', add_tasks=[bad])
+        tick.assert_not_called()
+        self.assertEqual(path.read_bytes(), before)
+
+    def test_audit_omitted_or_null_environment_still_starts(self):
+        for kwargs in ({}, {'environment_requirements': None}):
+            with self.subTest(kwargs=kwargs):
+                pid = self.create([self.audit_task(**kwargs)], environment_requirements={'version': 1})
+                self.assertIsNone(self.state(pid)['tasks'][0].get('environment_requirements'))
+                result = self.start(pid)
+                self.assertEqual(result['tasks'][0]['phase'], 'running')
+                _, contract = b.load_session(b.run_dir(result['tasks'][0]['session_id']))
+                self.assertNotIn('environment_requirements', contract)
+
+    def test_legacy_reassignment_records_correction_and_preserves_accepted_work(self):
+        pid = self.create([self.task('done'), self.audit_task(deps=['done'], budget={'max_requests': 3})])
+        self.start(pid)
+        self.submit(pid, 'done')
+        b.project_manager().status(pid)
+        before, old = self.legacy_error(pid)
+        before['history'].append({'at': 1, 'reason': 'Existing project history'})
+        b.project_manager().save(before)
+        accepted = self.child(pid, 'done')
+        accepted_path = b.run_dir(accepted['session_id']) / 'state.json'
+        accepted_bytes = accepted_path.read_bytes()
+        self.assertFalse(b.run_dir(old['session_id']).exists())
+        self.reassign_without_start(pid)
+        after = self.state(pid)
+        new = after['tasks'][1]
+        self.assertNotIn('environment_requirements', new)
+        self.assertNotEqual(new['session_id'], old['session_id'])
+        self.assertEqual(new['revision'], old['revision'] + 1)
+        self.assertEqual(new['phase'], 'pending')
+        for key in ('id', 'usage_id', 'budget', 'questions', 'checks', 'audit', 'executor', 'reasoning_policy'):
+            self.assertEqual(new[key], old[key], key)
+        for key in ('contract', 'contract_hash', 'jobs_started', 'max_jobs'):
+            self.assertEqual(after[key], before[key], key)
+        self.assertEqual(after['tasks'][0], before['tasks'][0])
+        self.assertEqual(accepted_path.read_bytes(), accepted_bytes)
+        self.assertEqual(after['history'][:-1], before['history'])
+        entry = after['history'][-1]
+        self.assertEqual(entry['previous_session_id'], old['session_id'])
+        self.assertIsNone(entry['previous_worktree'])
+        correction = entry['normalizations'][0]
+        self.assertEqual(correction['field'], 'environment_requirements')
+        self.assertEqual(correction['previous_value'], old['environment_requirements'])
+        self.assertEqual(correction['reason'], old['error'])
+        self.assertEqual(correction['previous_start_error'], old['start_error'])
+        self.assertFalse(b.run_dir(old['session_id']).exists())
+        result = self.start(pid)
+        self.assertEqual(result['tasks'][1]['phase'], 'running')
+        child, contract = b.load_session(b.run_dir(new['session_id']))
+        self.assertEqual(child['usage_id'], old['usage_id'])
+        self.assertEqual(contract['questions'], old['questions'])
+        self.assertEqual(contract['checks'], old['checks'])
+        self.assertEqual(contract['budget'], old['budget'])
+        self.assertNotIn('environment_requirements', contract)
+        self.assertEqual(self.state(pid)['jobs_started'], before['jobs_started'] + 1)
+
+    def test_legacy_recovery_rejects_residual_sessions_usage_and_execution_markers(self):
+        for evidence in ('empty_session', 'contract', 'broken_state', 'dangling_session',
+                         'usage', 'old_usage', 'accepted_commit', 'base_commit', 'event_id',
+                         'prior_worktree', 'prior_session', 'wrong_error', 'pending'):
+            with self.subTest(evidence=evidence):
+                pid = self.create([self.audit_task()])
+                p, task = self.legacy_error(pid)
+                root = b.run_dir(task['session_id'])
+                if evidence == 'empty_session':
+                    root.mkdir(parents=True)
+                elif evidence == 'contract':
+                    b.write_json(root / 'contract.json', {'retained': 'contract evidence'})
+                elif evidence == 'broken_state':
+                    root.mkdir(parents=True); (root / 'state.json').write_text('{broken')
+                elif evidence == 'dangling_session':
+                    root.symlink_to(self.base / 'missing-session')
+                elif evidence in ('usage', 'old_usage'):
+                    ident = task['usage_id'] if evidence == 'usage' else task['session_id']
+                    b.write_json(b.usage_path(ident), {'requests': [{'retained': 'usage evidence'}]})
+                elif evidence in ('accepted_commit', 'base_commit', 'event_id'):
+                    p['tasks'][0][evidence] = 'retained-execution-marker'
+                elif evidence in ('prior_worktree', 'prior_session'):
+                    prior_id = 'a' * 32
+                    p['history'].append({'task_id': 'audit', 'previous_session_id': prior_id,
+                                         'previous_worktree': str(self.repo) if evidence == 'prior_worktree' else None})
+                    if evidence == 'prior_session':
+                        b.write_json(b.run_dir(prior_id) / 'contract.json', {'retained': 'old session'})
+                elif evidence == 'wrong_error':
+                    p['tasks'][0]['error'] = 'A different setup problem'
+                else:
+                    p['tasks'][0]['phase'] = 'pending'
+                b.project_manager().save(p)
+                path = b.project_manager().path(pid)
+                original = path.read_bytes()
+                with patch.object(Projects, 'tick') as tick:
+                    with self.assertRaises((b.GateError, ValueError)):
+                        b.project_manager().reassign(pid, 'audit', 'Attempt recovery')
+                tick.assert_not_called()
+                self.assertEqual(path.read_bytes(), original)
+
+    def test_existing_audit_child_cannot_be_normalized(self):
+        for phase in ('error', 'running', 'accepted'):
+            with self.subTest(phase=phase):
+                pid = self.create([self.audit_task()])
+                self.start(pid)
+                child = self.child(pid, 'audit')
+                if phase == 'accepted':
+                    AuditTests.report(self, child['session_id'])
+                    AuditTests.evaluate(self, child['session_id'])
+                    AuditTests.accept(self, child['session_id'])
+                elif phase == 'error':
+                    child['phase'] = 'error'
+                    b.write_json(b.run_dir(child['session_id']) / 'state.json', child)
+                self.legacy_error(pid)
+                path = b.project_manager().path(pid)
+                before = path.read_bytes()
+                with patch.object(Projects, 'tick') as tick, patch.object(b, 'return_control') as cancel:
+                    with self.assertRaises(b.GateError):
+                        b.project_manager().reassign(pid, 'audit', 'Attempt recovery')
+                tick.assert_not_called(); cancel.assert_not_called()
+                self.assertEqual(path.read_bytes(), before)
+
+    def test_implementation_environment_is_preserved_by_reassignment(self):
+        pid = self.create([self.task('audit', environment_requirements={'version': 1})])
+        before = self.state(pid)['tasks'][0]
+        self.reassign_without_start(pid)
+        after = self.state(pid)
+        self.assertEqual(after['tasks'][0]['environment_requirements'], before['environment_requirements'])
+        self.assertNotIn('normalizations', after['history'][-1])
+
+    def test_legacy_recovery_obeys_owner_pause_budget_and_assignment_gates(self):
+        from test_callbacks import FakeRPC, OWNER, OTHER
+        db = {'thread': {'id': OWNER, 'status': {'type': 'idle'}, 'cwd': str(self.repo)}, 'queue': [], 'calls': []}
+        with patch.object(b, 'CodexRPC', side_effect=lambda *_: FakeRPC(db)), patch.object(b, 'spawn_dispatch'):
+            pid = self.create([self.audit_task()], notify=True, caller=OWNER, max_jobs=1)
+            p, task = self.legacy_error(pid)
+            p['jobs_started'] = 1
+            b.project_manager().save(p)
+            args = {'project_id': pid, 'task_id': 'audit', 'decision_reason': 'Correct legacy audit setup'}
+            with self.assertRaisesRegex(b.GateError, 'another supervisor'):
+                b.call_tool('telos_project_reassign', args, {'threadId': OTHER})
+            b.project_manager().control(pid, 'pause')
+            with self.assertRaisesRegex(b.GateError, 'paused/cancelled'):
+                b.call_tool('telos_project_reassign', args, {'threadId': OWNER})
+            b.project_manager().control(pid, 'resume')
+            result = b.call_tool('telos_project_reassign', args, {'threadId': OWNER})
+            self.assertEqual(result['jobs_started'], 1)
+            self.assertEqual(result['tasks'][0]['phase'], 'pending')
+            self.assertEqual(self.state(pid)['tasks'][0]['usage_id'], task['usage_id'])
+            self.assertFalse(b.run_dir(result['tasks'][0]['session_id']).exists())
+            p = self.state(pid)
+            p['tasks'][0]['revision'] = 3
+            b.project_manager().save(p)
+            with self.assertRaisesRegex(b.GateError, 'reassignment limit'):
+                b.call_tool('telos_project_reassign', args, {'threadId': OWNER})
 
 
 class AuditExecutorTests(unittest.TestCase):
