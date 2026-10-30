@@ -1,3 +1,22 @@
+## 3.11.2 — 2026-10-30
+
+- Add an original-supervisor-only preview/apply operation for one fixed historical
+  pytest path typo: `tests/test_device_import_preview.py` to the existing
+  `tests/test_device_template.py`. No arbitrary replacement code, paths, check
+  selection or thresholds are accepted. Validate immutable Git evidence and bind
+  application to the reviewed proposal hash.
+- Preserve the original contract bytes, task identity, attempts, counters and
+  policy history. Derive the effective check through a validated versioned
+  correction record; invalidate current evidence reuse and require fresh checks,
+  the same executor's closed-book exam and supervisor grading.
+- Restore at most five acceptance opportunities, limited by verified historical
+  missing-path/no-tests attempts. Keep the original round count and ceiling;
+  consume the separate one-time allowance only after the original ceiling.
+  Existing tasks without a correction retain their original behavior.
+- Preserve model settings, unlimited job/work-turn policies, concurrency,
+  timeouts, no-progress, owner and pause/cancel gates. The operation never starts,
+  resumes, accepts, merges or deploys work.
+
 ## 3.11.1 — 2026-10-29
 
 - Add the owner-only, audited `telos_project_budget` API with the one-way

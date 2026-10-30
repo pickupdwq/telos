@@ -3683,6 +3683,45 @@
       }
     },
     {
+      "name": "telos_correct_test_path",
+      "description": "Original supervisor only: preview or apply one fixed missing pytest path correction from tests/test_device_import_preview.py to tests/test_device_template.py under ai-device-risk. No arbitrary code/path input. Requires received event and completed unaccepted implementation, static supported invocation and immutable Git proof. Preview is read-only; apply requires its proposal_hash. Preserves original contract, identities, counters and evidence. At most five additional evaluation rounds are recovered solely from retained missing-path/zero-tests failures; original max_rounds stays unchanged and recovery is consumed only above it. Does not relax other controls, dispatch, resume or accept. Fresh checks, same-executor exam and supervisor grade remain mandatory.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "user_authorization": {
+            "type": "string"
+          },
+          "event_id": {
+            "type": "string"
+          },
+          "apply": {
+            "type": "boolean",
+            "default": false
+          },
+          "proposal_hash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "request_id",
+          "reason",
+          "user_authorization",
+          "event_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "telos_replan",
       "description": "After no_progress, report the concrete blocker and retained artifacts, then record a different approach, supporting evidence and observable success criterion. Grants one retry in the SAME session; does not dispatch, accept, reset history, change frozen scope or resume user-paused work. Stable request_id is idempotent. Two adjusted trials without new observable evidence require reporting the blocker to the user. A new request ID, cosmetic summary, or higher reasoning effort alone is not progress.",
       "inputSchema": {

@@ -34,6 +34,7 @@ EXPECTED_MODULES = [
     'test_identity',
     'test_audit',
     'test_audit_check_correction',
+    'test_test_path_correction',
     'test_local_executor',
     'test_usage',
     'test_timing',

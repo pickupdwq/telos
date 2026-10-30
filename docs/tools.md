@@ -2,9 +2,9 @@
 
 [English README](../README.md) · [中文 README](../README.zh-CN.md)
 
-Generated from `runtime/telos.py`. These 31 tools are intended for the original Codex supervisor; task ownership requires trusted MCP thread metadata. See [machine-readable schemas](tools.schema.json) for all fields.
+Generated from `runtime/telos.py`. These 32 tools are intended for the original Codex supervisor; task ownership requires trusted MCP thread metadata. See [machine-readable schemas](tools.schema.json) for all fields.
 
-由运行时自动生成，共 31 个工具，供原始 Codex 大总管使用；任务绑定依赖可信会话元数据。完整参数见 JSON schema。
+由运行时自动生成，共 32 个工具，供原始 Codex 大总管使用；任务绑定依赖可信会话元数据。完整参数见 JSON schema。
 
 ## `telos_open`
 
@@ -177,6 +177,12 @@ Required / 必填：`meeting_id`, `plan`, `rationale`, `answers`
 ## `telos_correct_audit_status`
 
 Original supervisor only: explicitly record one versioned correction of the invalid historical audit status whitelist literal pass to canonical passed. Fixed AST rule only; accepts no replacement code. Preserves original contract.json, task/session identity, evidence files, counters, budgets, thresholds and all other criteria. Requires completed unaccepted audit work, received event, no running job or exam, reason and user_authorization. Stable request_id is idempotent. Invalidates current check/packet pointers; normal new checks, same-executor exam and supervisor grade remain mandatory. Never dispatches, resumes, accepts or changes report contents.
+
+Required / 必填：`session_id`, `request_id`, `reason`, `user_authorization`, `event_id`
+
+## `telos_correct_test_path`
+
+Original supervisor only: preview or apply one fixed missing pytest path correction from tests/test_device_import_preview.py to tests/test_device_template.py under ai-device-risk. No arbitrary code/path input. Requires received event and completed unaccepted implementation, static supported invocation and immutable Git proof. Preview is read-only; apply requires its proposal_hash. Preserves original contract, identities, counters and evidence. At most five additional evaluation rounds are recovered solely from retained missing-path/zero-tests failures; original max_rounds stays unchanged and recovery is consumed only above it. Does not relax other controls, dispatch, resume or accept. Fresh checks, same-executor exam and supervisor grade remain mandatory.
 
 Required / 必填：`session_id`, `request_id`, `reason`, `user_authorization`, `event_id`
 

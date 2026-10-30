@@ -2,7 +2,7 @@
 name: telos
 description: "Supervise Telos delegated development, scoped system audits (code, APIs, page interactions and visual evidence), and confirmed-bug repairs through MCP. Use for requests to use Telos, coordinate independent executors with evidence-based acceptance, or continue an existing TELOS_EVENT. Ordinary coding, general review and questions about Telos do not by themselves authorize starting an executor."
 metadata:
-  version: "3.11.0"
+  version: "3.11.2"
 ---
 
 # Telos
@@ -159,3 +159,13 @@ re-verified from trusted MCP metadata while holding the coordinator lock;
 `caller` is not an MCP argument. `request_id` with surrounding whitespace is
 rejected. Status summaries report the current `jobs_started`; authorization
 history retains the count captured at authorization time.
+
+## Restricted acceptance configuration recovery (3.11.2)
+
+For the explicitly authorized historical pytest path typo only, use the
+owner-only `telos_correct_test_path` preview/apply flow described in
+[acceptance](references/acceptance.md#restricted-test-path-correction-and-bounded-round-recovery-3112).
+Preserve original contracts, counters and history; never use this entry point
+to edit general check programs or relax business criteria. Restore at most five
+rounds supported by retained missing-path/no-tests evidence. Correction itself
+never starts or accepts work; normal same-task acceptance remains mandatory.

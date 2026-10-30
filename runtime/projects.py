@@ -293,6 +293,7 @@ class Projects:
                 t['auto_continue_pending'] = stat.get('auto_continue_pending')
                 t['automatic_checks'] = stat.get('automatic_checks')
                 t['audit_check_correction'] = stat.get('audit_check_correction')
+                t['test_path_correction'] = stat.get('test_path_correction')
                 if t['phase'] != 'ready' and not t.get('discussion_pending'):
                     t.pop('start_error', None)
                 # A rejected start never reaches the child's execution state.
@@ -418,7 +419,7 @@ class Projects:
             item = {k: t.get(k) for k in ('id', 'task', 'depends_on', 'allowed_paths', 'provider', 'model',
                                            'executor_profile', 'workflow_version', 'reasoning_effort',
                                            'session_id', 'phase', 'accepted_commit', 'event_id', 'error',
-                                           'budget', 'revision', 'reasoning_policy', 'auto_run_checks', 'automatic_checks', 'audit_check_correction')}
+                                           'budget', 'revision', 'reasoning_policy', 'auto_run_checks', 'automatic_checks', 'audit_check_correction', 'test_path_correction')}
             item['progress_guard'] = t.get('progress_guard')
             if p.get('kind') == 'discussion':
                 item.update(role=t['role'], active=t.get('active', True), queued_followup=bool(t.get('discussion_pending')))
@@ -432,6 +433,7 @@ class Projects:
                     item['environment'] = observed.get('environment')
                     item['auto_continue_pending'] = observed.get('auto_continue_pending')
                     item['audit_check_correction'] = observed.get('audit_check_correction')
+                    item['test_path_correction'] = observed.get('test_path_correction')
                     item['budget'] = observed['budget']
                     item['usage'] = observed['usage']
                     snapshots[t['session_id']] = item['usage']
@@ -454,6 +456,8 @@ class Projects:
                     item['automatic_checks'] = check_runtime.public(child)
                     import audit_check_correction
                     item['audit_check_correction'] = audit_check_correction.public(child)
+                    import test_path_correction
+                    item['test_path_correction'] = test_path_correction.public(child)
                     if child.get('delivery'):
                         from delivery import summary
                         item['delivery'] = summary(child['delivery'])
@@ -1295,9 +1299,13 @@ class Projects:
             commit, target = b.snapshot(state, ident)
             audit_reports = {}
             audit_corrections = {}
+            path_corrections = {}
             deliveries = {}
             for task in p['tasks']:
                 child_state, child_contract = b.load_session(b.run_dir(task['session_id']))
+                import test_path_correction
+                if correction := test_path_correction.public(child_state):
+                    path_corrections[task['id']] = correction
                 child_packet = b.read_json(b.run_dir(task['session_id']) / f"attempt-{child_state['rounds']}.json")
                 if b.digest(child_packet) != child_state.get('packet_id') or child_packet.get('commit') != p['integration']['pins'][task['id']]:
                     raise b.GateError('Child delivery/evidence changed after acceptance')
@@ -1323,6 +1331,8 @@ class Projects:
                 packet['audits'] = audit_reports
             if audit_corrections:
                 packet['audit_check_corrections'] = audit_corrections
+            if path_corrections:
+                packet['test_path_corrections'] = path_corrections
             b.write_json(self.path(pid).parent / 'integration-review.json', packet)
             phase = 'awaiting_final_review' if all(x['status'] == 'passed' for x in checks) else 'integration_failed'
             update = {'commit': commit, 'packet_id': b.digest(packet)}
