@@ -17,6 +17,7 @@ import time
 import unittest
 
 import check_revision
+import preflight
 import telos
 
 BEFORE = "assert 1 + 1 == 2\nassert 'ok' in ['ok']\n"
@@ -111,8 +112,12 @@ class TempBridge:
 
     def git(self, repo, *args):
         env = {**os.environ, 'GIT_CONFIG_NOSYSTEM': '1', 'GIT_CONFIG_GLOBAL': '/dev/null'}
-        return subprocess.run(['git', '-C', str(repo), *args], check=True,
-                              capture_output=True, text=True, env=env).stdout.strip()
+        result = subprocess.run([preflight.git_executable() or 'git', '-C', str(repo), *args],
+                                check=False, capture_output=True, text=True, env=env)
+        if result.returncode:
+            raise RuntimeError('git %s failed (%s): %s'
+                               % (' '.join(args), result.returncode, result.stderr[-1200:]))
+        return result.stdout.strip()
 
 
 class RevisionStateTests(unittest.TestCase):
