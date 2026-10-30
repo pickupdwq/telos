@@ -119,6 +119,14 @@ def http_probe(b, policy, request):
     return json.loads(result.stdout)
 
 
+def browser_dependency_root(module):
+    """Use the same node_modules read root for scoped and unscoped entrypoints."""
+    package = module.parent
+    if package.parent.name.startswith('@') and package.parent.parent.name == 'node_modules':
+        return package.parent.parent
+    return package.parent
+
+
 def browser_probe(b, policy, request, folder):
     browser = policy['browser']
     # Browser code and installed dependencies are trusted explicit local inputs;
@@ -132,7 +140,7 @@ def browser_probe(b, policy, request, folder):
     if str(module.resolve()) != browser['module_path'] or str(executable.resolve()) != browser['executable_path']:
         raise GateError('Frozen browser dependency was redirected')
     app = next((p for p in executable.parents if p.suffix == '.app'), executable.parent)
-    dependencies = [module.parent.parent, app, driver, Path(node).resolve()]
+    dependencies = [browser_dependency_root(module), app, driver, Path(node).resolve()]
     env = b.minimal_env()
     env.update(HOME=str(folder), TMPDIR=str(folder), TMPPREFIX=str(folder / 'tmp'),
                # Chromium's GetTempDir on macOS reads MAC_CHROMIUM_TMPDIR, not TMPDIR;

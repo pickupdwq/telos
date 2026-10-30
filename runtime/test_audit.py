@@ -35,6 +35,17 @@ QUALITY = [{'id': 'quality', 'argv': ['{python}', '-c',
     'import json,os; r=json.load(open(os.environ["TELOS_AUDIT_REPORT"])); assert len(r["results"])>=1']}]
 
 
+class BrowserDependencyRootTests(unittest.TestCase):
+    def test_scoped_playwright_can_load_its_sibling_runtime(self):
+        root = Path('/fixture/node_modules')
+        self.assertEqual(audit_probe.browser_dependency_root(root / '@playwright/test/index.js'), root)
+        self.assertEqual(audit_probe.browser_dependency_root(root / 'playwright/index.js'), root)
+
+    def test_non_package_paths_keep_the_existing_read_root(self):
+        self.assertEqual(audit_probe.browser_dependency_root(Path('/fixture/adapter/index.js')), Path('/fixture'))
+        self.assertEqual(audit_probe.browser_dependency_root(Path('/fixture/@other/adapter/index.js')), Path('/fixture/@other'))
+
+
 class PublicAuditPromptTests(unittest.TestCase):
     def prompt(self, policy):
         bridge = Mock()
