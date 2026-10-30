@@ -2,9 +2,9 @@
 
 [English README](../README.md) · [中文 README](../README.zh-CN.md)
 
-Generated from `runtime/telos.py`. These 30 tools are intended for the original Codex supervisor; task ownership requires trusted MCP thread metadata. See [machine-readable schemas](tools.schema.json) for all fields.
+Generated from `runtime/telos.py`. These 31 tools are intended for the original Codex supervisor; task ownership requires trusted MCP thread metadata. See [machine-readable schemas](tools.schema.json) for all fields.
 
-由运行时自动生成，共 30 个工具，供原始 Codex 大总管使用；任务绑定依赖可信会话元数据。完整参数见 JSON schema。
+由运行时自动生成，共 31 个工具，供原始 Codex 大总管使用；任务绑定依赖可信会话元数据。完整参数见 JSON schema。
 
 ## `telos_open`
 
@@ -173,6 +173,12 @@ Required / 必填：`meeting_id`, `request_id`, `messages`, `decision_reason`
 Original supervisor freezes the public implementation plan after reviewing independent opinions and evidence. Resolve every recorded question by its ID; ask the user for unresolved business decisions. Requires all active participants to have returned valid reports, no running/queued rounds, and multiple contributors unless a single-executor exception was recorded. Discussion completion is not code acceptance. Then call telos_project_open or telos_open with meeting_id and newly frozen private checks/questions.
 
 Required / 必填：`meeting_id`, `plan`, `rationale`, `answers`
+
+## `telos_correct_audit_status`
+
+Original supervisor only: explicitly record one versioned correction of the invalid historical audit status whitelist literal pass to canonical passed. Fixed AST rule only; accepts no replacement code. Preserves original contract.json, task/session identity, evidence files, counters, budgets, thresholds and all other criteria. Requires completed unaccepted audit work, received event, no running job or exam, reason and user_authorization. Stable request_id is idempotent. Invalidates current check/packet pointers; normal new checks, same-executor exam and supervisor grade remain mandatory. Never dispatches, resumes, accepts or changes report contents.
+
+Required / 必填：`session_id`, `request_id`, `reason`, `user_authorization`, `event_id`
 
 ## `telos_replan`
 

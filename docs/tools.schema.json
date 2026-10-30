@@ -3651,6 +3651,38 @@
       }
     },
     {
+      "name": "telos_correct_audit_status",
+      "description": "Original supervisor only: explicitly record one versioned correction of the invalid historical audit status whitelist literal pass to canonical passed. Fixed AST rule only; accepts no replacement code. Preserves original contract.json, task/session identity, evidence files, counters, budgets, thresholds and all other criteria. Requires completed unaccepted audit work, received event, no running job or exam, reason and user_authorization. Stable request_id is idempotent. Invalidates current check/packet pointers; normal new checks, same-executor exam and supervisor grade remain mandatory. Never dispatches, resumes, accepts or changes report contents.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "user_authorization": {
+            "type": "string"
+          },
+          "event_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "request_id",
+          "reason",
+          "user_authorization",
+          "event_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "telos_replan",
       "description": "After no_progress, report the concrete blocker and retained artifacts, then record a different approach, supporting evidence and observable success criterion. Grants one retry in the SAME session; does not dispatch, accept, reset history, change frozen scope or resume user-paused work. Stable request_id is idempotent. Two adjusted trials without new observable evidence require reporting the blocker to the user. A new request ID, cosmetic summary, or higher reasoning effort alone is not progress.",
       "inputSchema": {

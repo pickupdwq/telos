@@ -34,6 +34,7 @@ MODULES = [
     'test_hardening',
     'test_identity',
     'test_audit',
+    'test_audit_check_correction',
     'test_local_executor',
     'test_usage',
     'test_timing',

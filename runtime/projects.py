@@ -292,6 +292,7 @@ class Projects:
                 t['progress_guard'] = stat.get('progress_guard')
                 t['auto_continue_pending'] = stat.get('auto_continue_pending')
                 t['automatic_checks'] = stat.get('automatic_checks')
+                t['audit_check_correction'] = stat.get('audit_check_correction')
                 if t['phase'] != 'ready' and not t.get('discussion_pending'):
                     t.pop('start_error', None)
                 # A rejected start never reaches the child's execution state.
@@ -417,7 +418,7 @@ class Projects:
             item = {k: t.get(k) for k in ('id', 'task', 'depends_on', 'allowed_paths', 'provider', 'model',
                                            'executor_profile', 'workflow_version', 'reasoning_effort',
                                            'session_id', 'phase', 'accepted_commit', 'event_id', 'error',
-                                           'budget', 'revision', 'reasoning_policy', 'auto_run_checks', 'automatic_checks')}
+                                           'budget', 'revision', 'reasoning_policy', 'auto_run_checks', 'automatic_checks', 'audit_check_correction')}
             item['progress_guard'] = t.get('progress_guard')
             if p.get('kind') == 'discussion':
                 item.update(role=t['role'], active=t.get('active', True), queued_followup=bool(t.get('discussion_pending')))
@@ -430,6 +431,7 @@ class Projects:
                         item['clarification'] = observed['clarification']
                     item['environment'] = observed.get('environment')
                     item['auto_continue_pending'] = observed.get('auto_continue_pending')
+                    item['audit_check_correction'] = observed.get('audit_check_correction')
                     item['budget'] = observed['budget']
                     item['usage'] = observed['usage']
                     snapshots[t['session_id']] = item['usage']
@@ -450,6 +452,8 @@ class Projects:
                     snapshots[t['session_id']] = item['usage']
                     item['timing'] = timing.snapshot(child, requests=item['usage'].get('request_intervals'))
                     item['automatic_checks'] = check_runtime.public(child)
+                    import audit_check_correction
+                    item['audit_check_correction'] = audit_check_correction.public(child)
                     if child.get('delivery'):
                         from delivery import summary
                         item['delivery'] = summary(child['delivery'])
@@ -1290,6 +1294,7 @@ class Projects:
             state = {'session_id': pid, 'worktree': p['integration']['worktree']}
             commit, target = b.snapshot(state, ident)
             audit_reports = {}
+            audit_corrections = {}
             deliveries = {}
             for task in p['tasks']:
                 child_state, child_contract = b.load_session(b.run_dir(task['session_id']))
@@ -1301,6 +1306,9 @@ class Projects:
                     'delivery': child_packet.get('delivery')}
                 if child_contract.get('task_type') == 'audit':
                     import audit
+                    import audit_check_correction
+                    if correction := audit_check_correction.public(child_state):
+                        audit_corrections[task['id']] = correction
                     evidence = child_packet['audit']
                     audit.verify(b, child_state, child_contract, evidence)
                     audit_reports[task['id']] = {'evidence': evidence, 'review': child_state['acceptance']['audit_review']}
@@ -1313,6 +1321,8 @@ class Projects:
                       'dependency_contracts': dependency_contracts}
             if audit_reports:
                 packet['audits'] = audit_reports
+            if audit_corrections:
+                packet['audit_check_corrections'] = audit_corrections
             b.write_json(self.path(pid).parent / 'integration-review.json', packet)
             phase = 'awaiting_final_review' if all(x['status'] == 'passed' for x in checks) else 'integration_failed'
             update = {'commit': commit, 'packet_id': b.digest(packet)}

@@ -93,7 +93,7 @@ def _evidence(evidence):
         return evidence
     result = {key: evidence.get(key) for key in (
         'session_id', 'round', 'commit', 'contract_hash', 'assessment_input_hash',
-        'job_id', 'reasoning_decision', 'check_evidence') if key in evidence}
+        'job_id', 'reasoning_decision', 'check_evidence', 'dependency_contracts', 'audit_check_corrections') if key in evidence}
     if 'checks' in evidence:
         result['checks'] = _checks(evidence.get('checks'))
     if 'exam' in evidence:
@@ -144,7 +144,7 @@ def status(full):
         'project_id', 'task_type', 'discussion_complete', 'version', 'workflow', 'executor', 'budget', 'usage', 'timing',
         'next_action', 'clarification', 'archived', 'audit_artifacts', 'audit_report', 'message',
         'reasoning_policy', 'reasoning_decision', 'progress_guard', 'environment',
-        'auto_continue_checkpoints', 'auto_continue_pending', 'auto_continuations', 'auto_run_checks', 'automatic_checks') if key in full}
+        'auto_continue_checkpoints', 'auto_continue_pending', 'auto_continuations', 'auto_run_checks', 'automatic_checks', 'audit_check_correction') if key in full}
     if 'last_error' in full:
         result['last_error'] = _text(full.get('last_error'), 1200)
     if 'acceptance' in full:
@@ -175,7 +175,7 @@ def status(full):
 def review(full):
     result = {key: full.get(key) for key in (
         'packet_id', 'questions', 'instruction', 'session_id', 'worktree', 'submitted_commit',
-        'contract_hash', 'identity', 'blockers', 'acceptance', 'budget', 'usage', 'timing') if key in full}
+        'contract_hash', 'identity', 'blockers', 'acceptance', 'budget', 'usage', 'timing', 'audit_check_correction') if key in full}
     result['evidence'] = _evidence(full.get('evidence'))
     result['detail'] = 'summary'
     result['detail_hint'] = ('Call telos_review with detail="full" for complete successful logs, '
@@ -212,7 +212,7 @@ def _project_task(task):
         'id', 'phase', 'depends_on', 'allowed_paths', 'provider', 'model', 'executor_profile',
         'workflow_version', 'reasoning_effort', 'session_id', 'event_id', 'accepted_commit',
         'base_commit', 'budget', 'usage', 'timing', 'revision', 'delivery', 'clarification',
-        'start_error', 'next_action', 'environment', 'auto_continue_pending', 'auto_continue_checkpoints', 'auto_run_checks', 'automatic_checks', 'role', 'active', 'queued_followup', 'reasoning_policy', 'reasoning_decision', 'progress_guard') if key in task}
+        'start_error', 'next_action', 'environment', 'auto_continue_pending', 'auto_continue_checkpoints', 'auto_run_checks', 'automatic_checks', 'role', 'active', 'queued_followup', 'reasoning_policy', 'reasoning_decision', 'progress_guard', 'audit_check_correction') if key in task}
     if 'error' in task:
         result['error'] = _text(task.get('error'), 1200)
     return result

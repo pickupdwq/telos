@@ -129,3 +129,24 @@ re-verified from trusted MCP metadata while holding the coordinator lock;
 `caller` is not an MCP argument. `request_id` with surrounding whitespace is
 rejected. Status summaries report the current `jobs_started`; authorization
 history retains the count captured at authorization time.
+
+## Restricted audit status spelling correction
+
+`telos_correct_audit_status` is an owner-only, one-time correction for a historical
+private Python check whose literal `status in (...)` whitelist spells the canonical
+audit result `passed` as `pass`. Its fixed AST migration accepts no replacement
+code, check selection or alternative criteria; an unsupported/no-op pattern is
+rejected. Supply the received `event_id`, stable `request_id`, `reason` and actual
+`user_authorization`. Never rewrite an honest audit report to satisfy that typo.
+
+Only completed, unaccepted audit work without a running job or pending exam is
+eligible. Paused/cancelled/archived tasks and accepted projects remain blocked.
+The original `contract.json` and project checks remain immutable. A validated,
+versioned record retains the original/effective hashes, authorization, exact
+program changes and prior evidence; compact status/review expose a safe summary.
+Identical replay is read-only; changed arguments and damaged records fail closed.
+Current packet/check pointers are invalidated, while their files, usage, turns,
+rounds, budgets and no-progress history are retained. Normal fresh evaluation,
+same-executor closed-book exam, source/evidence review and grading are mandatory;
+the correction itself never starts, resumes or accepts work. This is not an entry
+point for relaxing standards or editing other frozen contract fields.
