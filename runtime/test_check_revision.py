@@ -370,6 +370,51 @@ class RealLoaderRevisionTests(unittest.TestCase):
     setUp = __import__('test_audit_check_correction').CorrectionTests.setUp
     create = __import__('test_audit_check_correction').CorrectionTests.create
 
+    def test_work_turn_policy_and_revision_preserve_each_other_in_both_orders(self):
+        from test_telos import b
+        from test_audit_check_correction import OWNER
+        import task_budget
+        for policy_first in (True, False):
+            with self.subTest(policy_first=policy_first):
+                sid = self.create()
+                root = b.run_dir(sid)
+                state, contract = self.data(sid)
+                original = (root / 'contract.json').read_bytes()
+                counts = state['turns'], state['rounds']
+                budget_args = dict(session_id=sid, request_id='integrated-policy',
+                                   reason='Keep the same task and spent turns',
+                                   user_authorization='Explicit synthetic unlimited work-turn authorization')
+                if policy_first:
+                    b.call_tool('telos_task_budget', budget_args, {'threadId': OWNER})
+                before = contract['checks'][0]['argv'][2]
+                args = dict(session_id=sid, request_id='integrated-revision',
+                            reason='Correct status spelling without changing requirements',
+                            user_authorization='Explicit synthetic check revision authorization',
+                            event_id=state['last_event_id'], check_id='quality',
+                            before_program=before, after_program=before.replace("'pass'", "'passed'"),
+                            preservation_reason='Same required statuses and evidence',
+                            evidence='Synthetic immutable report schema and exact diff')
+                preview = b.call_tool('telos_revise_checks', args, {'threadId': OWNER})
+                b.call_tool('telos_revise_checks', args | dict(apply=True,
+                            proposal_hash=preview['revision']['proposal_hash']), {'threadId': OWNER})
+                if not policy_first:
+                    b.call_tool('telos_task_budget', budget_args, {'threadId': OWNER})
+                loaded, effective = b.load_session(root, read_only=True)
+                self.assertEqual((loaded['turns'], loaded['rounds']), counts)
+                self.assertEqual((root / 'contract.json').read_bytes(), original)
+                self.assertEqual(effective['checks'][0]['argv'][2], args['after_program'])
+                self.assertEqual(loaded[task_budget.KEY]['original_contract_hash'], b.digest(contract))
+                self.assertIsNone(task_budget.summary(loaded, 20)['effective_max_turns'])
+                saved = (root / 'state.json').read_bytes()
+                self.assertTrue(b.call_tool('telos_task_budget', budget_args, {'threadId': OWNER})['replayed'])
+                self.assertEqual((root / 'state.json').read_bytes(), saved)
+                loaded[task_budget.KEY] = None
+                b.write_json(root / 'state.json', loaded)
+                damaged = (root / 'state.json').read_bytes()
+                with self.assertRaises(b.GateError):
+                    b.call_tool('telos_preflight_checks', {'session_id': sid}, {'threadId': OWNER})
+                self.assertEqual((root / 'state.json').read_bytes(), damaged)
+
     def test_preview_apply_then_real_load_session_keeps_frozen_files(self):
         from test_telos import b
         from test_audit_check_correction import OWNER
