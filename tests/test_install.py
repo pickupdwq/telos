@@ -43,6 +43,8 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue((self.prefix / 'continuation.py').is_file())
         self.assertTrue((self.prefix / 'project_environment.py').is_file())
         self.assertTrue((self.prefix / 'chat_adapter.py').is_file())
+        self.assertTrue((self.prefix / 'roles.py').is_file())
+        self.assertTrue((self.prefix / 'shared_experience.py').is_file())
         self.assertTrue((self.prefix / 'bailian_models.json').is_file())
         cfg = json.loads((self.prefix / "config.json").read_text())
         self.assertEqual(cfg["default_executor_profile"], "deepseek_official")
@@ -58,12 +60,30 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(skill_manifest["version"], result["version"])
         self.assertEqual((self.skill / "SKILL.md").read_bytes(), (install.ROOT / "skills/telos/SKILL.md").read_bytes())
         self.assertTrue((self.skill / "references/acceptance.md").is_file())
-        request = json.dumps({"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}}) + "\n"
+        self.assertTrue((self.skill / "references/roles-experience.md").is_file())
+        requests = [
+            {"jsonrpc": "2.0", "id": 1, "method": "initialize", "params": {}},
+            {"jsonrpc": "2.0", "id": 2, "method": "tools/list"},
+            {"jsonrpc": "2.0", "id": 3, "method": "tools/call",
+             "params": {"name": "telos_roles", "arguments": {}}},
+            {"jsonrpc": "2.0", "id": 4, "method": "tools/call",
+             "params": {"name": "telos_experience_search", "arguments": {
+                 "repo": str(self.home), "tags": ["numeric-input"]}}},
+        ]
+        request = ''.join(json.dumps(item) + '\n' for item in requests)
         env = {**os.environ, "TELOS_STATE_DIR": str(self.home / "state"), "TELOS_CACHE_DIR": str(self.home / "cache")}
         response = subprocess.run([str(self.bin_dir / "telos"), "serve"], input=request,
                                   text=True, capture_output=True, check=True, timeout=10, env=env)
-        self.assertEqual(json.loads(response.stdout)["result"]["serverInfo"]["name"], "telos")
-        self.assertEqual(json.loads(response.stdout)["result"]["serverInfo"]["version"], result["version"])
+        replies = {item['id']: item['result'] for item in map(json.loads, response.stdout.splitlines())}
+        self.assertEqual(replies[1]["serverInfo"]["name"], "telos")
+        self.assertEqual(replies[1]["serverInfo"]["version"], result["version"])
+        self.assertEqual(len(replies[2]['tools']), 33)
+        self.assertIn('telos_experience_publish', {tool['name'] for tool in replies[2]['tools']})
+        self.assertFalse(replies[3]['isError'])
+        self.assertEqual({role['id'] for role in json.loads(replies[3]['content'][0]['text'])['roles']},
+                         {'designer', 'developer', 'tester'})
+        self.assertFalse(replies[4]['isError'])
+        self.assertEqual(json.loads(replies[4]['content'][0]['text']), {'experiences': []})
         command = subprocess.run([str(self.prefix / "commands/codex"), "--version"],
                                  capture_output=True, text=True, check=True)
         self.assertIn("0.163.0", command.stdout)

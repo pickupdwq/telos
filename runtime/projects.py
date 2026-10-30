@@ -24,6 +24,7 @@ import progress_guard
 import continuation
 import check_runtime
 import project_budget
+import roles
 
 
 class Projects:
@@ -124,10 +125,14 @@ class Projects:
             except ValueError as error:
                 raise self.b.GateError('Invalid task budget: ' + str(error)) from None
             if any(k in t for k in ('exam_profile', 'exam_provider', 'exam_model', 'exam_reasoning_effort',
-                                     'backends', 'executor', 'workflow_version', '_workflow_version')):
+                                     'backends', 'executor', 'workflow_version', '_workflow_version', 'role_snapshot')):
                 raise self.b.GateError('New project tasks configure one executor; internal/legacy bindings are not task inputs')
-            t['executor'] = self.b.providers.resolve_executor(self.b.config(), **{k: t.get(k) for k in (
-                'executor_profile', 'provider', 'model', 'reasoning_effort')})
+            role = roles.freeze(self.b.config(), t.get('role_profile'))
+            if role:
+                t['role_snapshot'] = role
+            t['experience_tags'] = roles.tags(t.get('experience_tags'))
+            t['executor'] = self.b.providers.resolve_executor(self.b.config(), **roles.executor_options(
+                role, **{k: t.get(k) for k in ('executor_profile', 'provider', 'model', 'reasoning_effort')}))
             t['workflow_version'] = 3
             t['work_reply_version'] = 2
             t['auto_continue_checkpoints'] = continuation.freeze(t.get('auto_continue_checkpoints'), self.b.config())
@@ -179,6 +184,10 @@ class Projects:
 
     def validate_public_task(self, t, private_contract):
         fields = {key: t.get(key, '') for key in ('task', 'context', 'message')}
+        if t.get('role_snapshot'):
+            fields['role_guidance'] = roles.prompt(t['role_snapshot'])
+            if not self.b.experience_manager().safe_public(fields['role_guidance'], [private_contract]):
+                raise self.b.GateError('Role guidance must exclude private acceptance material and credentials')
         fields['allowed_paths'] = self.b.encoded(t.get('allowed_paths'))
         if t.get('environment_requirements') is not None:
             fields['environment_requirements'] = self.b.encoded(t['environment_requirements'])
@@ -418,7 +427,8 @@ class Projects:
             item = {k: t.get(k) for k in ('id', 'task', 'depends_on', 'allowed_paths', 'provider', 'model',
                                            'executor_profile', 'workflow_version', 'reasoning_effort',
                                            'session_id', 'phase', 'accepted_commit', 'event_id', 'error',
-                                           'budget', 'revision', 'reasoning_policy', 'auto_run_checks', 'automatic_checks', 'audit_check_correction')}
+                                           'budget', 'revision', 'reasoning_policy', 'auto_run_checks', 'automatic_checks', 'audit_check_correction',
+                                           'role_snapshot', 'experience_tags')}
             item['progress_guard'] = t.get('progress_guard')
             if p.get('kind') == 'discussion':
                 item.update(role=t['role'], active=t.get('active', True), queued_followup=bool(t.get('discussion_pending')))
@@ -797,6 +807,7 @@ class Projects:
                                          _session_id=t['session_id'], _base_commit=base, _project_id=pid,
                                          _usage_id=t.get('usage_id'), _budget=t.get('budget'),
                                          _reasoning_policy=t.get('reasoning_policy'),
+                                         _role_snapshot=t.get('role_snapshot'), experience_tags=t.get('experience_tags'),
                                           auto_continue_checkpoints=t.get('auto_continue_checkpoints', False),
                                           auto_run_checks=t.get('auto_run_checks', False),
                                           _work_reply_version=t.get('work_reply_version', 1),

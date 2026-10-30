@@ -143,7 +143,7 @@ def status(full):
         'job_id', 'job_kind', 'infra_failures', 'next_retry_at', 'last_failure_kind',
         'project_id', 'task_type', 'discussion_complete', 'version', 'workflow', 'executor', 'budget', 'usage', 'timing',
         'next_action', 'clarification', 'archived', 'audit_artifacts', 'audit_report', 'message',
-        'reasoning_policy', 'reasoning_decision', 'progress_guard', 'environment',
+        'reasoning_policy', 'reasoning_decision', 'progress_guard', 'environment', 'role_snapshot', 'experience_refs',
         'auto_continue_checkpoints', 'auto_continue_pending', 'auto_continuations', 'auto_run_checks', 'automatic_checks', 'audit_check_correction') if key in full}
     if 'last_error' in full:
         result['last_error'] = _text(full.get('last_error'), 1200)
@@ -211,7 +211,7 @@ def _project_task(task):
     result = {key: task.get(key) for key in (
         'id', 'phase', 'depends_on', 'allowed_paths', 'provider', 'model', 'executor_profile',
         'workflow_version', 'reasoning_effort', 'session_id', 'event_id', 'accepted_commit',
-        'base_commit', 'budget', 'usage', 'timing', 'revision', 'delivery', 'clarification',
+        'base_commit', 'budget', 'usage', 'timing', 'revision', 'delivery', 'clarification', 'role_snapshot', 'experience_tags',
         'start_error', 'next_action', 'environment', 'auto_continue_pending', 'auto_continue_checkpoints', 'auto_run_checks', 'automatic_checks', 'role', 'active', 'queued_followup', 'reasoning_policy', 'reasoning_decision', 'progress_guard', 'audit_check_correction') if key in task}
     if 'error' in task:
         result['error'] = _text(task.get('error'), 1200)

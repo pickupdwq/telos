@@ -1,3 +1,16 @@
+## 3.12.0 — 2026-10-30
+
+- Add versioned public designer/developer/tester profiles, custom job templates,
+  explicit model override precedence and frozen guidance for queued tasks/meetings.
+- Preserve existing repository experience and add owner-reviewed shared lessons
+  with applicability tags, source revalidation, concurrent deduplication, disablement
+  and bounded injection receipts. No automatic promotion of private/business-specific
+  records, no live task updates, and no extra model calls.
+- Keep original supervisor ownership, private checks, closed-book examinations,
+  project acceptance, permissions, budgets and no-progress guards.
+- Add native CLI, real Git/project acceptance, legacy compatibility and installer
+  regressions; update the supervisor Skill and generated MCP reference.
+
 ## 3.11.1 — 2026-10-29
 
 - Add the owner-only, audited `telos_project_budget` API with the one-way

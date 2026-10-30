@@ -164,7 +164,8 @@ print(scratch)
                     self.assertEqual(b.git(self.repo, 'worktree', 'list', '--porcelain'), before)
 
     def test_initial_experience_context_is_checked(self):
-        with patch.object(type(b.experience_manager()), 'context', return_value=(self.q[0]['reference'], ['x'])):
+        with patch.object(type(b.experience_manager()), 'context',
+                          return_value=(self.q[0]['reference'], ['x'], [{'id': 'x', 'scope': 'project'}])):
             with self.assertRaisesRegex(b.GateError, 'private'):
                 self.create(use_experience=True)
 

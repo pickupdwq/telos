@@ -33,6 +33,7 @@ import timing
 import errors
 import watch as watch_runtime
 import providers
+import roles
 import effort_policy
 import progress_guard
 import continuation
@@ -298,10 +299,15 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
                    executor_profile=None, exam_profile=None, reasoning_effort=None, exam_reasoning_effort=None,
                    task_type='implementation', audit=None, repair_of=None, allowed_paths=None,
                    budget=None, reasoning_policy=None, auto_continue_checkpoints=None, environment_requirements=None, auto_run_checks=None,
+                   role_profile=None, experience_tags=None,
                    _session_id=None, _base_commit=None, _project_id=None, _allowed_paths=None, _dependency_pins=None,
                    _usage_id=None, _budget=_BUDGET_UNSET, _reasoning_policy=_BUDGET_UNSET,
-                   _backends=None, _executor=None, _work_reply_version=None, _workflow_version=3, _discussion=False, _planning=None):
+                   _backends=None, _executor=None, _work_reply_version=None, _workflow_version=3, _discussion=False, _planning=None,
+                   _role_snapshot=_BUDGET_UNSET):
     cfg = config()
+    role_snapshot = (roles.freeze(cfg, role_profile) if _role_snapshot is _BUDGET_UNSET
+                     else roles.restore(_role_snapshot))
+    experience_tags = roles.tags(experience_tags)
     import audit as audit_runtime
     if allowed_paths is not None:
         if _allowed_paths is not None:
@@ -327,7 +333,8 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
         if assessment_mode != 'closed_book' or review_paths is not None:
             raise GateError('New tasks use same-executor closed-book exams; source review belongs to the GPT supervisor')
         executor = providers.validate_binding(_executor) if _executor is not None else providers.resolve_executor(
-            cfg, executor_profile=executor_profile, provider=provider, model=model, reasoning_effort=reasoning_effort)
+            cfg, **roles.executor_options(role_snapshot, executor_profile=executor_profile,
+                                          provider=provider, model=model, reasoning_effort=reasoning_effort))
         backends = {'executor': executor, 'exam': executor}
     elif _workflow_version in (1, 2):
         backends = (providers.contract_bindings({'backends': _backends}, cfg) if _backends is not None else
@@ -392,8 +399,13 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
     base = git(repo, "rev-parse", (_base_commit or "HEAD") + "^{commit}")
     if task_type == 'audit':
         audit_runtime.validate_source_scope(bridge_services(), repo, base, audit)
-    experience_context, experience_ids = experience_manager().context(str(repo), _allowed_paths,
-        enabled=use_experience and config().get('experience_enabled', True))
+    role_context = roles.prompt(role_snapshot)
+    if not experience_manager().safe_public(role_context, [public_contract]):
+        raise GateError('Role guidance must exclude private acceptance material and credentials')
+    validate_public_material(public_contract, role_context=role_context)
+    experience_context, experience_ids, experience_refs = experience_manager().context(str(repo), _allowed_paths,
+        enabled=use_experience and config().get('experience_enabled', True), tags=experience_tags,
+        role_profile=role_snapshot['id'] if role_snapshot else None, with_refs=True)
     validate_public_material(public_contract, experience_context=experience_context)
     sid = _session_id or uuid.uuid4().hex
     root = run_dir(sid)
@@ -413,7 +425,10 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
               "dependency_paths": dependency_paths, "command_network": command_network,
               "allowed_paths": _allowed_paths, "dependency_pins": _dependency_pins or {},
               "experience_context": experience_context, "experience_ids": experience_ids,
+              "experience_refs": experience_refs, "experience_tags": experience_tags,
               "budget": budget}
+    if role_snapshot:
+        frozen['role_snapshot'] = role_snapshot
     if _workflow_version == 3:
         for key in ('backends', 'exam_provider', 'exam_model', 'review_paths'):
             frozen.pop(key)
@@ -457,6 +472,7 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
     activity.status(bridge_services(), state)
     return {"session_id": sid, "worktree": str(worktree), "model": model, "phase": "ready",
             'task_type': task_type,
+            **({'role_snapshot': role_snapshot} if role_snapshot else {}),
             **({'audit_artifacts': str(audit_runtime.artifacts(bridge_services(), state))} if task_type == 'audit' else {}),
             **providers.public_contract(frozen, cfg),
             "contract_hash": state["contract_hash"], "budget": budget, "next": "telos_send",
@@ -1968,6 +1984,9 @@ def status(sid, detail='full'):
                       next_action=next_action_for(state['phase']))
         result['task_type'] = contract.get('task_type', 'implementation')
         result['auto_run_checks'] = contract.get('auto_run_checks', False)
+        if contract.get('role_snapshot'):
+            result['role_snapshot'] = contract['role_snapshot']
+        result['experience_refs'] = contract.get('experience_refs', [])
         result['automatic_checks'] = check_runtime.public(state)
         if state.get('audit_check_correction') and not state.get('packet_id') and state['phase'] == 'not_accepted':
             result['next_action'] = 'telos_evaluate'
@@ -2448,6 +2467,44 @@ next(t for t in TOOLS if t['name'] == 'telos_evaluate')['description'] += (
     'otherwise freshness alone permits one local recheck in the same round. Failed, modified, mismatched or uncertain evidence blocks. '
     'Original-supervisor receipt, same-executor closed-book exam, review and grade remain mandatory.')
 
+for schema in (OPEN_TOOL['inputSchema'], PROJECT_TASK, MEETING_PARTICIPANT):
+    schema['properties'].update({'role_profile': STR,
+                                 'experience_tags': {'type': 'array', 'items': STR, 'maxItems': 16}})
+for name in ('telos_open', 'telos_project_open', 'telos_meeting_open'):
+    next(t for t in TOOLS if t['name'] == name)['description'] += (
+        ' Optional role_profile selects versioned public job guidance from telos_roles. '
+        'Select only needed jobs; it grants no extra permissions and does not change acceptance. '
+        'Supply precise experience_tags for problem and technical applicability to retrieve reviewed shared lessons. '
+        'Queued project/meeting jobs freeze role guidance and model defaults at creation.')
+search_tool = next(t for t in TOOLS if t['name'] == 'telos_experience_search')
+search_tool['inputSchema']['properties'].update({
+    'tags': {'type': 'array', 'items': STR, 'maxItems': 16}, 'role_profile': STR,
+    'include_shared': {'type': 'boolean'}})
+search_tool['description'] += (
+    ' With tags, also includes explicitly published shared summaries whose required_tags all match. '
+    'Project experience has priority; the total limit still applies. Shared results omit private source metadata. '
+    'Without tags, retrieval remains repository-only. include_shared=false disables shared retrieval.')
+SHARED_LESSON = obj({**{k: STR for k in ('problem', 'cause', 'resolution', 'applicability', 'limitations')},
+    'required_tags': {'type': 'array', 'items': STR, 'maxItems': 16},
+    'roles': {'type': 'array', 'items': STR, 'maxItems': 16}},
+    ['problem', 'cause', 'resolution', 'applicability', 'limitations', 'required_tags', 'roles'])
+TOOLS += [
+    {'name': 'telos_roles', 'description': (
+        'List configured public job templates and model-profile defaults. Built-ins: designer, developer, tester. '
+        'The original supervisor chooses needed jobs, freezes task-specific checks and alone accepts. '
+        'Job titles are not capability guarantees; existing task permissions and concurrency limits remain.'),
+     'inputSchema': obj({}, [])},
+    {'name': 'telos_experience_publish', 'description': (
+        'Original source supervisor explicitly publishes a reviewed, general lesson for other repositories. '
+        'Requires enabled accepted source experience, unchanged evidence and final project acceptance if applicable. '
+        'Provide a public generalized summary, applicability/limitations and precise required_tags; never copy '
+        'business-specific rules, source paths, private questions/answers/checks or credentials. '
+        'Record unknown causes as unknown. Idempotent by normalized lesson; preserves original records and disabled flags. '
+        'New tagged tasks may reuse it, but must pass their own checks. Does not alter running tasks or invoke models.'),
+     'inputSchema': obj({'experience_id': STR, 'lesson': SHARED_LESSON, 'rationale': STR},
+                        ['experience_id', 'lesson', 'rationale'])},
+]
+
 SERVER_INSTRUCTIONS = (
     'Use the telos skill. Only the original supervisor accepts; keep references/checks private. '
     'Follow proceed, next_action and returned event IDs; await callbacks. Honor pause/cancel. '
@@ -2520,6 +2577,13 @@ def call_tool(name, args, meta=None):
                         code='invalid_arguments', next_action='correct_arguments')
     validate_argument_shapes(args, schema)
     caller = (meta or {}).get("threadId")
+    if name == 'telos_roles':
+        result = roles.catalog(config())
+        if any(not experience_manager().safe_public(encoded(role), []) for role in result['roles']):
+            raise GateError('Role catalog contains sensitive or oversized public guidance')
+        return result
+    if name == 'telos_experience_publish':
+        return invoke_tool(experience_manager().shared().publish, args, caller=caller)
     if name.startswith('telos_meeting_'):
         return meeting_manager().call(name, args, caller)
     if name in ('telos_open', 'telos_project_open'):
@@ -2531,7 +2595,7 @@ def call_tool(name, args, meta=None):
     if name == 'telos_cache_manage':
         return invoke_tool(storage_manager().manage, args, caller=caller)
     if name == 'telos_experience_search':
-        return {'experiences': invoke_tool(experience_manager().lookup, args)}
+        return {'experiences': invoke_tool(experience_manager().search, args)}
     if name == 'telos_experience_forget':
         return invoke_tool(experience_manager().forget, args)
     if name.startswith('telos_project_'):

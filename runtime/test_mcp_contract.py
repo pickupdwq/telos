@@ -64,7 +64,7 @@ class MCPErrorTests(unittest.TestCase):
                      'pause/cancel', 'accepted=true', 'project acceptance', 'merge/deploy'):
             self.assertIn(rule, instructions)
         tools = self.transport({'id': 2, 'method': 'tools/list'})['tools']
-        self.assertEqual(len(tools), 31)
+        self.assertEqual(len(tools), 33)
         budget = next(tool for tool in tools if tool['name'] == 'telos_project_budget')
         self.assertEqual(sorted(budget['inputSchema']['required']),
                          ['project_id', 'reason', 'request_id', 'user_authorization'])
@@ -88,7 +88,7 @@ class MCPErrorTests(unittest.TestCase):
                 self.assertEqual([r['id'] for r in replies], [1, 2, 3, 4])
                 self.assertEqual(replies[0]['error']['code'], -32602)
                 self.assertEqual(replies[1]['result'], {})
-                self.assertEqual(len(replies[2]['result']['tools']), 31)
+                self.assertEqual(len(replies[2]['result']['tools']), 33)
                 self.assertEqual(replies[3]['result']['serverInfo']['name'], 'telos')
                 self.assertNotIn('PRIVATE_INPUT', output.getvalue())
 

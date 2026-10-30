@@ -296,6 +296,13 @@ Default: at most five evaluation rounds, including the first. Infrastructure fai
 
 ## Operations and data
 
+Version 3.12 adds [role profiles and reviewed shared lessons](docs/roles-experience.md).
+Use `telos_roles` to select designer/developer/tester guidance per assignment.
+Original supervisors may publish accepted, generalized lessons for other repositories;
+new tasks opt into relevant applicability tags. Existing repository experience,
+model choices and acceptance gates remain compatible. No live task updates or
+cross-device synchronization are introduced.
+
 Use `telos watch` for a live, read-only executor view with task switching and
 history. In Ghostty or iTerm2 with Codex CLI inside tmux, tasks share one
 automatic right-side panel and focus stays on the supervisor. Outside tmux,
