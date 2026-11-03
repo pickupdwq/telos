@@ -302,7 +302,8 @@ class ExecutorPreflightOrderTests(unittest.TestCase):
         prompt = self._capture_prompt(thread_id='thread', contract=contract, evidence=evidence)
         self.assertIn('"max_requests":5', prompt)
         self.assertIn('"max_total_tokens":2000', prompt)
-        self.assertIn('reserve one work request for a final factual report', prompt)
+        self.assertIn('or once a TELOS_WORK_BUDGET notice arrives, stop starting new work', prompt)
+        self.assertNotIn('reserve one work request', prompt)
         self.assertNotIn('DO_NOT_FORWARD', prompt)
         self.assertEqual(self._capture_prompt(thread_id='thread', phase='exam', contract=contract),
                          'Codex message:\nmessage')

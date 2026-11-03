@@ -1,3 +1,24 @@
+## 3.12.2 — 2026-11-03
+
+- Send the executor `TELOS_WORK_BUDGET` closeout notice only when admission time
+  is within max(90 s, 15% of `job_timeout`) or at most three work requests remain.
+  It was sent on every request and executors read it as an order to wrap up, handing
+  back 20–45 s checkpoints (one task: 86 checkpoints in 90 jobs). Work-reply guidance
+  no longer defines checkpoint as a time-slice closeout.
+- Mark an owner thread that reports active but has written nothing for
+  `owner_stall_seconds` (default 1200) while a callback waits as
+  `return_health.status="owner_stalled"`, and log it. Telos never acts for the owner.
+- Raise `progress_timeout_seconds` from 180 to 900 so reminders follow real stalls,
+  not ordinary review time.
+- Return creation-time check preflight warnings as `preflight_warnings`, and accept
+  test paths under one top-level project folder, so a misnamed test file is caught
+  before it consumes acceptance rounds.
+
+执行者的收尾提示改为仅在时间或请求额度将尽时发送，避免每片只做 20–45 秒就交
+checkpoint；大总管线程显示活跃但长时间无输出时，在回调健康状态中标记 owner_stalled
+（只提示不代办）；无进展提醒间隔由 3 分钟改为 15 分钟；创建任务时把检查预检警告随
+结果返回，测试路径可位于一级项目目录下。原合同、验收、预算与身份约束不变。
+
 ## 3.12.1 — 2026-11-03
 
 - Integrate the 3.11.2–3.11.4 acceptance fixes into 3.12.0, preserving role

@@ -81,7 +81,8 @@ WORK_REPLY_V2_GUIDANCE = (
     'Return one complete JSON object, protocol_version=2. Common required fields: status, summary (string), '
     'changed_files, checks_performed, remaining_issues, clarification_questions (arrays of strings). '
     'completed means implementation ready for the existing independent acceptance, never accepted. '
-    'checkpoint means unfinished authorized work/time-slice closeout with no supervisor decision needed; '
+    'checkpoint means unfinished authorized work paused at the execution limit or a TELOS_WORK_BUDGET notice, with no supervisor decision needed; '
+    'do not return checkpoint while time and requests remain: keep working and run authorized checks first; '
     'also include completed_work and remaining_work (arrays), next_step (nonempty string), evidence_paths (array). '
     'blocked_environment means a concrete dependency/network/browser/test-service/sandbox blocker; include '
     'blockers, repair_actions and evidence_paths (arrays). needs_clarification is only for missing requirements, '
@@ -89,7 +90,7 @@ WORK_REPLY_V2_GUIDANCE = (
     'All other statuses require clarification_questions=[]. Routine continuation, already-authorized tests and '
     'in-scope defect repair require no new permission. Save detailed reports as evidence files and return their '
     'paths when useful. Do not invent fields or completion; report the actual checks and remaining work. '
-    'End with a valid checkpoint before the execution deadline; a forcibly timed-out process is not a checkpoint.\n'
+    'Keep working until the execution limit or a TELOS_WORK_BUDGET notice nears, then end with a valid checkpoint before the execution deadline; a forcibly timed-out process is not a checkpoint.\n'
 )
 
 

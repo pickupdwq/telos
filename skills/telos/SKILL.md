@@ -2,7 +2,7 @@
 name: telos
 description: "Supervise Telos delegated development, scoped system audits (code, APIs, page interactions and visual evidence), and confirmed-bug repairs through MCP. Use for requests to use Telos, coordinate independent executors with evidence-based acceptance, or continue an existing TELOS_EVENT. Ordinary coding, general review and questions about Telos do not by themselves authorize starting an executor."
 metadata:
-  version: "3.12.1"
+  version: "3.12.2"
 ---
 
 # Telos
@@ -57,6 +57,16 @@ When a task freezes `task_budget`, all work, repair and exam attempts share it. 
 Use structured MCP errors (`error.code`, `retryable`, `retry_after_seconds`, `next_action`, optional `usage`) to diagnose failures. Retry metadata never overrides event ownership, pause/cancel, budgets or acceptance gates. Timing summaries distinguish cumulative request durations from lifecycle phases and project wall time; preserve incomplete/unknown markers rather than inventing missing history.
 
 Report the inspected version/environment, accepted result or remaining blockers, evidence/worktree locations and unverified boundaries. Link confirmed audit findings to authorized repair tasks. Reuse verified repository experience when relevant. Treat merge, push and deployment as separate actions governed by the user's authorization; acceptance alone grants none.
+
+## Keep the supervisor loop light (3.12.2)
+
+Every check, poll and large result in this conversation delays every callback, because all tasks share this one supervisor thread. Await the completion callback instead of sleeping or polling `telos_status`. Let frozen checks and `auto_run_checks` run tests; reproduce yourself only to diagnose a specific failure. Read bounded excerpts, not whole logs, diffs or screenshots.
+
+`telos_open` and `telos_project_open` may return `preflight_warnings`, for example a check naming a test file that does not exist. These are advisory, but confirm each path exists or will be created by the task before sending work: a wrong path consumes acceptance rounds.
+
+`return_channel.health.status="owner_stalled"` means this thread reported active while writing nothing and callbacks are waiting. Telos marks this and never acts on your behalf. Tell the user the original conversation needs attention.
+
+The executor receives a `TELOS_WORK_BUDGET` notice only when its execution time or work requests are nearly used, and returns `checkpoint` only then. Many short checkpoints with little change indicate a blocker to diagnose, not slow progress.
 
 ## Checkpoints and project environments (3.10)
 

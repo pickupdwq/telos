@@ -225,11 +225,11 @@ class Projects:
         dependency_paths = b.validate_dependencies([] if dependency_paths is None else dependency_paths)
         import check_preflight
         try:
-            check_preflight.require_valid({'task_type': 'implementation', 'checks': checks}, root=repo)
+            reports = [check_preflight.require_valid({'task_type': 'implementation', 'checks': checks}, root=repo)]
             for t in tasks:
-                check_preflight.require_valid(
+                reports.append(check_preflight.require_valid(
                     {'task_type': t.get('task_type', 'implementation'),
-                     'checks': t.get('checks') or []}, root=repo)
+                     'checks': t.get('checks') or []}, root=repo))
         except (ValueError, TypeError, SyntaxError) as error:
             raise b.GateError(str(error), code='check_preflight_failed',
                               next_action='correct_checks') from None
@@ -261,7 +261,10 @@ class Projects:
              'check_timing': {'observed_seconds': 0.0, 'completed_runs': 0, 'complete': True}}
         for t in tasks:
             t.update(session_id=uuid.uuid4().hex, phase='pending', revision=1)
-        return self.initialize(p)
+        result = self.initialize(p)
+        warnings = check_preflight.public_warnings(
+            {'diagnostics': [item for report in reports for item in report['diagnostics']]})
+        return {**result, **warnings}
 
     def initialize(self, p, *, courier_model='project'):
         """Persist a coordinator and its notification courier under the same lock."""

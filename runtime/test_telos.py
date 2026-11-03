@@ -92,6 +92,19 @@ class BridgeTests(unittest.TestCase):
         return [{"id": "q1", "points": a, "rationale": "Reviewed result."},
                 {"id": "q2", "points": c, "rationale": "Reviewed result."}]
 
+    def test_open_reports_unresolved_test_paths_as_advisory_warnings(self):
+        missing = [{"id": "add", "argv": ["{python}", "-c",
+                    "import subprocess\nsubprocess.run(['pytest', 'tests/test_missing_case.py'])\n"]}]
+        data = {"repo": str(self.repo), "task": "Implement addition.", "questions": self.q,
+                "assessment_mode": "closed_book", "_workflow_version": 2}
+        flagged = b.create_session(checks=missing, **data)
+        self.assertEqual([w["code"] for w in flagged["preflight_warnings"]], ["test_path_not_found"])
+        self.assertIn("test_missing_case.py", flagged["preflight_warnings"][0]["message"])
+        self.assertIn("Advisory only", flagged["preflight_note"])
+        self.assertEqual(flagged["phase"], "ready")
+        clean = b.create_session(checks=self.checks, **data)
+        self.assertNotIn("preflight_warnings", clean)
+
     def test_real_checks_and_archive(self):
         sid = self.create()
         s = b.read_json(b.run_dir(sid) / "state.json")

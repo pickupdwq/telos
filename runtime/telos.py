@@ -58,7 +58,7 @@ DEFAULT = {"model": "deepseek-v4-1-flash-260910", "base_url": "https://ark.cn-be
            "threshold": 90, "max_rounds": 5, "max_turns": 20, "job_timeout": 600,
            "http_timeout": 180, "exam_max_tokens": 8192, "exam_format_attempts": 3,
            "callback_retry_seconds": 10, "callback_retry_window": 1800,
-           "callback_recovery_seconds": 30, "progress_timeout_seconds": 180,
+           "callback_recovery_seconds": 30, "progress_timeout_seconds": 900, "owner_stall_seconds": 1200,
            "progress_reminder_limit": 3, "infra_retry_limit": 5, "infra_backoff_seconds": 10,
            "review_max_bytes": 200000, "task_budget": None, "task_token_limits_enabled": True,
            "planning_mode": "multi_executor", "dynamic_reasoning_enabled": False,
@@ -322,7 +322,7 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
         raise GateError('task_type must be implementation or audit')
     import check_preflight
     try:
-        check_preflight.require_valid({'task_type': task_type, 'checks': checks}, root=repo)
+        preflight_result = check_preflight.require_valid({'task_type': task_type, 'checks': checks}, root=repo)
     except (ValueError, TypeError, SyntaxError) as error:
         raise GateError(str(error), code='check_preflight_failed',
                         next_action='correct_checks') from None
@@ -479,6 +479,7 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
     activity.status(bridge_services(), state)
     return {"session_id": sid, "worktree": str(worktree), "model": model, "phase": "ready",
             'task_type': task_type,
+            **check_preflight.public_warnings(preflight_result),
             **({'role_snapshot': role_snapshot} if role_snapshot else {}),
             **({'audit_artifacts': str(audit_runtime.artifacts(bridge_services(), state))} if task_type == 'audit' else {}),
             **providers.public_contract(frozen, cfg),
@@ -834,6 +835,30 @@ def deliver_once(sid):
         return _deliver_once(sid)
 
 
+def _watch_owner_stall(event, thread):
+    # Mark, never act on, an owner thread that reports active but has gone silent. A supervisor
+    # thread once stayed 'active' for 14.6 hours after a context compaction while callbacks waited
+    # unseen. Only the original owner may act; this only makes the stall visible through
+    # return_health and the activity log. Returns True when the mark is newly set.
+    limit = config().get('owner_stall_seconds', 1200)
+    now = time.time()
+    quiet_since = [thread.get('updatedAt')]
+    try:
+        quiet_since.append(os.stat(thread['path']).st_mtime)
+    except (KeyError, TypeError, OSError):
+        pass
+    quiet_since = [x for x in quiet_since if type(x) in (int, float)]
+    stalled = (thread['status']['type'] == 'active' and type(limit) in (int, float) and limit > 0
+               and bool(quiet_since) and now - max(quiet_since) >= limit
+               and now - event.get('created_at', now) >= limit)
+    if not stalled:
+        event.pop('owner_stalled_at', None)
+        return False
+    fresh = 'owner_stalled_at' not in event
+    event.setdefault('owner_stalled_at', now)
+    return fresh
+
+
 def _deliver_once(sid):
     with locked(sid) as root:
         state, _ = load_session(root)
@@ -879,6 +904,9 @@ def _deliver_once(sid):
                 return persist() and event['status'] == 'pending'
             event.pop('delivery_blocker', None)
             event.pop('retry_at', None)
+            if _watch_owner_stall(event, thread):
+                activity.status(bridge_services(), state,
+                                'owner_stalled: the original thread reports active but has written nothing; callbacks are waiting')
             if ((owner.get("transport") == "desktop_ipc" or state.get("auto_check") or state.get("coalesce_active")) and not was_submitted
                     and thread["status"]["type"] == "active"):
                 event["last_error"] = None
@@ -1091,6 +1119,9 @@ def return_health(state):
                 'retry_at': delivery.get('retry_at')}
     if delivery.get('status') in ('uncertain', 'unacknowledged'):
         return {'status': 'needs_receipt', 'next_action': 'receive_on_original_thread'}
+    if delivery.get('owner_stalled_at') and delivery.get('status') in WATCH_EVENTS:
+        return {'status': 'owner_stalled', 'next_action': 'check_original_thread',
+                'stalled_since': delivery['owner_stalled_at']}
     return {'status': delivery.get('status', 'ready'), 'next_action': None}
 
 

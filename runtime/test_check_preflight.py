@@ -61,6 +61,30 @@ class PreflightUnitTests(unittest.TestCase):
         self.assertIn('test_path_not_found',
                       [item['code'] for item in result['diagnostics']])
 
+    def test_test_path_under_a_top_level_project_folder_is_not_flagged(self):
+        with tempfile.TemporaryDirectory() as folder:
+            (Path(folder) / 'app' / 'tests').mkdir(parents=True)
+            (Path(folder) / 'app' / 'tests' / 'test_present.py').write_text('x')
+            code = ("import subprocess\n"
+                    "subprocess.run(['pytest', 'tests/test_present.py', 'tests/test_absent.py'])\n")
+            result = check_preflight.analyze(checks=[check(code)], root=folder)
+        flagged = [item['message'] for item in result['diagnostics'] if item['code'] == 'test_path_not_found']
+        self.assertEqual(len(flagged), 1)
+        self.assertIn('test_absent.py', flagged[0])
+        self.assertTrue(result['ok'])
+
+    def test_public_warnings_are_bounded_deduplicated_and_warning_only(self):
+        self.assertEqual(check_preflight.public_warnings({'diagnostics': []}), {})
+        self.assertEqual(check_preflight.public_warnings(None), {})
+        rows = [{'check_id': 'c', 'severity': 'warning', 'code': 'test_path_not_found', 'message': 'path %d' % n}
+                for n in range(14)]
+        rows += [rows[0], {'check_id': 'c', 'severity': 'error', 'code': 'syntax_error', 'message': 'bad'}]
+        shown = check_preflight.public_warnings({'diagnostics': rows})
+        self.assertEqual(len(shown['preflight_warnings']), check_preflight.MAX_PUBLIC_WARNINGS)
+        self.assertEqual(shown['preflight_warnings_omitted'], 4)
+        self.assertNotIn('syntax_error', [w['code'] for w in shown['preflight_warnings']])
+        self.assertEqual(set(shown['preflight_warnings'][0]), {'check_id', 'code', 'message'})
+
     def test_known_audit_top_level_is_accepted(self):
         result = check_preflight.analyze(contract={'task_type': 'audit'}, checks=[check(
             "report = {}\nfor key in %r:\n    assert report.get(key) is not None\n" % (REPORT_TOP_LEVEL,))])

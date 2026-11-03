@@ -84,7 +84,11 @@ def _execution_guidance(b, state, contract, binding):
     text = f'Execution limit: {duration}s. '
     if margin:
         text += f'New requests stop {margin}s early. '
-    text += 'Limit reads, use the supplied test command, and reserve one work request for a final factual report.\n'
+    from isolation import advisory_window
+    window = advisory_window(duration)
+    text += ('Limit reads and use the supplied test command. Keep working steadily; only in the final '
+             f'{window}s before new requests stop, or once a TELOS_WORK_BUDGET notice arrives, '
+             'stop starting new work and send one final factual report.\n')
     if contract.get('budget'):
         snapshot = b.usage_snapshot(state, contract)
         remaining = snapshot.get('budget_state', {}).get('remaining', {})

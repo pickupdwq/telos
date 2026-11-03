@@ -250,6 +250,48 @@ class ReminderLifecycleTests(CallbackTests):
         self.assertEqual(len(self.added()), 1)
         self.assertNotIn('delivery_blocker', self.state(sid)['events'][eid])
 
+    def test_silent_active_owner_is_marked_stalled_without_taking_over(self):
+        sid, eid = self.event()
+        old = time.time() - 5000
+        state = self.state(sid); state['events'][eid]['created_at'] = old
+        b.write_json(b.run_dir(sid) / 'state.json', state)
+        self.db['thread'].update(status={'type': 'active', 'activeFlags': []}, updatedAt=old)
+        b.deliver_once(sid)
+        health = b.status(sid)['return_channel']['health']
+        self.assertEqual(health['status'], 'owner_stalled')
+        self.assertEqual(health['next_action'], 'check_original_thread')
+        self.assertEqual(self.state(sid)['continuation'], 'active')
+        first = self.state(sid)['events'][eid]['owner_stalled_at']
+        b.deliver_once(sid)
+        self.assertEqual(self.state(sid)['events'][eid]['owner_stalled_at'], first)
+        self.db['thread'].update(status={'type': 'idle'}, updatedAt=time.time())
+        b.deliver_once(sid)
+        self.assertNotIn('owner_stalled_at', self.state(sid)['events'][eid])
+        self.assertNotEqual(b.status(sid)['return_channel']['health']['status'], 'owner_stalled')
+
+    def test_recently_active_owner_is_not_marked_stalled(self):
+        sid, eid = self.event()
+        self.db['thread'].update(status={'type': 'active', 'activeFlags': []}, updatedAt=time.time())
+        b.deliver_once(sid)
+        self.assertNotIn('owner_stalled_at', self.state(sid)['events'][eid])
+        state = self.state(sid); state['events'][eid]['created_at'] = time.time() - 5000
+        b.write_json(b.run_dir(sid) / 'state.json', state)
+        b.deliver_once(sid)
+        self.assertNotIn('owner_stalled_at', self.state(sid)['events'][eid])
+        # An active owner still gets the normal queued callback; the stall mark never changes delivery.
+        self.assertEqual(len(self.added()), 1)
+
+    def test_stalled_mark_does_not_outlive_receipt(self):
+        sid, eid = self.event()
+        old = time.time() - 5000
+        state = self.state(sid); state['events'][eid]['created_at'] = old
+        b.write_json(b.run_dir(sid) / 'state.json', state)
+        self.db['thread'].update(status={'type': 'active', 'activeFlags': []}, updatedAt=old)
+        b.deliver_once(sid)
+        self.assertEqual(b.status(sid)['return_channel']['health']['status'], 'owner_stalled')
+        b.receive_event(sid, eid)
+        self.assertNotEqual(b.status(sid)['return_channel']['health']['status'], 'owner_stalled')
+
     def test_failed_queue_cleanup_is_retried_without_duplicate_notification(self):
         sid, eid = self.event(); b.receive_event(sid, eid)
         state = self.state(sid); state['events'][eid]['received_at'] = time.time() - 1000

@@ -1250,6 +1250,69 @@ class WorkGuidanceTests(unittest.TestCase):
             self.assertEqual(started.admission_remaining(), 0)
 
 
+# The closeout advisory is a late signal, not a per-request nudge.
+class WorkGuidanceWindowTests(unittest.TestCase):
+    @staticmethod
+    def prepare(seconds, requests, duration=600):
+        class Metadata:
+            def snapshot(self):
+                return {'budget_state': {'remaining': {'max_requests': requests}}}
+
+            def admission_remaining(self):
+                return seconds
+
+            def advisory_window(self):
+                return isolation.RelayCloseout(duration=duration).advisory_window()
+
+        meta = Metadata()
+        raw = json.dumps({'model': 'm', 'input': []}).encode()
+        return raw, isolation._apply_work_guidance(
+            raw, usage_ledger=meta, request_id='request-1', closeout=meta)
+
+    def test_window_is_the_larger_of_a_floor_and_a_fraction_of_the_limit(self):
+        self.assertEqual(isolation.RelayCloseout(duration=600).advisory_window(), 90)
+        self.assertEqual(isolation.RelayCloseout(duration=1800).advisory_window(), 270)
+        self.assertEqual(isolation.RelayCloseout(duration=60).advisory_window(), 90)
+        self.assertEqual(isolation.RelayCloseout().advisory_window(), 90)
+        started = isolation.RelayCloseout()
+        started.start(3600)
+        self.assertEqual(started.advisory_window(), 540)
+
+    def test_no_advisory_while_time_and_requests_remain(self):
+        for seconds, requests in ((500, None), (500, 40), (None, 40), (91, 4)):
+            with self.subTest(seconds=seconds, requests=requests):
+                raw, prepared = self.prepare(seconds, requests)
+                self.assertIs(prepared, raw)
+
+    def test_advisory_when_time_or_requests_are_nearly_used(self):
+        for seconds, requests in ((90, None), (45, 40), (500, 3), (500, 0), (0, 0)):
+            with self.subTest(seconds=seconds, requests=requests):
+                raw, prepared = self.prepare(seconds, requests)
+                self.assertIsNot(prepared, raw)
+                text, budget = work_guidance_budget(json.loads(prepared)['input'][-1])
+                self.assertLessEqual(len(text), 1000)
+                self.assertIn('not acceptance', budget['instruction'].lower())
+                self.assertNotIn('stop starting new work', text)
+
+    def test_relay_stays_silent_early_and_speaks_near_the_end(self):
+        def reply(request, n):
+            return 200, 'application/json', json.dumps(
+                {'status': 'completed', 'usage': responses_usage()}).encode()
+
+        with tempfile.TemporaryDirectory() as folder, upstream(reply) as (port, seen):
+            ledger = usage.UsageLedger(Path(folder) / 'usage.json')
+            closeout = isolation.RelayCloseout(duration=1800, request_window=5)
+            with isolation.model_relay(f'http://127.0.0.1:{port}', 'KEY', usage_ledger=ledger,
+                                       usage_context={'phase': 'work'}, closeout=closeout) as relay:
+                post(relay, payload={'model': 'm', 'input': []})
+                closeout.deadline = isolation.time.monotonic() + 100
+                post(relay, payload={'model': 'm', 'input': []})
+        self.assertEqual(len(seen), 2)
+        self.assertNotIn(isolation.WORK_BUDGET_PREFIX, json.dumps(seen[0]))
+        _, budget = work_guidance_budget(seen[1]['input'][-1])
+        self.assertLessEqual(budget['admission_seconds_remaining'], 100)
+
+
 class WorkGuidanceRelayTests(unittest.TestCase):
     def setUp(self):
         self.temp = tempfile.TemporaryDirectory()

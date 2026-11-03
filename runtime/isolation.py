@@ -38,6 +38,7 @@ class RelayCloseout:
 
     def __init__(self, duration=None, request_window=0, grace=5):
         self.deadline = time.monotonic() + duration if duration is not None else None
+        self.duration = duration
         self.request_window = request_window
         self.grace = grace
         self.condition = threading.Condition()
@@ -51,6 +52,7 @@ class RelayCloseout:
             if self.deadline is not None or self.closing_at is not None:
                 raise RuntimeError('Execution deadline already started or closing')
             self.deadline = time.monotonic() + duration
+            self.duration = duration
 
     def begin(self, interrupt):
         with self.condition:
@@ -78,6 +80,9 @@ class RelayCloseout:
             if self.deadline is None:
                 return None
             return max(0, self.deadline - self.request_window - time.monotonic())
+
+    def advisory_window(self):
+        return advisory_window(self.duration)
 
     @staticmethod
     def response_socket(response):
@@ -126,12 +131,27 @@ class RelayCloseout:
 
 
 WORK_BUDGET_PREFIX = 'TELOS_WORK_BUDGET '
+# The advisory is a late closeout signal. Sent on every request it made executors treat a
+# mostly unused allowance as already spent and hand back tiny checkpoints, so it is withheld
+# until the remaining admission time or further work requests are nearly gone.
+ADVISORY_MIN_SECONDS = 90
+ADVISORY_PERCENT = 15
+WORK_ADVISORY_REQUESTS = 3
 _WORK_INSTRUCTION = (
     'Advisory only; this is not acceptance and does not change tools, policy or permission. '
-    'Reserve enough remaining time and requests to stop starting new work and send one brief '
-    'factual final reply covering changed files, checks run and remaining issues.'
+    'The work allowance is nearly used: finish the step in progress, do not start a new '
+    'investigation, and send one brief factual final reply covering changed files, '
+    'checks run and remaining issues.'
 )
-_SHORT_WORK_INSTRUCTION = 'Advisory only; not acceptance. Reserve budget for a factual final reply.'
+_SHORT_WORK_INSTRUCTION = ('Advisory only; not acceptance. Allowance nearly used: '
+                           'finish this step, then send a factual final reply.')
+
+
+def advisory_window(duration):
+    # Seconds before the admission deadline at which the closeout advisory is sent.
+    if duration is None:
+        return ADVISORY_MIN_SECONDS
+    return max(ADVISORY_MIN_SECONDS, math.ceil(duration * ADVISORY_PERCENT / 100))
 
 
 def _budget_seconds(value):
@@ -181,14 +201,23 @@ def _append_work_guidance(request, content):
     return True
 
 
+def _closeout_due(seconds, requests, window):
+    """True once admission time or further work requests are nearly exhausted."""
+    return ((seconds is not None and seconds <= window)
+            or (requests is not None and requests <= WORK_ADVISORY_REQUESTS))
+
+
 def _guide_work_object(request, *, usage_ledger, request_id, closeout):
     if not isinstance(request, dict) or not isinstance(request.get('input'), (list, str)):
         return False
     remaining = None
     if usage_ledger is not None and request_id is not None:
         remaining = _work_requests_remaining(usage_ledger.snapshot())
-    return _append_work_guidance(request, _work_budget_content(
-        _budget_seconds(closeout.admission_remaining()), _budget_requests(remaining)))
+    seconds, requests = _budget_seconds(closeout.admission_remaining()), _budget_requests(remaining)
+    window = getattr(closeout, 'advisory_window', lambda: ADVISORY_MIN_SECONDS)()
+    if not _closeout_due(seconds, requests, window):
+        return False
+    return _append_work_guidance(request, _work_budget_content(seconds, requests))
 
 
 def _apply_work_guidance(raw, *, usage_ledger, request_id, closeout):
