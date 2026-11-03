@@ -37,10 +37,12 @@ class IdentityTests(unittest.TestCase):
         replies = {x['id']: x['result'] for x in map(json.loads, result.stdout.splitlines())}
         self.assertEqual(replies[1]['serverInfo'], {'name': 'telos', 'title': 'TELOS', 'version': VERSION})
         names = {t['name'] for t in replies[2]['tools']}
-        self.assertEqual(len(names), 33)
+        self.assertEqual(len(names), 37)
         self.assertIn('telos_roles', names)
         self.assertIn('telos_experience_publish', names)
         self.assertIn('telos_project_budget', names)
+        self.assertIn('telos_correct_audit_status', names)
+        self.assertIn('telos_correct_test_path', names)
         self.assertIn('telos_audit_probe', names)
         self.assertTrue(all(name.startswith('telos_') for name in names))
         self.assertIn('telos_project_open', names)

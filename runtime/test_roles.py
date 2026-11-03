@@ -71,6 +71,16 @@ class RoleTests(unittest.TestCase):
         self.assertEqual(c['experience_context'], '')
         self.assertEqual(c['experience_ids'], [])
 
+    def test_role_task_rejects_invalid_check_before_freezing(self):
+        runs = b.STATE / 'runs'
+        before = set(runs.iterdir()) if runs.exists() else set()
+        with self.assertRaisesRegex(b.GateError, 'preflight'):
+            b.call_tool('telos_open', dict(repo=str(self.repo), task='Maintain addition.',
+                questions=self.q, checks=[{'id': 'broken', 'argv': ['{python}', '-c', 'assert (']}],
+                role_profile='developer', notify=False,
+                skip_meeting_reason='Small direct implementation requested.'))
+        self.assertEqual(set(runs.iterdir()) if runs.exists() else set(), before)
+
     def test_catalog_bounds_each_role_without_rejecting_multiple_valid_roles(self):
         from roles import BUILTINS
         custom = {}

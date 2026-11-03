@@ -3206,6 +3206,39 @@
       }
     },
     {
+      "name": "telos_task_budget",
+      "description": "Original supervisor only: explicitly authorize unlimited work turns for one existing standalone task. Records a versioned policy and exact user authorization; preserves original contract, turns, rounds, usage, model, history and every other gate. Stable request_id with identical parameters is read-only; different parameters and damaged records fail closed. Project children use telos_project_budget. Paused remains paused; terminal/discussion tasks rejected. Never dispatches, resumes or accepts.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "strategy": {
+            "enum": [
+              "unlimited"
+            ]
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "user_authorization": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "request_id",
+          "reason",
+          "user_authorization"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "telos_project_budget",
       "description": "Original supervisor only: record an explicitly user-authorized, audited job-admission policy change for one project. Only strategy=unlimited is supported; it raises the effective job ceiling to unlimited while preserving max_jobs, jobs_started, the frozen contract/hash, task identities and all history. Requires a stable request_id, reason and user_authorization. Same request_id with identical arguments is an idempotent replay; different arguments are rejected. Rejects accepted, cancelled, discussion and damaged-policy projects. A paused project stays paused; this never starts, resumes, accepts or deploys work. Projects without this policy keep their original max_jobs. Optional include_work_turns=true additionally records a separate versioned work-turn scope (requires a valid prior unlimited job policy) so bound project children may continue work beyond max_turns while every other gate stays unchanged; it never resumes or dispatches, and omitted/false keeps legacy behavior.",
       "inputSchema": {
@@ -3714,6 +3747,96 @@
       }
     },
     {
+      "name": "telos_preflight_checks",
+      "description": "Pure read-only check-configuration preflight. Parses and compiles inline Python checks without executing them or writing state. Hard-rejects only deterministic syntax/compile failures and provable direct conflicts with the shared audit report top-level schema; missing paths and dynamic expressions are advisory because implementations may generate them. Accepts an existing session_id or an explicit contract/checks proposal. Never dispatches, accepts, installs or changes contracts.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "contract": {
+            "type": "object"
+          },
+          "checks": {
+            "type": "array",
+            "items": {
+              "type": "object"
+            }
+          },
+          "root": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "contract",
+          "checks",
+          "root"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "telos_revise_checks",
+      "description": "Original supervisor only: preview or apply one versioned revision of an existing check's inline Python argv[2] program. Preview is read-only and shows complete before/after/diff plus a proposal_hash bound to identity, original contract, effective hash, received event, submission and prior evidence hashes. Apply recomputes under project/session locks and requires the reviewed proposal_hash, user_authorization, a standard-preservation reason and evidence references. All other contract fields and original contract bytes stay unchanged; assertion nodes cannot be removed. Preserves counters/budget/history, invalidates only current packet/acceptance/auto-check pointers, and leaves fresh checks, same-executor exam, supervisor grade and project final binding mandatory. Stable request_id is idempotent; different arguments and stale/tampered proposals are rejected. Never dispatches, resumes, accepts or merges.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "user_authorization": {
+            "type": "string"
+          },
+          "event_id": {
+            "type": "string"
+          },
+          "check_id": {
+            "type": "string"
+          },
+          "before_program": {
+            "type": "string"
+          },
+          "after_program": {
+            "type": "string"
+          },
+          "preservation_reason": {
+            "type": "string"
+          },
+          "evidence": {
+            "type": "string"
+          },
+          "apply": {
+            "type": "boolean",
+            "default": false
+          },
+          "proposal_hash": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "request_id",
+          "reason",
+          "user_authorization",
+          "event_id",
+          "check_id",
+          "before_program",
+          "after_program",
+          "preservation_reason",
+          "evidence"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
       "name": "telos_correct_audit_status",
       "description": "Original supervisor only: explicitly record one versioned correction of the invalid historical audit status whitelist literal pass to canonical passed. Fixed AST rule only; accepts no replacement code. Preserves original contract.json, task/session identity, evidence files, counters, budgets, thresholds and all other criteria. Requires completed unaccepted audit work, received event, no running job or exam, reason and user_authorization. Stable request_id is idempotent. Invalidates current check/packet pointers; normal new checks, same-executor exam and supervisor grade remain mandatory. Never dispatches, resumes, accepts or changes report contents.",
       "inputSchema": {
@@ -3732,6 +3855,45 @@
             "type": "string"
           },
           "event_id": {
+            "type": "string"
+          }
+        },
+        "required": [
+          "session_id",
+          "request_id",
+          "reason",
+          "user_authorization",
+          "event_id"
+        ],
+        "additionalProperties": false
+      }
+    },
+    {
+      "name": "telos_correct_test_path",
+      "description": "Original supervisor only: preview or apply one fixed missing pytest path correction from tests/test_device_import_preview.py to tests/test_device_template.py under ai-device-risk. No arbitrary code/path input. Requires received event and completed unaccepted implementation, static supported invocation and immutable Git proof. Preview is read-only; apply requires its proposal_hash. Preserves original contract, identities, counters and evidence. At most five additional evaluation rounds are recovered solely from retained missing-path/zero-tests failures; original max_rounds stays unchanged and recovery is consumed only above it. Does not relax other controls, dispatch, resume or accept. Fresh checks, same-executor exam and supervisor grade remain mandatory.",
+      "inputSchema": {
+        "type": "object",
+        "properties": {
+          "session_id": {
+            "type": "string"
+          },
+          "request_id": {
+            "type": "string"
+          },
+          "reason": {
+            "type": "string"
+          },
+          "user_authorization": {
+            "type": "string"
+          },
+          "event_id": {
+            "type": "string"
+          },
+          "apply": {
+            "type": "boolean",
+            "default": false
+          },
+          "proposal_hash": {
             "type": "string"
           }
         },

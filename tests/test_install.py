@@ -45,6 +45,8 @@ class InstallerTests(unittest.TestCase):
         self.assertTrue((self.prefix / 'chat_adapter.py').is_file())
         self.assertTrue((self.prefix / 'roles.py').is_file())
         self.assertTrue((self.prefix / 'shared_experience.py').is_file())
+        for module in ('check_preflight.py', 'check_revision.py', 'task_budget.py', 'test_path_correction.py'):
+            self.assertTrue((self.prefix / module).is_file())
         self.assertTrue((self.prefix / 'bailian_models.json').is_file())
         cfg = json.loads((self.prefix / "config.json").read_text())
         self.assertEqual(cfg["default_executor_profile"], "deepseek_official")
@@ -77,8 +79,11 @@ class InstallerTests(unittest.TestCase):
         replies = {item['id']: item['result'] for item in map(json.loads, response.stdout.splitlines())}
         self.assertEqual(replies[1]["serverInfo"]["name"], "telos")
         self.assertEqual(replies[1]["serverInfo"]["version"], result["version"])
-        self.assertEqual(len(replies[2]['tools']), 33)
+        self.assertEqual(len(replies[2]['tools']), 37)
         self.assertIn('telos_experience_publish', {tool['name'] for tool in replies[2]['tools']})
+        self.assertTrue({'telos_preflight_checks', 'telos_revise_checks',
+                         'telos_task_budget', 'telos_correct_test_path'} <=
+                        {tool['name'] for tool in replies[2]['tools']})
         self.assertFalse(replies[3]['isError'])
         self.assertEqual({role['id'] for role in json.loads(replies[3]['content'][0]['text'])['roles']},
                          {'designer', 'developer', 'tester'})

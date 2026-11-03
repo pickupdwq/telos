@@ -1,3 +1,16 @@
+## 3.12.1 — 2026-11-03
+
+- Integrate the 3.11.2–3.11.4 acceptance fixes into 3.12.0, preserving role
+  profiles, frozen model bindings and reviewed cross-project experience.
+- Retain read-only check preflight, owner-reviewed check revisions, the fixed
+  historical test-path correction and audited standalone work-turn policies.
+- Preserve both feature sets in compact status, project tasks and the complete
+  37-tool MCP surface. Original contracts, evidence history and acceptance gates
+  remain intact; upgrades preserve existing configuration and task storage.
+
+合入本机修复分支，保留 3.12.0 的岗位模板与跨项目经验共享，同时保留检查预检、
+受控验收脚本修订、历史路径纠正和单任务工作轮数授权；原合同、历史与验收要求不变。
+
 ## 3.12.0 — 2026-10-30
 
 - Add versioned public designer/developer/tester profiles, custom job templates,
@@ -10,6 +23,41 @@
   project acceptance, permissions, budgets and no-progress guards.
 - Add native CLI, real Git/project acceptance, legacy compatibility and installer
   regressions; update the supervisor Skill and generated MCP reference.
+
+## 3.11.4 — 2026-10-30
+
+- Add `telos_preflight_checks`: read-only parse/compile preflight for check configurations. It never executes user programs, rejects only deterministic syntax/compile failures and proven direct audit-report top-level conflicts, and reports missing generated paths and dynamic semantics as advisory.
+- Share the audit report top-level schema constant between runtime validation and preflight.
+- Add `telos_revise_checks`: original-supervisor-only preview/apply of one existing inline Python check's `argv[2]`. Preview is read-only and binds a proposal hash to identity, contract, effective hash, event, submitted commit and prior evidence hashes; apply recomputes under project/session locks, preserves original contract bytes, counters, budget and history, rejects assertion reduction, and invalidates only current packet/acceptance/auto-check pointers.
+- Validate fixed historical corrections first, then an explicit generic revision chain; once a generic revision exists, historical corrections cannot be written back.
+
+新增只读检查配置预检与受控的单个检查程序版本修订，保留原合同、预算、计数和历史。修订不声明语义等价，仍需新检查、同一执行者闭卷与监督评分。
+
+## 3.11.3 — standalone task work-turn policy
+
+Add owner-authorized `telos_task_budget` for one existing standalone task. Retain
+original contract, spent turns, rounds, usage, executor and history; a canonical
+versioned policy exempts only work-turn admission. Other gates stay unchanged.
+No global maximum, private contract or acceptance result is rewritten.
+
+## 3.11.2 — 2026-10-30
+
+- Add an original-supervisor-only preview/apply operation for one fixed historical
+  pytest path typo: `tests/test_device_import_preview.py` to the existing
+  `tests/test_device_template.py`. No arbitrary replacement code, paths, check
+  selection or thresholds are accepted. Validate immutable Git evidence and bind
+  application to the reviewed proposal hash.
+- Preserve the original contract bytes, task identity, attempts, counters and
+  policy history. Derive the effective check through a validated versioned
+  correction record; invalidate current evidence reuse and require fresh checks,
+  the same executor's closed-book exam and supervisor grading.
+- Restore at most five acceptance opportunities, limited by verified historical
+  missing-path/no-tests attempts. Keep the original round count and ceiling;
+  consume the separate one-time allowance only after the original ceiling.
+  Existing tasks without a correction retain their original behavior.
+- Preserve model settings, unlimited job/work-turn policies, concurrency,
+  timeouts, no-progress, owner and pause/cancel gates. The operation never starts,
+  resumes, accepts, merges or deploys work.
 
 ## 3.11.1 — 2026-10-29
 

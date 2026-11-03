@@ -5,6 +5,7 @@ No third-party Python dependencies. No native Codex subagents or OMX team worker
 """
 from __future__ import annotations
 import argparse
+import copy
 import contextlib
 import fcntl
 import inspect
@@ -319,6 +320,12 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
             raise GateError('Discussion sessions are read-only meeting participants without acceptance material')
     elif task_type not in ('implementation', 'audit'):
         raise GateError('task_type must be implementation or audit')
+    import check_preflight
+    try:
+        check_preflight.require_valid({'task_type': task_type, 'checks': checks}, root=repo)
+    except (ValueError, TypeError, SyntaxError) as error:
+        raise GateError(str(error), code='check_preflight_failed',
+                        next_action='correct_checks') from None
     if task_type == 'audit':
         if _workflow_version != 3 or command_network or any(c.get('network', False) for c in checks) or repair_of is not None:
             raise GateError('Audit tasks use the current workflow, scoped probes and network-free quality checks')
@@ -479,21 +486,54 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
             "return_channel": {"enabled": bool(owner), "owner_thread_id": owner["thread_id"] if owner else None}}
 
 
-def load_session(root):
+def load_session(root, *, read_only=False):
     import state_store
-    state = state_store.read(bridge_services(), root)
+    if read_only:
+        try:
+            state = state_store.validate(read_json(root / 'state.json'), root.name)
+        except (OSError, ValueError, TypeError, OverflowError) as error:
+            raise GateError('Invalid session state: ' + str(error)[:300]) from None
+    else:
+        state = state_store.read(bridge_services(), root)
     try:
         contract = read_json(root / "contract.json")
         if not isinstance(contract, dict):
             raise ValueError('Invalid contract object')
     except (OSError, ValueError) as error:
+        if read_only:
+            raise GateError('Invalid session contract: ' + str(error)[:300]) from None
         raise state_store.quarantine(bridge_services(), root, error) from None
     try:
-        import audit_check_correction
-        contract = audit_check_correction.effective(bridge_services(), state, contract)
+        import task_budget
+        task_budget.validate(state, contract)
+        import audit_check_correction, check_revision, test_path_correction
+        raw_contract = contract
+        correction = test_path_correction if test_path_correction.KEY in state else audit_check_correction
+        if check_revision.KEY in state:
+            row = state[check_revision.KEY]
+            if (row is None or not isinstance(row, dict)
+                    or not isinstance(row.get('revisions'), list) or not row['revisions']
+                    or not isinstance(row['revisions'][0], dict)
+                    or not isinstance(row['revisions'][0].get('base_effective_hash'), str)):
+                raise ValueError('Check revision record is null or invalid')
+            # Validate the historical fixed correction / original hash against
+            # an in-memory base view only. The frozen files and real state are
+            # never migrated or rewritten by loading.
+            legacy_state = copy.deepcopy(state)
+            legacy_state.pop(check_revision.KEY, None)
+            legacy_state['contract_hash'] = row['revisions'][0]['base_effective_hash']
+            base = correction.effective(bridge_services(), legacy_state, raw_contract)
+            if digest(base) != legacy_state['contract_hash']:
+                raise ValueError('Check revision base contract hash changed')
+            contract = check_revision.effective(bridge_services(), state, raw_contract, base)
+        else:
+            contract = correction.effective(bridge_services(), state, raw_contract)
     except (ValueError, TypeError, KeyError, SyntaxError) as error:
+        if read_only:
+            raise GateError('Invalid session contract: ' + str(error)[:300]) from None
         raise state_store.quarantine(bridge_services(), root, error) from None
-    (STATE / 'quarantine' / (root.name + '.json')).unlink(missing_ok=True)
+    if not read_only:
+        (STATE / 'quarantine' / (root.name + '.json')).unlink(missing_ok=True)
     return state, contract
 
 
@@ -1184,7 +1224,7 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
         state, contract = load_session(root)
         if state.get('archived'):
             raise GateError('Archived task is terminal; restore its bundle into a new task if needed')
-        work_turns_exempt = False
+        work_turns_exempt = kind == 'send' and 'task_work_turn_policy' in state
         if _work_turns is not None:
             owner_id = (state.get('owner') or {}).get('thread_id')
             if not (isinstance(_work_turns, dict)
@@ -1249,7 +1289,8 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
         from local_executor import assert_active
         if kind != 'checks':
             assert_active(bridge_services(), backend_bindings(contract)['executor'])
-        if not discussion and not reuse_round and state["rounds"] >= contract["max_rounds"]:
+        import test_path_correction
+        if not discussion and not reuse_round and state["rounds"] >= test_path_correction.round_limit(state, contract):
             raise GateError("Maximum exam rounds reached; do not lower the threshold")
         try:
             usage_ledger(state, contract).ensure_available('exam' if kind in ('evaluate', 'checks') else 'work')
@@ -1287,7 +1328,7 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
             if not state.get("thread_id") or not (state["phase"] in ("responded", "not_accepted") or retry_exam):
                 raise GateError("Evaluation requires a completed execution-model turn")
             if not reuse_round:
-                if state["rounds"] >= contract["max_rounds"]:
+                if state["rounds"] >= test_path_correction.round_limit(state, contract):
                     raise GateError("Maximum exam rounds reached")
                 state["rounds"] += 1
         else:
@@ -1975,6 +2016,12 @@ def status(sid, detail='full'):
                                            "infra_failures", "next_retry_at", "last_failure_kind", "archived")}
         import audit_check_correction
         result['audit_check_correction'] = audit_check_correction.public(state)
+        import test_path_correction
+        result['test_path_correction'] = test_path_correction.public(state)
+        import task_budget
+        result['work_turn_budget'] = task_budget.summary(state, config()['max_turns'])
+        import check_revision
+        result['check_revision'] = check_revision.public(state)
         result['environment'] = state.get('environment')
         result['version'] = VERSION
         result.update(base_commit=state.get('base_commit'), submitted_commit=state.get('submitted_commit'),
@@ -1988,7 +2035,7 @@ def status(sid, detail='full'):
             result['role_snapshot'] = contract['role_snapshot']
         result['experience_refs'] = contract.get('experience_refs', [])
         result['automatic_checks'] = check_runtime.public(state)
-        if state.get('audit_check_correction') and not state.get('packet_id') and state['phase'] == 'not_accepted':
+        if (state.get('audit_check_correction') or state.get('test_path_correction') or state.get('check_revision')) and not state.get('packet_id') and state['phase'] == 'not_accepted':
             result['next_action'] = 'telos_evaluate'
         if (state.get('auto_check') or {}).get('status') in ('queued', 'running'):
             result['next_action'] = 'await_checks_completion'
@@ -2076,6 +2123,12 @@ def review_packet(sid, detail='full'):
                                "backend": (packet.get('exam') or {}).get('backend')}}
         import audit_check_correction
         result['audit_check_correction'] = audit_check_correction.public(state)
+        import test_path_correction
+        result['test_path_correction'] = test_path_correction.public(state)
+        import task_budget
+        result['work_turn_budget'] = task_budget.summary(state, config()['max_turns'])
+        import check_revision
+        result['check_revision'] = check_revision.public(state)
         if detail == 'summary':
             return compact_views.review(result)
         result['detail'] = 'full'
@@ -2366,6 +2419,11 @@ TOOLS += [
      " marked."), 'inputSchema': obj(PID)},
  {'name': 'telos_project_finish', 'description': ('Original supervisor scores every final criterion, supplies blockers and an overall rationale. Enforces tests, unchanged accepted task commits, unchanged integrated commit and score threshold. Passing produces an accepted scratch integration commit, never automatic source-branch merge or deployment.'), 'inputSchema': obj({**PID, 'packet_id': STR, 'scores': SCORES, 'blockers': {'type': 'array', 'items': STR}, 'rationale': STR})}
 ]
+TOOLS.append({'name': 'telos_task_budget',
+    'description': 'Original supervisor only: explicitly authorize unlimited work turns for one existing standalone task. Records a versioned policy and exact user authorization; preserves original contract, turns, rounds, usage, model, history and every other gate. Stable request_id with identical parameters is read-only; different parameters and damaged records fail closed. Project children use telos_project_budget. Paused remains paused; terminal/discussion tasks rejected. Never dispatches, resumes or accepts.',
+    'inputSchema': obj({**SID, 'strategy': {'enum': ['unlimited']}, 'request_id': STR,
+                        'reason': STR, 'user_authorization': STR},
+                       ['session_id', 'request_id', 'reason', 'user_authorization'])})
 TOOLS.append({'name': 'telos_project_budget',
     'description': ('Original supervisor only: record an explicitly user-authorized, audited job-admission policy change for one project. Only strategy=unlimited is supported; it raises the effective job ceiling to unlimited while preserving max_jobs, jobs_started, the frozen contract/hash, task identities and all history. Requires a stable request_id, reason and user_authorization. Same request_id with identical arguments is an idempotent replay; different arguments are rejected. Rejects accepted, cancelled, discussion and damaged-policy projects. A paused project stays paused; this never starts, resumes, accepts or deploys work. Projects without this policy keep their original max_jobs. Optional include_work_turns=true additionally records a separate versioned work-turn scope (requires a valid prior unlimited job policy) so bound project children may continue work beyond max_turns while every other gate stays unchanged; it never resumes or dispatches, and omitted/false keeps legacy behavior.'),
     'inputSchema': obj({**PID, 'strategy': {'enum': ['unlimited']}, 'request_id': STR, 'reason': STR,
@@ -2436,8 +2494,22 @@ OPEN_TOOL['description'] += (' Optional reasoning_policy.allowed_efforts freezes
                            'unknown capabilities remain fixed unless explicitly configured locally. No token cap is required.')
 
 TOOLS += [
+    {"name": "telos_preflight_checks", "description": ("Pure read-only check-configuration preflight. Parses and compiles inline Python checks without executing them or writing state. Hard-rejects only deterministic syntax/compile failures and provable direct conflicts with the shared audit report top-level schema; missing paths and dynamic expressions are advisory because implementations may generate them. Accepts an existing session_id or an explicit contract/checks proposal. Never dispatches, accepts, installs or changes contracts."),
+     "inputSchema": obj({**SID, "contract": {"type": "object"}, "checks": {"type": "array", "items": {"type": "object"}},
+                         "root": STR})},
+    {"name": "telos_revise_checks", "description": ("Original supervisor only: preview or apply one versioned revision of an existing check's inline Python argv[2] program. Preview is read-only and shows complete before/after/diff plus a proposal_hash bound to identity, original contract, effective hash, received event, submission and prior evidence hashes. Apply recomputes under project/session locks and requires the reviewed proposal_hash, user_authorization, a standard-preservation reason and evidence references. All other contract fields and original contract bytes stay unchanged; assertion nodes cannot be removed. Preserves counters/budget/history, invalidates only current packet/acceptance/auto-check pointers, and leaves fresh checks, same-executor exam, supervisor grade and project final binding mandatory. Stable request_id is idempotent; different arguments and stale/tampered proposals are rejected. Never dispatches, resumes, accepts or merges."),
+     "inputSchema": obj({**SID, "request_id": STR, "reason": STR, "user_authorization": STR,
+                         "event_id": STR, "check_id": STR, "before_program": STR,
+                         "after_program": STR, "preservation_reason": STR, "evidence": STR,
+                         "apply": {"type": "boolean", "default": False}, "proposal_hash": STR},
+                        ['session_id', 'request_id', 'reason', 'user_authorization', 'event_id',
+                         'check_id', 'before_program', 'after_program', 'preservation_reason', 'evidence'])},
     {"name": "telos_correct_audit_status", "description": ("Original supervisor only: explicitly record one versioned correction of the invalid historical audit status whitelist literal pass to canonical passed. Fixed AST rule only; accepts no replacement code. Preserves original contract.json, task/session identity, evidence files, counters, budgets, thresholds and all other criteria. Requires completed unaccepted audit work, received event, no running job or exam, reason and user_authorization. Stable request_id is idempotent. Invalidates current check/packet pointers; normal new checks, same-executor exam and supervisor grade remain mandatory. Never dispatches, resumes, accepts or changes report contents."),
      "inputSchema": obj({**SID, "request_id": STR, "reason": STR, "user_authorization": STR, "event_id": STR})},
+    {"name": "telos_correct_test_path", "description": ("Original supervisor only: preview or apply one fixed missing pytest path correction from tests/test_device_import_preview.py to tests/test_device_template.py under ai-device-risk. No arbitrary code/path input. Requires received event and completed unaccepted implementation, static supported invocation and immutable Git proof. Preview is read-only; apply requires its proposal_hash. Preserves original contract, identities, counters and evidence. At most five additional evaluation rounds are recovered solely from retained missing-path/zero-tests failures; original max_rounds stays unchanged and recovery is consumed only above it. Does not relax other controls, dispatch, resume or accept. Fresh checks, same-executor exam and supervisor grade remain mandatory."),
+     "inputSchema": obj({**SID, "request_id": STR, "reason": STR, "user_authorization": STR, "event_id": STR,
+                         "apply": {"type": "boolean", "default": False}, "proposal_hash": STR},
+                        ['session_id', 'request_id', 'reason', 'user_authorization', 'event_id'])},
     {"name": "telos_replan", "description": ("After no_progress, report the concrete blocker and retained artifacts, then record a different approach, supporting evidence and observable success criterion. Grants one retry in the SAME session; does not dispatch, accept, reset history, change frozen scope or resume user-paused work. Stable request_id is idempotent. Two adjusted trials without new observable evidence require reporting the blocker to the user. A new request ID, cosmetic summary, or higher reasoning effort alone is not progress."),
      "inputSchema": obj({**SID, "request_id": STR, "blocker": STR, "approach": STR, "evidence": STR, "success_criterion": STR})},
 ]
@@ -2609,16 +2681,32 @@ def call_tool(name, args, meta=None):
         args["owner_thread_id"] = caller if args["notify"] else None
     elif args.get("session_id"):
         with locked(args["session_id"]) as root:
-            state, _ = load_session(root)
+            read_only = name == 'telos_preflight_checks' or (name == 'telos_revise_checks' and not args.get('apply'))
+            state, _ = load_session(root, read_only=read_only)
             if state.get("owner") and caller != state["owner"]["thread_id"]:
                 raise GateError("This event and its private review belong to another Codex thread",
                                 code='owner_mismatch', next_action='use_original_supervisor')
             if name == 'telos_return_control' and state.get('project_id'):
                 raise GateError('Use telos_project_control for project-owned sessions')
+    if name == 'telos_task_budget':
+        import task_budget
+        return invoke_tool(lambda session_id, **kw: task_budget.authorize(bridge_services(), session_id, caller=caller, **kw), args)
     if name == 'telos_correct_audit_status':
         import audit_check_correction
         return invoke_tool(lambda session_id, **kw:
                            audit_check_correction.correct(bridge_services(), session_id, caller=caller, **kw), args)
+    if name == 'telos_preflight_checks':
+        import check_preflight
+        return invoke_tool(lambda contract=None, checks=None, root=None, session_id=None:
+                           check_preflight.preflight(bridge_services(), session_id, contract, checks, root), args)
+    if name == 'telos_revise_checks':
+        import check_revision
+        return invoke_tool(lambda session_id, **kw:
+                           check_revision.revise(bridge_services(), session_id, caller=caller, **kw), args)
+    if name == 'telos_correct_test_path':
+        import test_path_correction
+        return invoke_tool(lambda session_id, **kw:
+                           test_path_correction.correct(bridge_services(), session_id, caller=caller, **kw), args)
     functions = {"telos_replan": lambda session_id, **kw: progress_guard.replan(bridge_services(), session_id, **kw),
                  "telos_open": create_session, "telos_send": lambda session_id, message, event_id=None, reasoning_effort=None, reasoning_reason=None: start_job(session_id, "send", message, event_id, reasoning_effort, reasoning_reason),
                  "telos_repair": lambda session_id, feedback, event_id=None, reasoning_effort=None, reasoning_reason=None: repair_feedback(session_id, feedback, event_id, reasoning_effort, reasoning_reason),

@@ -109,7 +109,7 @@ def effective(b, state, original):
         raise ValueError('Invalid audit check correction prior evidence')
     fixed, changes = corrected_contract(original)
     if (row['changes'] != changes or row['effective_contract_hash'] != b.digest(fixed)
-            or state['contract_hash'] != row['effective_contract_hash']):
+            or ('check_revision' not in state and state['contract_hash'] != row['effective_contract_hash'])):
         raise ValueError('Audit check correction differs from its fixed AST rule')
     return fixed
 
@@ -136,6 +136,8 @@ def correct(b, sid, request_id, reason, user_authorization, event_id, caller):
         raise b.GateError('Provide bounded request_id, reason, user_authorization and received event_id')
     with b.project_manager().lock(), b.locked(sid) as root:
         state, contract = b.load_session(root)
+        if 'check_revision' in state:
+            raise b.GateError('A generic check revision exists; the fixed historical correction cannot be applied afterwards')
         owner = (state.get('owner') or {}).get('thread_id')
         if not owner or caller != owner:
             raise b.GateError('Audit check correction requires the original trusted supervisor',

@@ -2,7 +2,7 @@
 name: telos
 description: "Supervise Telos delegated development, scoped system audits (code, APIs, page interactions and visual evidence), and confirmed-bug repairs through MCP. Use for requests to use Telos, coordinate independent executors with evidence-based acceptance, or continue an existing TELOS_EVENT. Ordinary coding, general review and questions about Telos do not by themselves authorize starting an executor."
 metadata:
-  version: "3.12.0"
+  version: "3.12.1"
 ---
 
 # Telos
@@ -160,3 +160,32 @@ re-verified from trusted MCP metadata while holding the coordinator lock;
 `caller` is not an MCP argument. `request_id` with surrounding whitespace is
 rejected. Status summaries report the current `jobs_started`; authorization
 history retains the count captured at authorization time.
+
+## Preflight and supervised check revision (3.11.4)
+
+Use `telos_preflight_checks` for a pure read-only parse/compile check of a proposed configuration or existing session. It never executes user programs. Only deterministic syntax/compile failures and proven direct conflicts with the shared audit report top level are hard errors; missing paths may be implementation outputs and dynamic semantics are advisory. It does not claim semantic correctness.
+
+Use `telos_revise_checks` only with explicit user authorization and the original supervisor identity. Preview is read-only and returns complete before/after/diff plus a `proposal_hash`. Apply requires that exact hash, a received event, active project/session, completed unaccepted work, a standard-preservation reason and evidence references. Only one existing check's inline Python `argv[2]` changes; original contract bytes, all other fields, counters, budget, usage and history remain. Assertion-node reduction is rejected, but equal counts are not a semantic-equivalence proof; review the diff yourself. Fresh checks, same-executor closed-book exam, supervisor grading and project final binding remain mandatory. Never dispatch, resume, accept, merge or deploy.
+
+## Restricted acceptance configuration recovery (3.11.2)
+
+For the explicitly authorized historical pytest path typo only, use the
+owner-only `telos_correct_test_path` preview/apply flow described in
+[acceptance](references/acceptance.md#restricted-test-path-correction-and-bounded-round-recovery-3112).
+Preserve original contracts, counters and history; never use this entry point
+to edit general check programs or relax business criteria. Restore at most five
+rounds supported by retained missing-path/no-tests evidence. Correction itself
+never starts or accepts work; normal same-task acceptance remains mandatory.
+
+
+## Standalone task work-turn policy
+
+`telos_task_budget` is the original-owner-only management entry for an explicitly
+authorized unlimited work-turn policy on an existing standalone session. Record
+the user's actual instruction, a reason and stable request ID. Preserve original
+contract bytes, used turns, rounds, model, usage and history. The policy changes
+only work-turn admission, not token/request budgets, concurrency, timeouts,
+no-progress or acceptance. A paused task stays paused. Project-owned tasks still
+use `telos_project_budget`; never detach or recreate tasks to reset limits.
+The call never dispatches or accepts work. Receive the current event, then use
+the normal same-session send/evaluate/review/grade flow.
