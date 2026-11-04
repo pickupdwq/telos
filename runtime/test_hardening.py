@@ -1,10 +1,12 @@
 """Communication identity and frozen dependency permissions across project checks."""
 import copy
 import json
+import os
 from pathlib import Path
+import sys
 import time
 import unittest
-from unittest.mock import patch
+from unittest.mock import Mock, patch
 
 from desktop_rpc import DesktopRPC, RPCError
 from providers import ProviderError
@@ -291,6 +293,91 @@ class ReminderLifecycleTests(CallbackTests):
         self.assertEqual(b.status(sid)['return_channel']['health']['status'], 'owner_stalled')
         b.receive_event(sid, eid)
         self.assertNotEqual(b.status(sid)['return_channel']['health']['status'], 'owner_stalled')
+
+    def stalled_event(self):
+        sid, eid = self.event()
+        old = time.time() - 5000
+        state = self.state(sid); state['events'][eid]['created_at'] = old
+        b.write_json(b.run_dir(sid) / 'state.json', state)
+        self.db['thread'].update(status={'type': 'active', 'activeFlags': []}, updatedAt=old)
+        return sid, eid
+
+    def notify_config(self, **values):
+        b.CONFIG.write_text(json.dumps(values))
+
+    def test_stall_notification_is_off_by_default(self):
+        sid, eid = self.stalled_event()
+        with patch('owner_notify.subprocess.run') as run:
+            b.deliver_once(sid); b.deliver_once(sid)
+        run.assert_not_called()
+        self.assertNotIn('owner_stall_notice', self.state(sid)['events'][eid])
+        self.assertNotIn('user_notification', b.status(sid)['return_channel']['health'])
+
+    def test_stall_notification_is_sent_once_per_stall_without_credentials(self):
+        self.notify_config(owner_stall_notify='macos')
+        sid, eid = self.stalled_event()
+        with patch.dict(os.environ, {'ARK_API_KEY': 'SECRET_KEY', 'OPENAI_API_KEY': 'SECRET_KEY'}), \
+                patch('owner_notify.subprocess.run', return_value=Mock(returncode=0, stderr=b'')) as run:
+            for _ in range(3):
+                b.deliver_once(sid)
+        self.assertEqual(run.call_count, 1)
+        argv, env = run.call_args.args[0], run.call_args.kwargs['env']
+        self.assertEqual(argv[0], '/usr/bin/osascript')
+        self.assertNotIn('SECRET_KEY', json.dumps([argv, env]))
+        self.assertNotIn('PRIVATE RESULT', json.dumps(argv))
+        self.assertEqual(self.state(sid)['events'][eid]['owner_stall_notice']['status'], 'sent')
+        health = b.status(sid)['return_channel']['health']
+        self.assertEqual((health['status'], health['user_notification']), ('owner_stalled', 'sent'))
+        # The notification never replaces or delays delivery: the callback is still queued once.
+        self.assertEqual(len(self.added()), 1)
+        self.assertEqual(self.state(sid)['continuation'], 'active')
+        # A new stall after recovery notifies again once the per-owner window has passed.
+        self.db['thread'].update(status={'type': 'idle'}, updatedAt=time.time())
+        b.deliver_once(sid)
+        self.assertNotIn('owner_stall_notice', self.state(sid)['events'][eid])
+
+    def test_failed_stall_notification_is_recorded_and_not_retried(self):
+        self.notify_config(owner_stall_notify='command', owner_stall_command=['/nonexistent/notify'])
+        sid, eid = self.stalled_event()
+        with patch('owner_notify.subprocess.run') as run:
+            b.deliver_once(sid); b.deliver_once(sid)
+        run.assert_not_called()
+        notice = self.state(sid)['events'][eid]['owner_stall_notice']
+        self.assertEqual(notice['status'], 'failed')
+        self.assertIn('absolute path', notice['error'])
+        self.assertEqual(b.status(sid)['return_channel']['health']['user_notification'], 'failed')
+        self.assertEqual(len(self.added()), 1)
+        log = (b.run_dir(sid) / 'activity.jsonl').read_text()
+        self.assertIn('user notification failed', log)
+
+    def test_command_notification_gets_only_public_fields(self):
+        self.notify_config(owner_stall_notify='command', owner_stall_command=[sys.executable, '-c', 'pass'])
+        sid, eid = self.stalled_event()
+        with patch.dict(os.environ, {'ARK_API_KEY': 'SECRET_KEY'}), \
+                patch('owner_notify.subprocess.run', return_value=Mock(returncode=0, stderr=b'')) as run:
+            b.deliver_once(sid)
+        env = run.call_args.kwargs['env']
+        self.assertEqual(env['TELOS_STALL_SESSION_ID'], sid)
+        self.assertEqual(env['TELOS_STALL_EVENT_ID'], eid)
+        self.assertNotIn('ARK_API_KEY', env)
+        self.assertNotIn('SECRET_KEY', json.dumps(env))
+
+    def test_tasks_sharing_a_stalled_owner_notify_once(self):
+        self.notify_config(owner_stall_notify='macos')
+        first, _ = self.stalled_event()
+        second, eid = self.stalled_event()
+        with patch('owner_notify.subprocess.run', return_value=Mock(returncode=0, stderr=b'')) as run:
+            b.deliver_once(first); b.deliver_once(second)
+        self.assertEqual(run.call_count, 1)
+        self.assertEqual(self.state(second)['events'][eid]['owner_stall_notice']['status'], 'suppressed')
+
+    def test_notification_crash_does_not_block_delivery(self):
+        self.notify_config(owner_stall_notify='macos')
+        sid, eid = self.stalled_event()
+        with patch.object(b, 'notify_owner_stall', side_effect=RuntimeError('boom')):
+            b.deliver_once(sid)
+        self.assertEqual(len(self.added()), 1)
+        self.assertTrue((b.run_dir(sid) / 'notify-error.json').exists())
 
     def test_failed_queue_cleanup_is_retried_without_duplicate_notification(self):
         sid, eid = self.event(); b.receive_event(sid, eid)

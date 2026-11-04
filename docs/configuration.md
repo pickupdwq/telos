@@ -206,6 +206,9 @@ Merge these entries into the existing configuration; replace the example endpoin
 | `http_timeout` | 180 seconds | Upstream request timeout |
 | `progress_timeout_seconds` | 900 | Wait after a received event before one reminder to act on it |
 | `owner_stall_seconds` | 1200 | Silence after which an active owner thread with a waiting callback is marked `owner_stalled`; 0 disables |
+| `owner_stall_notify` | `none` | Tell the user once per owner stall: `none`, `macos` (Notification Center) or `command` |
+| `owner_stall_command` | unset | For `command`: argv list; the first item is an absolute executable path |
+| `mcp_result_max_bytes` | 32768 | Larger supervisor MCP results are saved under STATE and returned trimmed; 0 disables |
 | `exam_max_tokens` | 8192 | Exam output limit |
 | `exam_format_attempts` | 3 | Bounded answer-format attempts; no private feedback |
 | `experience_enabled` | true | Enable verified experience injection |
@@ -263,6 +266,18 @@ Malformed initialization parameters return a JSON-RPC invalid-params response (`
 尚未首次启动且没有执行记录的子任务不再误报用量缺失，重分派和不完整初始化的缺失账本仍保留警告。参数类型错误会给出具体字段路径，不回显提交的值或任意映射键。
 
 项目子任务的 `start_error` 保留启动拦截原因和处理提示，状态刷新不会清空；执行推进或重分派后清除旧提示，暂停/取消时不提供继续动作。错误初始化请求会收到参数错误响应，不会终止 MCP；缺参错误与处理函数内部异常保持区分。
+
+## Supervisor result size and stalled-owner notices (3.12.4)
+
+All tasks share one supervisor conversation, and Codex cuts long tool output in the middle, so a large Telos result could lose identifiers without any marker. Every successful MCP result is therefore limited to `mcp_result_max_bytes` (default 32768; values below 4096 are raised to 4096; 0 disables). A larger result is saved complete as `STATE/mcp-results/<time>-<tool>-<hash>.json` (mode 0600; files older than 7 days or beyond the newest 200 are removed). The supervisor receives the same object with the largest removable parts deleted and a `result_overflow` object containing `full_result_path`, `sha256`, the original `bytes` and the removed `omitted` paths. Identifiers, `phase`/`status`, `next_action`, `blockers`, `questions`, `answers`, `acceptance`, `final_review`, `screenshots` and any object holding them are never removed; if those alone exceed the limit, the result is returned larger rather than incomplete. If the file cannot be written the full result is returned. Error results and executor channels, including the audit probe service, are unchanged.
+
+`detail="summary"` replaces history that grows with each model request by counts: `usage.request_intervals` becomes `request_interval_count`, `timing.stages.intervals`/`milestones` become `interval_count`/`milestone_count`, `in_progress` keeps the latest 20, and `auto_continuations` becomes `{count, by_status, recent}` with the latest unfinished rows. Totals, latency, budget states and `complete` flags are unchanged. In a project summary each task row keeps its identifiers, phase, `next_action`, errors and blocked environments in full; its `delivery` keeps status, summary, commit, blockers, next step and up to 10 remaining issues with other lists as `*_count` (meeting opinions remain in `discussion.reports`), a passed environment keeps only status/phase/cache hit, and usage/timing keep totals, budget state, latency and phase seconds; the project's own usage and timing remain complete. Use `detail="full"`, `telos_project_receive` or the task's `telos_status` for every record. A supervisor `telos_audit_probe` result also lists absolute `screenshot_paths` and `artifacts_dir`.
+
+Owner stall detection (`owner_stall_seconds`) covers Desktop IPC owners too. Desktop reports neither `updatedAt` nor a rollout path, so Telos looks for `$CODEX_HOME/sessions/YYYY/MM/DD/rollout-*-<thread-id>.jsonl` (default `~/.codex/sessions`) by the exact thread UUID and reads only its modification time; symlinks are ignored. When none is found the owner is unknown and is not marked stalled.
+
+Set `owner_stall_notify` to `macos` for a Notification Center message, or to `command` with `owner_stall_command` (for example `["/usr/local/bin/my-notify"]`) to run your own program. The program receives a minimal environment (`PATH`, `LANG`, `HOME`, …) plus `TELOS_STALL_TITLE`, `TELOS_STALL_MESSAGE`, `TELOS_STALL_SESSION_ID`, `TELOS_STALL_EVENT_ID`, `TELOS_STALL_THREAD_ID`, `TELOS_STALL_CWD` and `TELOS_STALL_SINCE`; no credentials or task content. Each stall notifies once; tasks sharing one stalled owner notify once per `owner_stall_seconds`; a new stall after the owner resumes notifies again. The outcome appears in `return_channel.health.user_notification` (`sent`, `failed`, `suppressed`) and in the task activity log. A failed or slow (10 s) notification never changes callback delivery. Telos only informs the user; it never takes over, resumes or answers for the owner.
+
+中文：返回给大总管的 MCP 结果默认上限 32 KB（`mcp_result_max_bytes`，0 关闭）。超限时完整结果保存到 STATE 下的 `mcp-results`（执行者不可读），大总管收到结构不变、去掉最大部分的版本，`result_overflow` 给出完整文件路径和被去掉字段的路径；身份标识、状态、下一步动作、阻塞项、考题、答案、验收和截图引用永不删除。摘要视图把随请求数增长的列表改为计数，项目摘要中每个子任务只保留状态、动作、提交、阻塞与总量，完整明细用 `detail="full"`。Desktop 通道的大总管卡死检测按 thread_id 在 `~/.codex/sessions` 下定位 rollout 文件，只读修改时间，找不到时不标记卡死。`owner_stall_notify` 默认 `none`；设为 `macos` 发系统通知，或设为 `command` 并配置 `owner_stall_command` 调用自定义程序（不传任何凭据）。每次卡死只通知一次，通知失败不影响回调投递，Telos 不代替大总管操作。
 
 ## Read-only executor observer
 

@@ -1,3 +1,46 @@
+## 3.12.4 — 2026-11-04
+
+- Bound every MCP result returned to the supervisor at `mcp_result_max_bytes`
+  (default 32768; 0 disables). Larger results are saved complete under
+  `STATE/mcp-results/` (mode 0600, kept 7 days / 200 files, outside executor
+  reach) and the supervisor receives the same structure with the largest parts
+  removed, plus `result_overflow` listing the removed paths, the saved file and
+  its hash. Identifiers, phase/status, next_action, blockers, questions, answers,
+  acceptance and screenshot references are never removed. Codex previously cut
+  long tool output in the middle (70 Telos calls in one supervisor, up to 244k
+  tokens), which could silently drop these fields.
+- Summary views (`detail="summary"`) replace per-request and per-stage history
+  with counts: `usage.request_intervals` → `request_interval_count`,
+  `timing.stages.intervals`/`milestones` → counts, `in_progress` is limited to
+  the latest 20, and `auto_continuations` becomes counts by status plus the
+  latest unfinished rows. Project summary task rows keep phase, next_action,
+  errors and identifiers but shorten the rest: delivery keeps status, summary,
+  commit, blockers and up to 10 remaining issues (lists become counts; meeting
+  opinions stay in `discussion.reports`), a passed environment keeps only its
+  status, and usage/timing keep totals, budget state and phase seconds.
+  `detail="full"` is unchanged.
+- `telos_audit_probe` returned to the supervisor adds absolute `screenshot_paths`
+  and `artifacts_dir` so screenshots can be viewed directly. The executor's probe
+  service result is unchanged.
+- Owner stall detection now works for Desktop IPC owners, whose thread status has
+  no `updatedAt` or rollout path: the rollout is located under
+  `$CODEX_HOME/sessions` by exact thread ID and only its modification time is read.
+  If it cannot be found the owner is treated as unknown and never marked stalled.
+- Optional `owner_stall_notify` (`none` by default, `macos`, or `command` with
+  `owner_stall_command`) tells the user once per stall that the original
+  conversation needs attention; tasks sharing one stalled owner notify once.
+  Commands receive only a minimal environment plus `TELOS_STALL_*` fields, never
+  credentials. Results appear as `return_health.user_notification` and in the
+  activity log; failures never affect callback delivery. Telos still never acts
+  for the owner.
+
+返回给大总管的 MCP 结果设 32 KB 上限：超限时完整结果存到 STATE 下（执行者不可读），
+大总管拿到结构不变、去掉最大部分的版本，并附被去掉字段的路径与完整文件位置；身份、
+状态、next_action、阻塞项、考题、答案、截图引用永不删除。摘要视图把随请求数增长的
+列表改为计数，项目摘要中每个子任务只保留状态、动作、提交、阻塞与总量。审计探针返回截图绝对路径。Desktop 通道的大总管卡死检测按 thread_id
+定位 rollout 文件，找不到则视为未知、不标记。新增可选的卡死通知（默认关闭），每次
+卡死只通知一次，通知失败不影响回调投递，Telos 仍不代替大总管操作。
+
 ## 3.12.3 — 2026-11-03
 
 - Correct the 3.12.2 closeout change. Withholding the timing note made executors

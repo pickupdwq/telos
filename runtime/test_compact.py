@@ -1,5 +1,6 @@
 """Compact MCP projections must retain grading and identity evidence."""
 import copy
+import json
 import unittest
 
 import compact
@@ -306,6 +307,89 @@ class FormatSummaryTests(unittest.TestCase):
         self.assertEqual(reviewed['identity'], full['identity'])
         self.assertEqual(reviewed['blockers'], full['blockers'])
         self.assertEqual(projected['pins'], {'a': 'c' * 40})
+
+    def test_summaries_replace_per_request_history_with_counts(self):
+        intervals = [{'id': f'request:{i}', 'category': 'model_work', 'started_at': i,
+                      'finished_at': i + 1} for i in range(400)]
+        usage = {'totals': {'requests': 400}, 'budget_state': {'state': 'unlimited'},
+                 'request_latency': {'requests': 400, 'complete': True}, 'request_intervals': intervals}
+        stages = {'complete': True, 'cumulative_seconds': {'model_work': 400.0}, 'union_seconds': 400.0,
+                  'in_progress': [f'stage:{i}' for i in range(30)], 'intervals': intervals,
+                  'milestones': [{'name': 'delivery_completed', 'id': str(i), 'at': i} for i in range(50)]}
+        timing = {'complete': True, 'phase_seconds': {'work': 400.0}, 'stages': stages}
+        continuations = {f'job{i}': {'source_job_id': f'job{i}', 'kind': 'checkpoint', 'created_at': i,
+                                     'status': 'finished', 'thread_id': 'private-thread', 'diagnostic': None}
+                         for i in range(60)}
+        continuations['job60'] = {'source_job_id': 'job60', 'kind': 'checkpoint', 'created_at': 60,
+                                  'status': 'uncertain', 'diagnostic': 'lost'}
+        full = {**status_full(), 'usage': usage, 'timing': timing, 'auto_continuations': continuations}
+        before = copy.deepcopy(full)
+        summary = compact.status(full)
+        self.assertEqual(full, before)
+        self.assertNotIn('request_intervals', summary['usage'])
+        self.assertEqual(summary['usage']['request_interval_count'], 400)
+        self.assertEqual(summary['usage']['totals'], usage['totals'])
+        self.assertEqual(summary['usage']['request_latency'], usage['request_latency'])
+        compact_stages = summary['timing']['stages']
+        self.assertNotIn('intervals', compact_stages)
+        self.assertNotIn('milestones', compact_stages)
+        self.assertEqual((compact_stages['interval_count'], compact_stages['milestone_count']), (400, 50))
+        self.assertEqual(compact_stages['cumulative_seconds'], stages['cumulative_seconds'])
+        self.assertEqual(len(compact_stages['in_progress']), 20)
+        self.assertEqual(compact_stages['in_progress_omitted'], 10)
+        self.assertEqual(summary['timing']['phase_seconds'], timing['phase_seconds'])
+        rows = summary['auto_continuations']
+        self.assertEqual((rows['count'], rows['by_status']), (61, {'finished': 60, 'uncertain': 1}))
+        self.assertEqual([row['source_job_id'] for row in rows['recent']], ['job60'])
+        self.assertNotIn('thread_id', rows['recent'][0])
+        self.assertLess(len(json.dumps(summary)), 6000)
+
+        review = compact.review({**review_full(), 'usage': usage, 'timing': timing})
+        self.assertEqual(review['usage']['request_interval_count'], 400)
+        self.assertNotIn('intervals', review['timing']['stages'])
+        task = {'id': 'a', 'phase': 'running', 'session_id': 's' * 32, 'usage': usage, 'timing': timing}
+        project = compact.project({'project_id': 'p' * 32, 'tasks': [task],
+                                   'timing': {'stages': stages, 'children_complete': True}})
+        self.assertNotIn('request_intervals', project['tasks'][0]['usage'])
+        self.assertNotIn('stages', project['tasks'][0]['timing'])
+        self.assertNotIn('intervals', project['timing']['stages'])
+        self.assertTrue(project['timing']['children_complete'])
+        reviewed = compact.project_review({'packet_id': 'p' * 64, 'usage': usage, 'timing': timing})
+        self.assertNotIn('request_intervals', reviewed['usage'])
+
+    def test_project_summary_task_rows_stay_small_but_actionable(self):
+        delivery = {'job_id': 'j', 'session_id': 's' * 32, 'status': 'completed', 'trust': 'executor_claims',
+                    'summary': 'did it', 'commit': 'c' * 40, 'changed_files': ['a.py'] * 30,
+                    'checks_performed': ['x'] * 40, 'remaining_issues': [f'issue {i}' for i in range(15)],
+                    'raw_text': 'never'}
+        passed = {'status': 'passed', 'phase': 'work', 'cache_hit': True, 'tools': [{'id': 'python'}] * 20,
+                  'acceptance_environment': {'checks': [{'files': {}}] * 10}}
+        blocked = {'status': 'blocked_environment', 'phase': 'work', 'failed_check': 'browser_launch',
+                   'reason': 'missing', 'repair_actions': ['restore']}
+        usage = {'totals': {'requests': 9}, 'budget_state': {'state': 'unlimited'}, 'phases': {'work': {}},
+                 'unknown_fields': {}, 'request_latency': {'observed_seconds': 3.5, 'complete': True, 'phases': {}},
+                 'request_intervals': [{'id': 'r'}] * 9}
+        timing = {'complete': True, 'current_stage': 'work', 'phase_seconds': {'work': 3.0},
+                  'stages': {'intervals': [{}] * 9}, 'tracked_since': 1}
+        tasks = [{'id': 'a', 'phase': 'awaiting_review', 'session_id': 's' * 32, 'next_action': 'telos_review',
+                  'delivery': delivery, 'environment': passed, 'usage': usage, 'timing': timing},
+                 {'id': 'b', 'phase': 'blocked_environment', 'session_id': 't' * 32, 'environment': blocked}]
+        summary = compact.project({'project_id': 'p' * 32, 'tasks': tasks})
+        first, second = summary['tasks']
+        self.assertEqual((first['phase'], first['next_action']), ('awaiting_review', 'telos_review'))
+        self.assertEqual(first['delivery']['status'], 'completed')
+        self.assertEqual(first['delivery']['commit'], 'c' * 40)
+        self.assertEqual(first['delivery']['changed_files_count'], 30)
+        self.assertEqual(len(first['delivery']['remaining_issues']), 10)
+        self.assertNotIn('raw_text', first['delivery'])
+        self.assertEqual(first['environment'], {'status': 'passed', 'phase': 'work', 'cache_hit': True})
+        self.assertEqual(second['environment'], blocked)
+        self.assertEqual(first['usage']['totals'], {'requests': 9})
+        self.assertEqual(first['usage']['request_latency'], {'observed_seconds': 3.5, 'complete': True})
+        self.assertEqual(first['timing'], {'complete': True, 'current_stage': 'work', 'phase_seconds': {'work': 3.0}})
+        meeting = compact.project({'project_id': 'm' * 32, 'kind': 'discussion', 'tasks': [
+            {'id': 'expert', 'delivery': {'job_id': 'j', 'report_id': 'r', 'summary': 's', 'proposal': 'long'}}]})
+        self.assertEqual(meeting['tasks'][0]['delivery'], {'job_id': 'j', 'report_id': 'r', 'summary': 's'})
 
 
 if __name__ == '__main__':

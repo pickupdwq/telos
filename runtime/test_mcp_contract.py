@@ -3,6 +3,7 @@ import copy
 import io
 import json
 import os
+from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
@@ -97,6 +98,67 @@ class MCPErrorTests(unittest.TestCase):
                         {'id': 1, 'method': 'tools/call', 'params': None}):
             response = self.transport(request)
             self.assertEqual(response['structuredContent']['error']['code'], 'invalid_arguments')
+
+    def test_oversized_result_is_saved_privately_and_keeps_identity(self):
+        import tempfile
+        import result_cap
+        with tempfile.TemporaryDirectory() as folder:
+            big = {'session_id': 's' * 32, 'phase': 'awaiting_review', 'next_action': 'telos_review',
+                   'packet_id': 'p' * 64, 'blockers': ['b'],
+                   'tasks': [{'id': f't{i}', 'session_id': 'x' * 32, 'phase': 'running',
+                              'delivery': {'summary': 'y' * 4000}} for i in range(8)],
+                   'evidence': {'checks': [{'id': 'c', 'status': 'failed', 'stdout': 'o' * 90000}]},
+                   'usage': {'totals': {'requests': 3},
+                             'request_intervals': [{'id': f'request:{i}'} for i in range(3000)]}}
+            request = {'id': 1, 'method': 'tools/call', 'params': {'name': 'telos_status'}}
+            with patch.object(b, 'STATE', Path(folder)), patch.object(b, 'call_tool', return_value=big):
+                response = self.transport(request)
+            self.assertFalse(response['isError'])
+            text = response['content'][0]['text']
+            self.assertLessEqual(len(text.encode()), 32768)
+            data = json.loads(text)
+            for key in ('session_id', 'phase', 'next_action', 'packet_id', 'blockers'):
+                self.assertEqual(data[key], big[key])
+            self.assertEqual([task['id'] for task in data['tasks']], [task['id'] for task in big['tasks']])
+            self.assertEqual(data['tasks'][0]['session_id'], 'x' * 32)
+            self.assertEqual(data['evidence']['checks'][0]['status'], 'failed')
+            self.assertEqual(data['usage']['totals'], {'requests': 3})
+            overflow = data['result_overflow']
+            self.assertGreater(overflow['bytes'], 32768)
+            saved = Path(overflow['full_result_path'])
+            self.assertTrue(saved.is_relative_to(Path(folder) / 'mcp-results'))
+            self.assertEqual(saved.stat().st_mode & 0o777, 0o600)
+            self.assertEqual(json.loads(saved.read_text()), big)
+            self.assertIn('evidence.checks[0].stdout', [item['path'] for item in overflow['omitted']])
+            # Small results are unchanged and a zero limit disables the cap.
+            small = {'session_id': 's' * 32, 'phase': 'ready'}
+            with patch.object(b, 'STATE', Path(folder)), patch.object(b, 'call_tool', return_value=small):
+                self.assertEqual(json.loads(self.transport(request)['content'][0]['text']), small)
+            with patch.object(b, 'STATE', Path(folder)), patch.object(b, 'call_tool', return_value=big), \
+                    patch.object(b, 'config', return_value={**b.DEFAULT, 'mcp_result_max_bytes': 0}):
+                self.assertEqual(json.loads(self.transport(request)['content'][0]['text']), big)
+            # Unsaveable overflow is returned whole rather than silently dropped.
+            with patch.object(result_cap, '_save', side_effect=OSError('read-only')):
+                self.assertEqual(json.loads(result_cap.bound(folder, 'telos_status', big)), big)
+
+    def test_result_cap_never_removes_identity_fields(self):
+        import tempfile
+        import result_cap
+        with tempfile.TemporaryDirectory() as folder:
+            data = {'session_id': 's' * 32, 'blockers': ['b' * 200] * 100, 'questions': [{'id': 'q', 'prompt': 'p' * 9000}]}
+            view = json.loads(result_cap.bound(folder, 'telos_review', data, 4096))
+            self.assertEqual(view['blockers'], data['blockers'])
+            self.assertEqual(view['questions'], data['questions'])
+            self.assertEqual(view['result_overflow']['omitted_count'], 0)
+            self.assertEqual(result_cap.limit_from(100), result_cap.MINIMUM_LIMIT)
+            self.assertEqual(result_cap.limit_from('bad'), result_cap.DEFAULT_LIMIT)
+            self.assertEqual(result_cap.limit_from(0), 0)
+            # Long multibyte paths in the notice never push the result past the limit.
+            wide = {'session_id': 's', **{('键' * 160) + str(i): 'v' * 2000 for i in range(30)}}
+            for limit in (4096, 8192):
+                text = result_cap.bound(folder, 'telos_status', wide, limit)
+                self.assertLessEqual(len(text.encode()), limit)
+                self.assertEqual(json.loads(text)['result_overflow']['omitted_count'], 30)
 
     def test_shortcut_handlers_check_required_arguments(self):
         for name, arguments in (
@@ -211,8 +273,12 @@ class MCPBoundaryTests(unittest.TestCase):
         self.assertIn('detail="full"', summary['detail_hint'])
         self.assertEqual(full['detail'], 'full')
         for key in ('session_id', 'phase', 'packet_id', 'contract_hash', 'worktree',
-                    'submitted_commit', 'budget', 'usage', 'next_action'):
+                    'submitted_commit', 'budget', 'next_action'):
             self.assertEqual(summary[key], full[key])
+        # Summary usage keeps every counter; only the per-request list becomes a count.
+        self.assertEqual({k: v for k, v in summary['usage'].items() if k != 'request_interval_count'},
+                         {k: v for k, v in full['usage'].items() if k != 'request_intervals'})
+        self.assertEqual(summary['usage']['request_interval_count'], len(full['usage']['request_intervals']))
 
         review = b.call_tool('telos_review', {'session_id': sid})
         review_full = b.call_tool('telos_review', {'session_id': sid, 'detail': 'full'})

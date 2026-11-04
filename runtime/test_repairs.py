@@ -1,9 +1,11 @@
 import json
+import os
 import socket
 import struct
 import time
 import unittest
 from unittest.mock import patch, Mock
+import uuid
 
 from test_telos import b
 from test_callbacks import CallbackTests, OWNER, FakeRPC
@@ -125,6 +127,60 @@ class DesktopCallbackTests(CallbackTests):
             self.assertFalse(b.deliver_once(sid))
         rpc.assert_not_called()
         self.assertEqual(self.state(sid)["events"][eid]["status"], "pending")
+
+    def desktop_stall(self, rollout_age=None):
+        # Desktop thread/read reports neither updatedAt nor a rollout path.
+        sid, eid = self.event()
+        state = self.state(sid); state["owner"]["transport"] = "desktop_ipc"
+        state["events"][eid]["created_at"] = time.time() - 5000
+        b.write_json(b.run_dir(sid) / "state.json", state)
+        self.db["thread"] = {"id": OWNER, "cwd": str(self.repo), "status": {"type": "active"}}
+        home = self.base / "codex-home"
+        b._ROLLOUTS.clear()
+        if rollout_age is not None:
+            created = time.localtime((uuid.UUID(OWNER).int >> 80) / 1000)
+            folder = home / "sessions" / f"{created.tm_year:04d}" / f"{created.tm_mon:02d}" / f"{created.tm_mday:02d}"
+            folder.mkdir(parents=True)
+            rollout = folder / f"rollout-2026-01-01T00-00-00-{OWNER}.jsonl"
+            rollout.write_text("{}\n")
+            os.utime(rollout, (time.time() - rollout_age,) * 2)
+        return sid, eid, home
+
+    def test_desktop_silent_owner_is_detected_from_its_rollout(self):
+        sid, eid, home = self.desktop_stall(rollout_age=5000)
+        with patch.dict(os.environ, {"CODEX_HOME": str(home)}), \
+                patch.object(b, "owner_rpc", return_value=FakeRPC(self.db)):
+            b.deliver_once(sid)
+        self.assertIn("owner_stalled_at", self.state(sid)["events"][eid])
+        self.assertEqual(b.status(sid)["return_channel"]["health"]["status"], "owner_stalled")
+        self.assertEqual(self.added(), [])
+
+    def test_desktop_recent_rollout_is_not_stalled(self):
+        sid, eid, home = self.desktop_stall(rollout_age=10)
+        with patch.dict(os.environ, {"CODEX_HOME": str(home)}), \
+                patch.object(b, "owner_rpc", return_value=FakeRPC(self.db)):
+            b.deliver_once(sid)
+        self.assertNotIn("owner_stalled_at", self.state(sid)["events"][eid])
+
+    def test_desktop_without_rollout_is_unknown_not_stalled(self):
+        sid, eid, home = self.desktop_stall()
+        with patch.dict(os.environ, {"CODEX_HOME": str(home)}), \
+                patch.object(b, "owner_rpc", return_value=FakeRPC(self.db)):
+            b.deliver_once(sid)
+        self.assertNotIn("owner_stalled_at", self.state(sid)["events"][eid])
+        self.assertNotEqual(b.status(sid)["return_channel"]["health"]["status"], "owner_stalled")
+
+    def test_rollout_lookup_rejects_non_uuid_and_symlinks(self):
+        home = self.base / "codex-home"
+        with patch.dict(os.environ, {"CODEX_HOME": str(home)}):
+            b._ROLLOUTS.clear()
+            self.assertIsNone(b.owner_rollout("*"))
+            self.assertIsNone(b.owner_rollout("../" + OWNER))
+            folder = home / "sessions" / "2026" / "01" / "01"
+            folder.mkdir(parents=True)
+            target = self.base / "elsewhere.jsonl"; target.write_text("{}\n")
+            (folder / f"rollout-x-{OWNER}.jsonl").symlink_to(target)
+            self.assertIsNone(b.owner_rollout(OWNER))
 
     def test_exam_error_can_retry_without_another_coding_turn(self):
         sid = self.create(max_rounds=2)

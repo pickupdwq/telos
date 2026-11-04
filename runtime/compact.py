@@ -26,6 +26,108 @@ def _text(value, limit=1200):
     return value if len(value) <= limit else value[-limit:]
 
 
+# Per-request and per-stage records grow with every model request; a long task
+# returned hundreds of intervals on each poll. Summaries keep totals and counts;
+# detail="full" still returns every record.
+_RUNNING_LIMIT = 20
+_CONTINUATION_FIELDS = ('source_job_id', 'job_id', 'kind', 'status', 'created_at',
+                        'finished_at', 'stopped_at', 'result_phase', 'diagnostic')
+
+
+def _usage(value):
+    if not isinstance(value, dict) or 'request_intervals' not in value:
+        return value
+    result = {key: item for key, item in value.items() if key != 'request_intervals'}
+    if isinstance(value['request_intervals'], list):
+        result['request_interval_count'] = len(value['request_intervals'])
+    return result
+
+
+def _stages(value):
+    if not isinstance(value, dict):
+        return value
+    result = {key: item for key, item in value.items() if key not in ('intervals', 'milestones')}
+    for key, count in (('intervals', 'interval_count'), ('milestones', 'milestone_count')):
+        if isinstance(value.get(key), list):
+            result[count] = len(value[key])
+    running = value.get('in_progress')
+    if isinstance(running, list) and len(running) > _RUNNING_LIMIT:
+        result['in_progress'] = running[-_RUNNING_LIMIT:]
+        result['in_progress_omitted'] = len(running) - _RUNNING_LIMIT
+    return result
+
+
+def _timing(value):
+    if not isinstance(value, dict) or not isinstance(value.get('stages'), dict):
+        return value
+    return {**value, 'stages': _stages(value['stages'])}
+
+
+def _continuations(value):
+    if not isinstance(value, dict):
+        return value
+    rows = [row for row in value.values() if isinstance(row, dict)]
+    counts = {}
+    for row in rows:
+        counts[str(row.get('status'))] = counts.get(str(row.get('status')), 0) + 1
+    rows.sort(key=lambda row: row.get('created_at') if type(row.get('created_at')) in (int, float) else 0)
+    # Finished continuations are history; anything else may need the supervisor.
+    recent = [row for row in rows if row.get('status') != 'finished'][-5:] or rows[-1:]
+    return {'count': len(rows), 'by_status': counts,
+            'recent': [{key: _text(row.get(key), 500) for key in _CONTINUATION_FIELDS if key in row}
+                       for row in recent]}
+
+
+def _task_usage(value):
+    # The project's own usage aggregates every task; per task, totals and the
+    # budget state are enough to spot the expensive or exhausted one.
+    if not isinstance(value, dict):
+        return value
+    result = {key: value.get(key) for key in ('totals', 'budget_state', 'work_budget_state', 'incomplete', 'error')
+              if key in value}
+    if isinstance(value.get('request_latency'), dict):
+        result['request_latency'] = {key: value['request_latency'].get(key)
+                                     for key in ('observed_seconds', 'complete') if key in value['request_latency']}
+    return result
+
+
+def _task_timing(value):
+    if not isinstance(value, dict):
+        return value
+    return {key: value.get(key) for key in ('complete', 'current_stage', 'elapsed_wall_seconds', 'phase_seconds')
+            if key in value}
+
+
+def _environment(value):
+    # A passed environment is tool/file fingerprints; blocked ones stay whole
+    # because their reason and repair actions are what the supervisor needs.
+    if not isinstance(value, dict) or value.get('status') != 'passed':
+        return value
+    return {key: value.get(key) for key in ('status', 'phase', 'cache_hit', 'browser_version') if key in value}
+
+
+_DELIVERY_FIELDS = ('job_id', 'session_id', 'status', 'format', 'trust', 'summary', 'commit',
+                    'next_step', 'clarification_questions', 'protocol_error', 'report_id')
+
+
+def _task_delivery(value, discussion):
+    if not isinstance(value, dict):
+        return value
+    if discussion:
+        # The full opinion is already in discussion.reports.
+        return {key: value.get(key) for key in ('job_id', 'report_id', 'summary') if key in value}
+    result = {key: value.get(key) for key in _DELIVERY_FIELDS if key in value}
+    for key in ('changed_files', 'checks_performed', 'remaining_issues', 'blockers',
+                'repair_actions', 'remaining_work', 'evidence_paths'):
+        if isinstance(value.get(key), list):
+            result[key + '_count'] = len(value[key])
+    if isinstance(value.get('remaining_issues'), list):
+        result['remaining_issues'] = value['remaining_issues'][:10]
+    if isinstance(value.get('blockers'), list):
+        result['blockers'] = value['blockers']
+    return result
+
+
 def _checks(checks):
     result = []
     for check in checks or []:
@@ -145,6 +247,9 @@ def status(full):
         'next_action', 'clarification', 'archived', 'audit_artifacts', 'audit_report', 'message',
         'reasoning_policy', 'reasoning_decision', 'progress_guard', 'environment', 'role_snapshot', 'experience_refs',
         'auto_continue_checkpoints', 'auto_continue_pending', 'auto_continuations', 'auto_run_checks', 'automatic_checks', 'audit_check_correction', 'test_path_correction', 'check_revision') if key in full}
+    for key, view in (('usage', _usage), ('timing', _timing), ('auto_continuations', _continuations)):
+        if key in result:
+            result[key] = view(result[key])
     if 'last_error' in full:
         result['last_error'] = _text(full.get('last_error'), 1200)
     if 'acceptance' in full:
@@ -176,6 +281,9 @@ def review(full):
     result = {key: full.get(key) for key in (
         'packet_id', 'questions', 'instruction', 'session_id', 'worktree', 'submitted_commit',
         'contract_hash', 'identity', 'blockers', 'acceptance', 'budget', 'work_turn_budget', 'usage', 'timing', 'audit_check_correction', 'test_path_correction', 'check_revision') if key in full}
+    for key, view in (('usage', _usage), ('timing', _timing)):
+        if key in result:
+            result[key] = view(result[key])
     result['evidence'] = _evidence(full.get('evidence'))
     result['detail'] = 'summary'
     result['detail_hint'] = ('Call telos_review with detail="full" for complete successful logs, '
@@ -207,12 +315,16 @@ def _integration(value):
     return result
 
 
-def _project_task(task):
+def _project_task(task, discussion=False):
     result = {key: task.get(key) for key in (
         'id', 'phase', 'depends_on', 'allowed_paths', 'provider', 'model', 'executor_profile',
         'workflow_version', 'reasoning_effort', 'session_id', 'event_id', 'accepted_commit',
         'base_commit', 'budget', 'usage', 'timing', 'revision', 'delivery', 'clarification', 'role_snapshot', 'experience_tags',
         'start_error', 'next_action', 'environment', 'auto_continue_pending', 'auto_continue_checkpoints', 'auto_run_checks', 'automatic_checks', 'role', 'active', 'queued_followup', 'reasoning_policy', 'reasoning_decision', 'progress_guard', 'audit_check_correction', 'test_path_correction', 'check_revision') if key in task}
+    for key, view in (('usage', _task_usage), ('timing', _task_timing), ('environment', _environment),
+                      ('delivery', lambda value: _task_delivery(value, discussion))):
+        if key in result:
+            result[key] = view(result[key])
     if 'error' in task:
         result['error'] = _text(task.get('error'), 1200)
     return result
@@ -230,14 +342,18 @@ def project(full):
         'effective_parallel', 'max_parallel', 'max_jobs', 'jobs_started', 'local_checks_started', 'base_commit',
         'decision_reason', 'return_health', 'return_error', 'usage', 'timing', 'contract_hash', 'kind', 'discussion',
         'job_budget') if key in full}
+    if 'timing' in result:
+        result['timing'] = _timing(result['timing'])
     result['return_event'] = _return_event(full.get('return_event'))
-    result['tasks'] = [_project_task(task) for task in full.get('tasks') or []]
+    discussion = full.get('kind') == 'discussion'
+    result['tasks'] = [_project_task(task, discussion) for task in full.get('tasks') or []]
     if 'integration' in full:
         result['integration'] = _integration(full.get('integration'))
     if 'final_review' in full:
         result['final_review'] = _verdict(full.get('final_review'))
     result['detail'] = 'summary'
-    result['detail_hint'] = 'Call telos_project_status with detail="full" for complete project records.'
+    result['detail_hint'] = ('Call telos_project_status with detail="full" for complete project records; '
+                             'full task deliveries are in telos_project_receive and telos_status.')
     return result
 
 
@@ -245,6 +361,9 @@ def project_review(full):
     result = {key: full.get(key) for key in (
         'packet_id', 'questions', 'instruction', 'project_id', 'worktree', 'commit', 'pins',
         'contract_hash', 'blockers', 'final_review', 'identity', 'usage', 'timing', 'job_budget') if key in full}
+    for key, view in (('usage', _usage), ('timing', _timing)):
+        if key in result:
+            result[key] = view(result[key])
     result['evidence'] = _evidence(full.get('evidence'))
     result['detail'] = 'summary'
     result['detail_hint'] = ('Call telos_project_review with detail="full" for complete successful logs, '

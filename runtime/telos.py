@@ -59,6 +59,7 @@ DEFAULT = {"model": "deepseek-v4-1-flash-260910", "base_url": "https://ark.cn-be
            "http_timeout": 180, "exam_max_tokens": 8192, "exam_format_attempts": 3,
            "callback_retry_seconds": 10, "callback_retry_window": 1800,
            "callback_recovery_seconds": 30, "progress_timeout_seconds": 900, "owner_stall_seconds": 1200,
+           "owner_stall_notify": "none", "owner_stall_command": None, "mcp_result_max_bytes": 32768,
            "progress_reminder_limit": 3, "infra_retry_limit": 5, "infra_backoff_seconds": 10,
            "review_max_bytes": 200000, "task_budget": None, "task_token_limits_enabled": True,
            "planning_mode": "multi_executor", "dynamic_reasoning_enabled": False,
@@ -832,31 +833,121 @@ def deliver_once(sid):
     directory.mkdir(parents=True, exist_ok=True, mode=0o700)
     with (directory / (digest(owner['thread_id']) + ".lock")).open("a+") as stream:
         fcntl.flock(stream, fcntl.LOCK_EX)
-        return _deliver_once(sid)
+        result = _deliver_once(sid)
+        try:
+            notify_owner_stall(sid, owner)
+        except Exception as error:
+            # A notification problem never changes callback delivery.
+            recovery_error(run_dir(sid) / 'notify-error.json', error)
+        return result
 
 
-def _watch_owner_stall(event, thread):
+_ROLLOUTS = {}
+
+
+def owner_rollout(thread_id):
+    """The owner's live rollout file, found only by its exact thread ID; None if unknown.
+
+    Desktop IPC reports neither updatedAt nor a rollout path. Files are only
+    stat()ed for their modification time, never read.
+    """
+    cached = _ROLLOUTS.get(thread_id)
+    if cached and cached.is_file():
+        return cached
+    try:
+        parsed = uuid.UUID(thread_id)
+        if str(parsed) != thread_id:  # also keeps glob metacharacters out
+            return None
+    except (ValueError, TypeError, AttributeError):
+        return None
+    sessions = Path(os.environ.get('CODEX_HOME') or HOME / '.codex') / 'sessions'
+    pattern = f'rollout-*-{thread_id}.jsonl'
+    folders = []
+    if parsed.version == 7:
+        # A UUIDv7 thread ID carries its creation time; Codex names the folder by local date.
+        created = (parsed.int >> 80) / 1000
+        for offset in (0, -86400, 86400):
+            day = time.localtime(created + offset)
+            folders.append(sessions / f'{day.tm_year:04d}' / f'{day.tm_mon:02d}' / f'{day.tm_mday:02d}')
+    try:
+        found = next((p for folder in folders for p in folder.glob(pattern)), None) or next(
+            iter(sessions.glob('*/*/*/' + pattern)), None)
+    except OSError:
+        return None
+    if found is None or found.is_symlink() or not found.is_file():
+        return None
+    _ROLLOUTS[thread_id] = found
+    return found
+
+
+def _watch_owner_stall(event, thread, owner=None):
     # Mark, never act on, an owner thread that reports active but has gone silent. A supervisor
     # thread once stayed 'active' for 14.6 hours after a context compaction while callbacks waited
-    # unseen. Only the original owner may act; this only makes the stall visible through
-    # return_health and the activity log. Returns True when the mark is newly set.
+    # unseen. Only the original owner may act; this makes the stall visible through return_health,
+    # the activity log and an optional user notification. Returns True when the mark is newly set.
     limit = config().get('owner_stall_seconds', 1200)
     now = time.time()
+    possible = (thread['status']['type'] == 'active' and type(limit) in (int, float) and limit > 0
+                and now - event.get('created_at', now) >= limit)
     quiet_since = [thread.get('updatedAt')]
+    path = thread.get('path')
+    if possible and not path and owner and owner.get('transport') == 'desktop_ipc':
+        # Unknown when no rollout is found: never marked stalled.
+        path = owner_rollout(owner.get('thread_id'))
     try:
-        quiet_since.append(os.stat(thread['path']).st_mtime)
-    except (KeyError, TypeError, OSError):
+        quiet_since.append(os.stat(path).st_mtime)
+    except (TypeError, OSError):
         pass
     quiet_since = [x for x in quiet_since if type(x) in (int, float)]
-    stalled = (thread['status']['type'] == 'active' and type(limit) in (int, float) and limit > 0
-               and bool(quiet_since) and now - max(quiet_since) >= limit
-               and now - event.get('created_at', now) >= limit)
+    stalled = possible and bool(quiet_since) and now - max(quiet_since) >= limit
     if not stalled:
         event.pop('owner_stalled_at', None)
+        event.pop('owner_stall_notice', None)
         return False
     fresh = 'owner_stalled_at' not in event
     event.setdefault('owner_stalled_at', now)
     return fresh
+
+
+def notify_owner_stall(sid, owner):
+    """Tell the user once per stall; opt-in. Caller holds the owner lock."""
+    import owner_notify
+    if owner_notify.mode(config()) == 'none':
+        return
+    record = STATE / 'owner-locks' / (digest(owner['thread_id']) + '.notified.json')
+    with locked(sid) as root:
+        state, _ = load_session(root)
+        event = delivery_event(state)
+        if (not event or not event.get('owner_stalled_at') or event.get('owner_stall_notice')
+                or event.get('status') not in WATCH_EVENTS or state.get('continuation', 'active') != 'active'):
+            return
+        try:
+            previous = read_json(record).get('at', 0)
+        except (OSError, ValueError, AttributeError):
+            previous = 0
+        # Tasks sharing one stalled owner produce one notification per stall window.
+        window = config().get('owner_stall_seconds', 1200)
+        if type(previous) in (int, float) and type(window) in (int, float) and time.time() - previous < window:
+            event['owner_stall_notice'] = {'status': 'suppressed', 'at': time.time(),
+                                           'reason': 'already notified for this owner'}
+            write_json(root / 'state.json', state)
+            return
+        # Claim before sending: a crash leaves 'sending', never a duplicate notification.
+        event['owner_stall_notice'] = {'status': 'sending', 'at': time.time()}
+        write_json(root / 'state.json', state)
+        claimed = dict(event)
+    error = owner_notify.send(bridge_services(), owner, claimed, sid)
+    notice = {'status': 'failed', 'at': time.time(), 'error': error} if error else {'status': 'sent', 'at': time.time()}
+    if not error:
+        write_json(record, {'at': notice['at'], 'session_id': sid})
+    with locked(sid) as root:
+        state, _ = load_session(root)
+        live = delivery_event(state)
+        if live and live.get('id') == claimed['id'] and (live.get('owner_stall_notice') or {}).get('status') == 'sending':
+            live['owner_stall_notice'] = notice
+            write_json(root / 'state.json', state)
+        activity.status(bridge_services(), state, 'owner_stalled: user notification ' + (
+            'failed: ' + error if error else 'sent via ' + owner_notify.mode(config())))
 
 
 def _deliver_once(sid):
@@ -904,7 +995,7 @@ def _deliver_once(sid):
                 return persist() and event['status'] == 'pending'
             event.pop('delivery_blocker', None)
             event.pop('retry_at', None)
-            if _watch_owner_stall(event, thread):
+            if _watch_owner_stall(event, thread, owner):
                 activity.status(bridge_services(), state,
                                 'owner_stalled: the original thread reports active but has written nothing; callbacks are waiting')
             if ((owner.get("transport") == "desktop_ipc" or state.get("auto_check") or state.get("coalesce_active")) and not was_submitted
@@ -1120,8 +1211,11 @@ def return_health(state):
     if delivery.get('status') in ('uncertain', 'unacknowledged'):
         return {'status': 'needs_receipt', 'next_action': 'receive_on_original_thread'}
     if delivery.get('owner_stalled_at') and delivery.get('status') in WATCH_EVENTS:
-        return {'status': 'owner_stalled', 'next_action': 'check_original_thread',
-                'stalled_since': delivery['owner_stalled_at']}
+        health = {'status': 'owner_stalled', 'next_action': 'check_original_thread',
+                  'stalled_since': delivery['owner_stalled_at']}
+        if delivery.get('owner_stall_notice'):
+            health['user_notification'] = delivery['owner_stall_notice'].get('status')
+        return health
     return {'status': delivery.get('status', 'ready'), 'next_action': None}
 
 
@@ -2748,8 +2842,16 @@ def call_tool(name, args, meta=None):
                  "telos_return_control": return_control}
     if name == 'telos_audit_probe':
         from audit_probe import run as audit_probe_run
-        return invoke_tool(lambda session_id, request:
-                           audit_probe_run(bridge_services(), session_id, request), args)
+        result = invoke_tool(lambda session_id, request:
+                             audit_probe_run(bridge_services(), session_id, request), args)
+        if isinstance(result, dict) and (result.get('evidence') or result.get('screenshots')):
+            # Supervisor only: absolute paths to open screenshots directly. The
+            # executor's probe service returns run() unchanged.
+            import audit as audit_runtime
+            root = audit_runtime.artifacts(bridge_services(), {'session_id': args['session_id']})
+            result = {**result, 'artifacts_dir': str(root),
+                      'screenshot_paths': [str(root / name) for name in result.get('screenshots') or []]}
+        return result
     if name not in functions:
         raise GateError("Unknown tool", code='unknown_tool', next_action='select_supported_tool')
     if name in ("telos_status", "telos_review", "telos_grade", "telos_receive", "telos_return_control"):
@@ -2792,7 +2894,10 @@ def serve_messages():
                         raise GateError('Tool call requires a name and an arguments object',
                                         code='invalid_arguments', next_action='correct_arguments')
                     data = call_tool(params["name"], params.get("arguments", {}), params.get("_meta"))
-                    result = {"content": [{"type": "text", "text": encoded(data)}], "isError": False}
+                    import result_cap
+                    text = result_cap.bound(STATE, canonical_tool_name(params["name"]), data,
+                                            config().get("mcp_result_max_bytes", result_cap.DEFAULT_LIMIT))
+                    result = {"content": [{"type": "text", "text": text}], "isError": False}
                 except Exception as error:
                     data = errors.payload(error)
                     result = {"content": [{"type": "text", "text": encoded(data)}],

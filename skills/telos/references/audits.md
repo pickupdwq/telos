@@ -18,7 +18,7 @@ With a design reference, compare against it. Without one, check legibility, cons
 
 Use explicitly supplied existing Playwright/Chromium dependencies and allowed browser actions. Each probe starts a fresh context, so login and the operation belong in the same declared sequence. Personal browser profiles are not reused. The current driver blocks redirects, WebSockets, service workers, downloads and arbitrary executor JavaScript; label dependent flows blocked/unverified. Do not silently install dependencies, use an unrestricted browser or widen network access to make a probe pass.
 
-An executor without image understanding can operate the probe and collect screenshots. The supervisor must actually view every captured screenshot referenced in the review packet before recording `visual_evidence_reviewed`. Geometry measurements and screenshot filenames do not establish visual correctness.
+An executor without image understanding can operate the probe and collect screenshots. The supervisor must actually view every captured screenshot referenced in the review packet before recording `visual_evidence_reviewed`. Geometry measurements and screenshot filenames do not establish visual correctness. A supervisor `telos_audit_probe` result lists absolute `screenshot_paths`; screenshots live under the task's `audit_artifacts` directory. View each one once and record it, rather than re-reading the same image in later turns.
 
 ## Evidence and supervisor decisions
 

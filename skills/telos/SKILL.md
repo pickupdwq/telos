@@ -2,7 +2,7 @@
 name: telos
 description: "Supervise Telos delegated development, scoped system audits (code, APIs, page interactions and visual evidence), and confirmed-bug repairs through MCP. Use for requests to use Telos, coordinate independent executors with evidence-based acceptance, or continue an existing TELOS_EVENT. Ordinary coding, general review and questions about Telos do not by themselves authorize starting an executor."
 metadata:
-  version: "3.12.3"
+  version: "3.12.4"
 ---
 
 # Telos
@@ -58,13 +58,15 @@ Use structured MCP errors (`error.code`, `retryable`, `retry_after_seconds`, `ne
 
 Report the inspected version/environment, accepted result or remaining blockers, evidence/worktree locations and unverified boundaries. Link confirmed audit findings to authorized repair tasks. Reuse verified repository experience when relevant. Treat merge, push and deployment as separate actions governed by the user's authorization; acceptance alone grants none.
 
-## Keep the supervisor loop light (3.12.2)
+## Keep the supervisor loop light (3.12.2–3.12.4)
 
 Every check, poll and large result in this conversation delays every callback, because all tasks share this one supervisor thread. Await the completion callback instead of sleeping or polling `telos_status`. Let frozen checks and `auto_run_checks` run tests; reproduce yourself only to diagnose a specific failure. Read bounded excerpts, not whole logs, diffs or screenshots.
 
 `telos_open` and `telos_project_open` may return `preflight_warnings`, for example a check naming a test file that does not exist. These are advisory, but confirm each path exists or will be created by the task before sending work: a wrong path consumes acceptance rounds.
 
-`return_channel.health.status="owner_stalled"` means this thread reported active while writing nothing and callbacks are waiting. Telos marks this and never acts on your behalf. Tell the user the original conversation needs attention.
+`return_channel.health.status="owner_stalled"` means this thread reported active while writing nothing and callbacks are waiting. Telos marks this and never acts on your behalf. Tell the user the original conversation needs attention. If the user enabled `owner_stall_notify`, `user_notification` shows whether they were already told.
+
+A result larger than the configured limit carries `result_overflow`: the full result is saved at `full_result_path` and the listed `omitted` paths were removed from what you received. Identifiers, status, `next_action`, blockers, questions, answers and screenshot references are always intact. Read only an omitted field you actually need from that file (for example with `jq`), never the whole file. Summaries show counts for request and stage history; use `detail="full"` only to diagnose timing. For visual audits, open each path in `screenshot_paths`.
 
 Executors see their remaining time on every request but are told to stop and report only when time or work requests are nearly used, so they should return `checkpoint` only then. Many short checkpoints with little change indicate a blocker to diagnose, not slow progress.
 
