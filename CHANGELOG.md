@@ -1,3 +1,15 @@
+## 3.12.3 — 2026-11-03
+
+- Correct the 3.12.2 closeout change. Withholding the timing note made executors
+  over-verify: with the same task, executor and 600 s limit one job took 424–528 s
+  (28–48 requests) versus 250–255 s for 3.12.1. Every work request again carries the
+  remaining time with an "ample time remains; reply once done and verified" instruction
+  until the closeout window, which keeps the finish-and-report instruction (262–308 s,
+  12–14 requests in the same trials). Executor guidance keeps the 3.12.1 wording.
+
+修正 3.12.2：完全不给时间提示会让执行者反复自检（同任务 424–528 秒，3.12.1 为 250 秒）。
+现在每次请求都带剩余时间，平时提示“时间充足，完成并验证后立即回报”，只在收尾窗口才要求停下回报。
+
 ## 3.12.2 — 2026-11-03
 
 - Send the executor `TELOS_WORK_BUDGET` closeout notice only when admission time

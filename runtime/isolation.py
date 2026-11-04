@@ -131,9 +131,9 @@ class RelayCloseout:
 
 
 WORK_BUDGET_PREFIX = 'TELOS_WORK_BUDGET '
-# The advisory is a late closeout signal. Sent on every request it made executors treat a
-# mostly unused allowance as already spent and hand back tiny checkpoints, so it is withheld
-# until the remaining admission time or further work requests are nearly gone.
+# A stop instruction on every request made executors treat a mostly unused allowance as spent
+# and hand back tiny checkpoints; withholding timing entirely made them over-verify instead.
+# Every request carries the remaining time; the stop instruction waits for the closeout window.
 ADVISORY_MIN_SECONDS = 90
 ADVISORY_PERCENT = 15
 WORK_ADVISORY_REQUESTS = 3
@@ -145,6 +145,8 @@ _WORK_INSTRUCTION = (
 )
 _SHORT_WORK_INSTRUCTION = ('Advisory only; not acceptance. Allowance nearly used: '
                            'finish this step, then send a factual final reply.')
+_PACE_INSTRUCTION = ('Advisory only; not acceptance. Ample time remains: continue efficiently '
+                     'and send the final reply as soon as the task is done and verified.')
 
 
 def advisory_window(duration):
@@ -170,7 +172,7 @@ def _budget_requests(value):
     return None
 
 
-def _work_budget_content(seconds, requests):
+def _work_budget_content(seconds, requests, closing=True):
     fields = {}
     if seconds is not None:
         fields['admission_seconds_remaining'] = seconds
@@ -178,7 +180,7 @@ def _work_budget_content(seconds, requests):
         fields['further_work_requests_remaining'] = requests
     if not fields:
         return None
-    for instruction in (_WORK_INSTRUCTION, _SHORT_WORK_INSTRUCTION):
+    for instruction in ((_WORK_INSTRUCTION, _SHORT_WORK_INSTRUCTION) if closing else (_PACE_INSTRUCTION,)):
         payload = dict(fields, instruction=instruction)
         content = WORK_BUDGET_PREFIX + json.dumps(payload, ensure_ascii=False, separators=(',', ':'))
         if len(content) <= 1000:
@@ -215,9 +217,8 @@ def _guide_work_object(request, *, usage_ledger, request_id, closeout):
         remaining = _work_requests_remaining(usage_ledger.snapshot())
     seconds, requests = _budget_seconds(closeout.admission_remaining()), _budget_requests(remaining)
     window = getattr(closeout, 'advisory_window', lambda: ADVISORY_MIN_SECONDS)()
-    if not _closeout_due(seconds, requests, window):
-        return False
-    return _append_work_guidance(request, _work_budget_content(seconds, requests))
+    return _append_work_guidance(request, _work_budget_content(
+        seconds, requests, closing=_closeout_due(seconds, requests, window)))
 
 
 def _apply_work_guidance(raw, *, usage_ledger, request_id, closeout):

@@ -1250,7 +1250,7 @@ class WorkGuidanceTests(unittest.TestCase):
             self.assertEqual(started.admission_remaining(), 0)
 
 
-# The closeout advisory is a late signal, not a per-request nudge.
+# Every request carries the remaining time; only the closeout window asks the executor to stop.
 class WorkGuidanceWindowTests(unittest.TestCase):
     @staticmethod
     def prepare(seconds, requests, duration=600):
@@ -1278,11 +1278,15 @@ class WorkGuidanceWindowTests(unittest.TestCase):
         started.start(3600)
         self.assertEqual(started.advisory_window(), 540)
 
-    def test_no_advisory_while_time_and_requests_remain(self):
+    def test_pace_note_while_time_and_requests_remain(self):
         for seconds, requests in ((500, None), (500, 40), (None, 40), (91, 4)):
             with self.subTest(seconds=seconds, requests=requests):
                 raw, prepared = self.prepare(seconds, requests)
-                self.assertIs(prepared, raw)
+                text, budget = work_guidance_budget(json.loads(prepared)['input'][-1])
+                self.assertIn('Ample time remains', budget['instruction'])
+                self.assertIn('not acceptance', budget['instruction'].lower())
+                self.assertNotIn('nearly used', text)
+                self.assertNotIn('stop starting new work', text)
 
     def test_advisory_when_time_or_requests_are_nearly_used(self):
         for seconds, requests in ((90, None), (45, 40), (500, 3), (500, 0), (0, 0)):
@@ -1292,9 +1296,10 @@ class WorkGuidanceWindowTests(unittest.TestCase):
                 text, budget = work_guidance_budget(json.loads(prepared)['input'][-1])
                 self.assertLessEqual(len(text), 1000)
                 self.assertIn('not acceptance', budget['instruction'].lower())
-                self.assertNotIn('stop starting new work', text)
+                self.assertIn('nearly used', budget['instruction'])
+                self.assertNotIn('Ample time', text)
 
-    def test_relay_stays_silent_early_and_speaks_near_the_end(self):
+    def test_relay_paces_early_and_closes_out_near_the_end(self):
         def reply(request, n):
             return 200, 'application/json', json.dumps(
                 {'status': 'completed', 'usage': responses_usage()}).encode()
@@ -1308,9 +1313,12 @@ class WorkGuidanceWindowTests(unittest.TestCase):
                 closeout.deadline = isolation.time.monotonic() + 100
                 post(relay, payload={'model': 'm', 'input': []})
         self.assertEqual(len(seen), 2)
-        self.assertNotIn(isolation.WORK_BUDGET_PREFIX, json.dumps(seen[0]))
-        _, budget = work_guidance_budget(seen[1]['input'][-1])
-        self.assertLessEqual(budget['admission_seconds_remaining'], 100)
+        _, early = work_guidance_budget(seen[0]['input'][-1])
+        self.assertIn('Ample time remains', early['instruction'])
+        self.assertGreater(early['admission_seconds_remaining'], 1000)
+        _, late = work_guidance_budget(seen[1]['input'][-1])
+        self.assertIn('nearly used', late['instruction'])
+        self.assertLessEqual(late['admission_seconds_remaining'], 100)
 
 
 class WorkGuidanceRelayTests(unittest.TestCase):

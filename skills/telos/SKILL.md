@@ -2,7 +2,7 @@
 name: telos
 description: "Supervise Telos delegated development, scoped system audits (code, APIs, page interactions and visual evidence), and confirmed-bug repairs through MCP. Use for requests to use Telos, coordinate independent executors with evidence-based acceptance, or continue an existing TELOS_EVENT. Ordinary coding, general review and questions about Telos do not by themselves authorize starting an executor."
 metadata:
-  version: "3.12.2"
+  version: "3.12.3"
 ---
 
 # Telos
@@ -66,7 +66,7 @@ Every check, poll and large result in this conversation delays every callback, b
 
 `return_channel.health.status="owner_stalled"` means this thread reported active while writing nothing and callbacks are waiting. Telos marks this and never acts on your behalf. Tell the user the original conversation needs attention.
 
-The executor receives a `TELOS_WORK_BUDGET` notice only when its execution time or work requests are nearly used, and returns `checkpoint` only then. Many short checkpoints with little change indicate a blocker to diagnose, not slow progress.
+Executors see their remaining time on every request but are told to stop and report only when time or work requests are nearly used, so they should return `checkpoint` only then. Many short checkpoints with little change indicate a blocker to diagnose, not slow progress.
 
 ## Checkpoints and project environments (3.10)
 
