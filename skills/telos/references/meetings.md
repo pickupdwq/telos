@@ -8,7 +8,7 @@ When dynamic reasoning is enabled/authorized, choose each participant's initial 
 
 Inspect the requirement and scoped repository, then choose a variable number of concrete perspectives from affected domains, uncertainty, dependencies and risk. Use at least two independent participants by default. Do not always create three or split identical prompts into redundant roles. A cross-domain change may need more participants than the concurrency limit. Record the allocation in `decision_reason` and reuse configured executor profiles unless the user requests overrides.
 
-For a trivial, clear change or explicit direct-work instruction, provide a concrete `skip_meeting_reason` on implementation creation. Do not ask for confirmation just to record an obvious exception. A deliberately single-participant meeting requires `single_executor_reason`. `planning_mode=direct` is an explicit installation-level opt-out; it is not the default.
+Project refactoring always requires a read-only meeting grounded in the original supervisor’s whole-product walkthrough and current PRD; see [refactoring](refactoring.md). For an ordinary trivial, clear change or explicit direct-work instruction, provide a concrete `skip_meeting_reason` on implementation creation. Do not ask for confirmation just to record an obvious exception. A deliberately single-participant meeting requires `single_executor_reason`. `planning_mode=direct` is an explicit installation-level opt-out; it is not the default.
 
 ## Run and converge
 
