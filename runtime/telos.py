@@ -2824,6 +2824,7 @@ TOOLS += [
 
 SERVER_INSTRUCTIONS = (
     'Use the telos skill. Only the original supervisor accepts; keep references/checks private. '
+    'For refactors: walk the product, open a refactor_discovery meeting, then get user approval for implementation. '
     'Follow proceed, next_action and returned event IDs; await callbacks. Honor pause/cancel. '
     'Only accepted=true completes work; projects require project acceptance. No automatic merge/deploy.')
 
