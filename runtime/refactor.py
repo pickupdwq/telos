@@ -41,16 +41,20 @@ def proposal(b, project):
     signature = b.digest({'project': project['project_id'], 'base': project['base_commit'],
                           'contract': project['contract_hash'], 'batches': batches})
     receipt = project.get('refactor_approval') or {}
-    if receipt.get('signature') == signature:
-        return {'revision': signature, 'confirmed': True}
     planning = project['contract'].get('planning', {})
+    approved = receipt.get('signature') == signature
     if 'refactor_design' not in planning:
+        if approved:
+            return {'revision': signature, 'confirmed': True}
         return {'revision': signature, 'confirmed': False, 'next_action': 'telos_meeting_open',
                 'reason': 'This pending plan predates the walkthrough. Prepare a replacement from a refactor discussion.'}
     folder = b.project_manager().path(planning['meeting_id']).parent
-    return {'plan': plan, 'batches': batches, 'revision': signature, 'confirmed': False,
+    summary = {'revision': signature, 'confirmed': approved, 'index_path': planning['refactor_design']['index_path'],
+               'documents': {'current_prd': str(folder / 'current-prd.md'), 'design': str(folder / 'refactor-design.md')}}
+    if approved:
+        return summary
+    return {**summary, 'plan': plan, 'batches': batches,
             'current_prd': planning['current_prd'], 'design': planning['refactor_design'],
-            'documents': {'current_prd': str(folder / 'current-prd.md'), 'design': str(folder / 'refactor-design.md')},
             'confirm_text': '确认重构 ' + signature[:12]}
 
 

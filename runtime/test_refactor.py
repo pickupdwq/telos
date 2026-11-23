@@ -119,7 +119,10 @@ class RefactorTests(unittest.TestCase):
         with patch('refactor.latest_exchange', return_value=('new', new_info['confirm_text'], '')), patch(
                 'projects.Projects.capacity', return_value=False):
             confirmed = self.start(pid, confirm_refactor=new_info['revision'])
-        self.assertEqual(confirmed['refactor'], {'confirmed': True, 'revision': new_info['revision']})
+        self.assertTrue(confirmed['refactor']['confirmed'])
+        self.assertEqual(confirmed['refactor']['revision'], new_info['revision'])
+        self.assertEqual(confirmed['refactor']['documents'], info['documents'])
+        self.assertNotIn('design', confirmed['refactor'])
 
     def test_pause_during_conversation_read_prevents_dispatch(self):
         view = self.open()
@@ -196,6 +199,8 @@ class RefactorTests(unittest.TestCase):
         self.assertFalse(index.exists())
         self.assertEqual(refactor_design.check_index(self.repo, design)['status'], 'failed')
         index.parent.mkdir()
+        index.write_text(refactor_design.index_block(design) * 2)
+        self.assertEqual(refactor_design.check_index(self.repo, design)['status'], 'failed')
         index.write_text('# Custom introduction\n' + refactor_design.index_block(design))
         self.assertEqual(refactor_design.check_index(self.repo, design)['status'], 'passed')
         (self.repo / 'calc.py').unlink()

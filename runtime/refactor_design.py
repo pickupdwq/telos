@@ -206,8 +206,10 @@ def check_index(root, design):
         return path.resolve().is_relative_to(root.resolve()) and path.is_file()
     error = ''
     try:
-        if not local_file(index) or index_block(design) not in index.read_text(encoding='utf-8'):
-            error = 'Missing agreed business-flow index section: ' + design['index_path']
+        contents = index.read_text(encoding='utf-8') if local_file(index) else ''
+        if (contents.count('<!-- telos:codemap -->') != 1 or contents.count('<!-- /telos:codemap -->') != 1
+                or index_block(design) not in contents):
+            error = 'Expected exactly one current business-flow index section: ' + design['index_path']
         else:
             missing = [p for row in design['code_index'] for p in row['paths'] if not local_file(root / p)]
             if missing:
