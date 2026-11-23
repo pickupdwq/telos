@@ -44,8 +44,13 @@ any foreground dashboard, remove the default port's access file from
 `TELOS_STATE_DIR/dashboard/access-47831` (normally under `~/.local/state/telos`),
 and restart the supervising Telos processes.
 
-Projects, discussion meetings and independent tasks are grouped by their original
-supervising conversations. Project confirmation is separate from child completion.
+The wall shows all project tasks, meeting assignments and standalone tasks side
+by side, including pending and historical ones. Each card identifies the original
+supervisor, executor, project and task; click it for activity and callback details.
+The animated flow and per-second timer show the current attempt, not time since
+the task was created. With no execution in progress the wall stays idle; click
+“预览运行动画” for a labeled preview that does not change the running-task count.
+Project confirmation is separate from child completion.
 The task view shows recorded public activity, check and callback status; older
 records may lack titles, logs or timing. Project durations accumulate task time,
 so parallel tasks can add up to more than elapsed time. The observer reads

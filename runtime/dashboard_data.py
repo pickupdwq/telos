@@ -79,6 +79,74 @@ def _number(value):
     return value if timing.number(value) else 0
 
 
+HAN = re.compile(r'[\u3400-\u9fff\uf900-\ufaff]')
+DIGITS = '零一二三四五六七八九'
+
+
+def _ordinal(number):
+    if number >= 10000:
+        return ''.join(DIGITS[int(digit)] for digit in str(number))
+    result = ''
+    for power, unit in ((1000, '千'), (100, '百'), (10, '十'), (1, '')):
+        digit, number = divmod(number, power)
+        if digit:
+            if digit != 1 or power != 10 or result:
+                result += DIGITS[digit]
+            result += unit
+        elif result and number and not result.endswith('零'):
+            result += '零'
+    return result
+
+
+def _display_title(title, fallback):
+    # A mixed-language business title can legitimately contain names like API
+    # or iOS. Don't translate source text or show an English-only technical ID.
+    for clause in re.split(r'[。！？\n]|(?<=[.!?])\s+', title or ''):
+        text = clause.strip()
+        heading, separator, rest = text.partition(':')
+        if separator and not HAN.search(heading) and HAN.search(rest):
+            return rest.strip()
+        if HAN.search(text):
+            return text
+    return fallback
+
+
+def _display_id(numbers, key, prefix='任务', stored=''):
+    # Keep the manifest's original order, not the changing status/group order.
+    # Reassignment keeps the same key. A retired/removed row never gives its
+    # number to a new row during this observer's lifetime.
+    number = numbers.setdefault(key, len(numbers) + 1)
+    for candidate in (stored, key):
+        if HAN.search(candidate):
+            return candidate
+    return prefix + _ordinal(number)
+
+
+def _run_window(state):
+    # job_started is dispatch time, not the moment the background job took
+    # ownership. Between retries state can still contain the *previous* claim,
+    # execution_started_at and job_finished.
+    job = state.get('job_id')
+    dispatched = _number(state.get('job_started'))
+    started = _number(state.get('execution_started_at'))
+    claimed = state.get('execution_claim')
+    if claimed:
+        if claimed != job:
+            return None, None
+    elif not dispatched or started < dispatched:
+        started = 0  # Historical states have no token; require time ordering.
+    if not started and isinstance(job, str) and job:
+        intervals = _dict(_dict(state.get('stage_timeline')).get('intervals'))
+        started = _latest(intervals.get(job + ':environment'), 'started_at')
+    if not started:
+        return None, None
+    finished = _number(state.get('job_finished'))
+    lost = state.get('last_error') == 'Background process exited without a result; no acceptance'
+    if state.get('phase') == 'running' or lost or finished < started:
+        return started, None
+    return started, finished
+
+
 def _owner(value):
     item = _dict(value)
     transport = item.get('transport')
@@ -134,6 +202,7 @@ def _run(data, modified):
     if not check and type(checks_passed) is bool:
         checks = '检查通过' if checks_passed else '检查未通过'
     raw_timing = _dict(data.get('timing'))
+    started, finished = _run_window(data)
     pid = data.get('project_id')
     if pid is not None and (not isinstance(pid, str) or not SESSION.fullmatch(pid)):
         raise ValueError('invalid project identity')
@@ -148,10 +217,11 @@ def _run(data, modified):
         'id': data['session_id'], 'pid': data.get('project_id'), 'courier': bool(data.get('notification_only')),
         'repo': _text(data.get('repo'), 350), 'owner': _owner(data.get('owner')),
         'phase': _text(data.get('phase')), 'control': _text(data.get('continuation')),
-        'title': _text(data.get('task_title')), 'initial_hash': _text(data.get('initial_message_hash')), 'role': _text(data.get('role_name')),
+        'title': _text(data.get('task_title')), 'stored_label': _text(data.get('display_id')), 'initial_hash': _text(data.get('initial_message_hash')), 'role': _text(data.get('role_name')),
         'model': _text(data.get('model')), 'kind': _text(data.get('job_kind')),
         'worker': data.get('job_pid'), 'start': _text(data.get('job_process_start')),
-        'launched': _number(data.get('job_started')), 'discussed': bool(data.get('discussion_complete')),
+        'launched': _number(data.get('job_started')), 'created': _number(data.get('created_at')),
+        'run_started_at': started, 'run_finished_at': finished, 'discussed': bool(data.get('discussion_complete')),
         'blocked': progress_guard.blocked(data), 'automatic': bool(continuation.pending(data)),
         'callback': _callback(data), 'milestones': milestones, 'checks': checks, 'check_status': check,
         'timing': {k: raw_timing[k] for k in ('version', 'phase_seconds', 'stage', 'since', 'started_at',
@@ -162,7 +232,7 @@ def _run(data, modified):
 
 def _assignment(row):
     return {'id': row['session_id'], 'key': row['id'], 'phase': _text(row.get('phase')),
-            'title': _text(row.get('task')) or _text(row['id']),
+            'title': _text(row.get('task')) or _text(row['id']), 'stored_label': _text(row.get('display_id')),
             'role': _text(row.get('role') or _dict(row.get('role_snapshot')).get('name')),
             'model': _text(row.get('model') or _dict(row.get('executor')).get('model')),
             'deps': [_text(dep) for dep in row.get('depends_on', []) if isinstance(dep, str)],
@@ -201,7 +271,7 @@ def _effective(control, phase):
     return control if control in ('cancelled', 'paused') else phase
 
 
-def _task(row, run, project, now):
+def _task(row, run, project, now, label):
     recorded = row.get('phase')
     phase = run.get('phase') or recorded
     if recorded in ('quarantined', 'changed_after_acceptance'):
@@ -234,25 +304,31 @@ def _task(row, run, project, now):
         status, tone, wait = '派发受阻', 'issue', '等大总管处理派发失败'
     if run.get('blocked') and tone not in ('done', 'idle') and phase != 'running':
         tone, wait = 'issue', '多次尝试没有进展，等大总管调整方案'
-    return {'id': row['id'], 'key': row.get('key', row['id'][:8]), 'title': row.get('title') or run.get('title'),
-            'model': run.get('model') or row.get('model') or '', 'role': row.get('role') or run.get('role') or '',
+    title = row.get('title') or run.get('title')
+    role = row.get('role') or run.get('role') or ''
+    return {'id': row['id'], 'key': row.get('key', row['id'][:8]), 'title': title,
+            'display_id': label, 'display_title': _display_title(title, label),
+            'model': run.get('model') or row.get('model') or '', 'role': role,
+            'run_started_at': run.get('run_started_at'), 'run_finished_at': run.get('run_finished_at'),
             'phase': phase, 'status': status, 'tone': tone, 'wait': wait, 'updated': run.get('updated') or run.get('file_time') or project.get('created', 0),
             'timing': _timing(run, observer_now)}
 
 
-def _project_view(project, runs, now):
+def _project_view(project, runs, now, numbers):
     tasks = []
     for row in project['tasks']:
         run = runs.get(row['id'], {})
         if run.get('pid') not in (None, project['id']) or run.get('courier'):
             run = {}
-        tasks.append(_task(row, run, project, now))
+        label = _display_id(numbers, row['key'], stored=row['stored_label'])
+        tasks.append(_task(row, run, project, now, label))
     by_key = {t['key']: t for t in tasks}
     for row, task in zip(project['tasks'], tasks):
         if task['phase'] == 'pending':
             waiting = [k for k in row['deps'] if by_key.get(k, {}).get('phase') != 'accepted']
             if waiting:
-                task['wait'] = '等前置任务通过：' + '、'.join(waiting)
+                labels = [by_key[k]['display_id'] if k in by_key else '未找到的前置任务' for k in waiting]
+                task['wait'] = '等前置任务通过：' + '、'.join(labels)
                 if len(waiting) == 1 and waiting[0] in by_key:
                     by_key[waiting[0]].setdefault('unblocks', []).append(task['key'])
     phase = _effective(project['control'], project['phase'])
@@ -268,13 +344,13 @@ def _project_view(project, runs, now):
         if tasks and all(t['phase'] == 'accepted' for t in tasks):
             status, tone, wait = '待项目确认', 'wait', '子任务已通过，等大总管整合并确认整个项目'
         elif blockers:
-            status, tone, wait = '有任务待处理', 'issue', blockers[0]['key'] + '：' + blockers[0]['wait']
+            status, tone, wait = '有任务待处理', 'issue', blockers[0]['display_id'] + '：' + blockers[0]['wait']
         elif any(t['tone'] == 'active' for t in tasks):
             if handoffs:
-                wait = handoffs[0]['key'] + '：' + handoffs[0]['wait']
+                wait = handoffs[0]['display_id'] + '：' + handoffs[0]['wait']
         else:
             status, tone = '等待推进', 'wait'
-            wait = (handoffs[0]['key'] + '：' + handoffs[0]['wait']) if handoffs else '等待任务调度'
+            wait = (handoffs[0]['display_id'] + '：' + handoffs[0]['wait']) if handoffs else '等待任务调度'
     durations = {}
     times = [t['timing'] for t in tasks if t['phase'] != 'pending']
     times.extend(_timing(runs[sid], now) for sid in project['retired_ids'] if sid in runs)
@@ -285,8 +361,10 @@ def _project_view(project, runs, now):
         durations['checks'] = (durations['checks'] or 0) + project['integration_seconds']
     related = [project['id'], *(t['id'] for t in tasks), *project['retired_ids']]
     updated = max([project['updated'], *(runs.get(sid, {}).get('updated', 0) for sid in related)])
+    checked_phases = ('verifying', 'awaiting_final_review', 'accepted', 'integration_failed')
+    verification = project['launched'] if project['phase'] in checked_phases else 0
     return {**{k: project[k] for k in ('id', 'title', 'repo', 'kind', 'owner')},
-            'phase': phase, 'status': status, 'tone': tone, 'wait': wait, 'tasks': tasks,
+            'verification_started_at': verification or None, 'phase': phase, 'status': status, 'tone': tone, 'wait': wait, 'tasks': tasks,
             'updated': updated or project['file_time'], 'timing': durations}
 
 
@@ -358,6 +436,8 @@ class DashboardData:
         self.cache = {}
         self.legacy_titles = {}
         self.activity_times = {}
+        self.project_numbers = {}
+        self.standalone_numbers = {}
         self.lock = threading.Lock()
 
     def _read(self, path, project=False, events=False, timestamp=False):
@@ -460,10 +540,11 @@ class DashboardData:
         for sid in self.legacy_titles.keys() - runs.keys():
             del self.legacy_titles[sid]
         now = time.time()
-        result = [_project_view(p, runs, now) for p in projects.values()]
+        result = [_project_view(p, runs, now, self.project_numbers.setdefault(p['id'], {}))
+                  for p in projects.values()]
         claimed = {t['id'] for p in projects.values() for t in p['tasks']}
         claimed.update(sid for p in projects.values() for sid in p['retired_ids'])
-        for sid, run in runs.items():
+        for sid, run in sorted(runs.items(), key=lambda item: (item[1]['created'], item[0])):
             if run['courier'] or sid in claimed:
                 continue
             if run['pid']:  # An orphan is not an independent assignment.
@@ -472,8 +553,13 @@ class DashboardData:
                 continue
             initial = '' if run['title'] else self._legacy_title(sid, run['initial_hash'])
             title = run['title'] or initial or (Path(run['repo']).name or '独立任务') + ' · ' + sid[:8]
-            task = _task({'id': sid, 'title': title}, run, {}, now)
-            result.append({**{k: task[k] for k in ('id', 'title', 'phase', 'status', 'tone', 'wait', 'updated', 'timing')},
+            label = _display_id(self.standalone_numbers, sid, prefix='独立任务', stored=run['stored_label'])
+            task = _task({'id': sid, 'title': title}, run, {}, now, label)
+            if not run['title'] and not initial:  # Fallback title contains a raw short ID for search only.
+                task['display_title'] = label
+            result.append({**{k: task[k] for k in ('id', 'title', 'display_id', 'display_title', 'phase', 'status', 'tone',
+                                                   'wait', 'updated', 'timing')},
+                           'verification_started_at': None,
                            'repo': run['repo'], 'kind': 'standalone', 'owner': run['owner'], 'tasks': [task],
                            'title_source': 'task' if run['title'] else ('initial_message' if initial else 'id')})
         for project in result:
@@ -515,5 +601,6 @@ class DashboardData:
             if run['phase'] == 'running' and not _alive(run, now):
                 now = min(now, max(run['updated'], *(e['at'] for e in events), 0) or run['file_time'])
             events = sorted([*events, *run['milestones']], key=lambda event: event['at'])[-80:]
-            return {'id': sid, 'events': events, 'callback': run['callback'],
-                    'checks': run['checks'], 'timing': _timing(run, now)}
+            return {'id': sid, 'events': events, 'callback': run['callback'], 'checks': run['checks'],
+                    'run_started_at': run['run_started_at'], 'run_finished_at': run['run_finished_at'],
+                    'timing': _timing(run, now)}

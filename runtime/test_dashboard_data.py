@@ -51,7 +51,7 @@ class DashboardDataTest(unittest.TestCase):
         project = board['projects'][0]
         self.assertEqual(project['owner'], {'id': 'thread-a', 'label': 'Claude Code', 'model': 'model-a'})
         self.assertIn('审核', project['wait'])
-        self.assertEqual(project['tasks'][1]['wait'], '等前置任务通过：api')
+        self.assertEqual(project['tasks'][1]['wait'], '等前置任务通过：任务一')
         self.assertNotIn('PRIVATE', repr(board) + repr(self.board.cache))
         self.assertEqual(initial, {p: (p.read_bytes(), p.stat().st_mtime_ns) for p in self.root.rglob('*.json')})
         self.run_state(self.first, project_id=self.pid)
@@ -187,6 +187,93 @@ class DashboardDataTest(unittest.TestCase):
         tasks = self.board.snapshot()['projects'][0]['tasks']
         self.assertNotIn('unblocks', tasks[0])
         self.assertEqual(tasks[1]['unblocks'], ['ship'])
+
+    def test_run_window_belongs_to_the_current_worker_attempt(self):
+        current, previous = '1'*32, '2'*32
+        fields = {'job_id': current, 'job_pid': os.getpid(), 'job_started': 200, 'created_at': 10}
+        def window(**values):
+            self.run_state(self.first, **{**fields, **values})
+            task = self.board.snapshot()['projects'][0]['tasks'][0]
+            detail = self.board.detail(self.first)
+            pair = ('run_started_at', 'run_finished_at')
+            self.assertEqual([task[k] for k in pair], [detail[k] for k in pair])
+            return tuple(task[k] for k in pair)
+        self.assertEqual(window(phase='running', execution_claim=previous, execution_started_at=100,
+                                job_finished=180), (None, None))
+        self.assertEqual(window(phase='running', execution_claim=current, execution_started_at=205,
+                                job_finished=180), (205, None))
+        self.assertEqual(window(phase='running', execution_claim=current, execution_started_at=205,
+                                job_finished=320), (205, None))
+        self.assertEqual(window(phase='error', execution_claim=current, execution_started_at=205,
+                                job_finished=260), (205, 260))
+        self.assertEqual(window(phase='error', execution_claim=current, execution_started_at=205,
+                                job_finished=180), (205, None))
+        self.assertEqual(window(phase='error', execution_claim=current, execution_started_at=205,
+                                job_finished=260, last_error='Background process exited without a result; no acceptance'),
+                         (205, None))
+        self.assertEqual(window(phase='accepted', execution_started_at=210, job_finished=300), (210, 300))
+        self.assertEqual(window(phase='ready', execution_started_at=110, job_finished=300), (None, None))
+        self.assertEqual(window(phase='ready', finished_at=9000), (None, None))
+        timeline = {'intervals': {current + ':environment': {'started_at': 208},
+                                  previous + ':environment': {'started_at': 110}}}
+        self.assertEqual(window(phase='responded', stage_timeline=timeline, job_finished=250), (208, 250))
+
+    def test_project_verification_time_and_unstarted_assignment(self):
+        self.project(phase='verifying', verification_started=70, verification_pid=os.getpid())
+        project = self.board.snapshot()['projects'][0]
+        self.assertEqual(project['verification_started_at'], 70)
+        self.assertIsNone(project['tasks'][0]['run_started_at'])
+        self.assertIsNone(project['tasks'][0]['run_finished_at'])
+        self.project(phase='running', verification_started=70)
+        self.assertIsNone(self.board.snapshot()['projects'][0]['verification_started_at'])
+
+    def test_chinese_labels_survive_reassign_remove_append_and_keep_raw_keys(self):
+        project = self.project()
+        rows = project['tasks']
+        rows[0]['task'] = 'Implement the API'
+        rows[0]['role_snapshot'] = {'name': '资深程序员'}
+        self.run_state(self.first, phase='awaiting_review', project_id=self.pid)
+        self.project(tasks=rows)
+        p = self.board.snapshot()['projects'][0]
+        self.assertEqual([t['display_id'] for t in p['tasks']], ['任务一', '任务二'])
+        self.assertEqual([t['display_title'] for t in p['tasks']], ['任务一', '接好前端'])
+        self.assertEqual(p['tasks'][0]['title'], 'Implement the API')
+        self.assertIn('任务一', p['wait'])
+        self.assertNotIn('api', p['tasks'][1]['wait'])
+        self.assertEqual(p['tasks'][0]['unblocks'], ['ui'])
+        rows[0]['session_id'] = self.old
+        self.project(tasks=rows)
+        self.assertEqual(self.board.snapshot()['projects'][0]['tasks'][0]['display_id'], '任务一')
+        # Native project updates replace in place and append without reordering;
+        # a new observer reconstructs the same numbering from the manifest.
+        fresh = DashboardData(self.root).snapshot()['projects'][0]
+        self.assertEqual([t['display_id'] for t in fresh['tasks']], ['任务一', '任务二'])
+        addition = {'id': 'tests', 'session_id': 'e'*32, 'task': 'Test newly added screen', 'phase': 'pending'}
+        self.project(tasks=[rows[1], addition], history=[{'previous_session_id': self.first}])
+        tasks = self.board.snapshot()['projects'][0]['tasks']
+        self.assertEqual([t['display_id'] for t in tasks], ['任务二', '任务三'])
+        self.assertEqual(tasks[0]['wait'], '等前置任务通过：未找到的前置任务')
+        self.assertEqual(tasks[1]['key'], 'tests')
+        addition['id'] = '用例回归'
+        self.project(tasks=[addition])
+        task = self.board.snapshot()['projects'][0]['tasks'][0]
+        self.assertEqual((task['display_id'], task['display_title']), ('用例回归', '用例回归'))
+
+    def test_standalone_localized_titles_are_separate_from_immutable_identity(self):
+        self.run_state(self.first, created_at=10, task_title='Patch the API')
+        self.run_state(self.second, created_at=20, task_title='新增登录页')
+        def names():
+            return {p['id']: (p['display_id'], p['display_title'], p['tasks'][0]['display_id'])
+                    for p in self.board.snapshot()['projects']}
+        self.assertEqual(names()[self.first], ('独立任务一', '独立任务一', '独立任务一'))
+        self.assertEqual(names()[self.second], ('独立任务二', '新增登录页', '独立任务二'))
+        fresh = DashboardData(self.root).snapshot()['projects']
+        self.assertEqual({p['id']: p['display_id'] for p in fresh}, {self.first: '独立任务一', self.second: '独立任务二'})
+        (self.root / 'runs' / self.first / 'state.json').unlink()
+        self.run_state(self.old, created_at=30)
+        self.assertEqual(names()[self.old], ('独立任务三', '独立任务三', '独立任务三'))
+        self.assertEqual(names()[self.second][0], '独立任务二')
+        self.assertEqual(self.board.detail(self.second)['id'], self.second)
 
     def test_cache_is_invalidated_on_atomic_replacement_and_tolerates_bad_records(self):
         self.run_state(self.first, phase='ready')
