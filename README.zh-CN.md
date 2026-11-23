@@ -148,12 +148,12 @@ Telos 在隔离工作区中产出已验收的提交。合并、推送和部署�
 | 操作系统 | 带 `/usr/bin/sandbox-exec` 的 macOS；暂不支持在 Linux、Windows 上执行任务 |
 | Python | 3.12+；运行时代码只依赖标准库 |
 | Git | 已安装并配置；目标仓库至少有一个提交，工作区必须干净 |
-| Codex CLI | **已验证基线为 0.163.0**；安装器允许更高版本，但升级后需重新验证 |
+| Codex CLI | **已验证基线为 0.171.0**；安装器允许更高版本，但升级后需重新验证 |
 | Node.js / npm | 用于安装、运行专用 Codex CLI；CI 使用 Node.js 24 |
 | 大总管 | 已登录 Codex，并使用允许列表中的 OpenAI GPT 旗舰模型 |
 | 执行者 | 所选服务商的有效凭据/套餐，以及对应模型的使用权限 |
 
-本地已在 Apple Silicon、macOS 27.0.1、Python 3.13、Codex CLI 0.163.0 上验证，不代表所有 Mac 或后续 CLI 版本均已实测。桌面端自动回传适配依赖内部 IPC 协议，推荐先使用下方专用 CLI 路径；升级后重新验证。
+已在 Apple Silicon 上用本地 HTTP 服务抓到 Codex CLI 0.171.0 发出的请求：`codex_login` + `gpt-6.2-sol` 在工作和闭卷考试中都带有 `service_tier="priority"`，`gpt-6.1-sol` 则不带。桌面端自动回传适配依赖内部 IPC 协议，推荐先使用下方专用 CLI 路径；升级后重新验证。
 
 ## 快速开始
 
@@ -163,7 +163,7 @@ Telos 在隔离工作区中产出已验收的提交。合并、推送和部署�
 
 可以把下面这段话复制到另一个 Codex CLI 会话中。请附上仓库地址，方便 Codex 找到正确项目和安装说明：
 
-> 请按照 https://github.com/pickupdwq/telos 的中文 README 安装 Telos 和用户全局 Skill。检查依赖，使用已验证的专用 Codex CLI 0.163.0，注册 MCP，并运行离线安装验证。已有安装先复用，除非我要求升级；保留现有配置和凭据。缺少的服务商 Key 由我在本地终端隐藏输入。完成后汇报验证结果，并提醒我在注册后重新打开 Codex。
+> 请按照 https://github.com/pickupdwq/telos 的中文 README 安装 Telos 和用户全局 Skill。检查依赖，使用已验证的专用 Codex CLI 0.171.0，注册 MCP，并运行离线安装验证。已有安装先复用，除非我要求升级；保留现有配置和凭据。缺少的服务商 Key 由我在本地终端隐藏输入。完成后汇报验证结果，并提醒我在注册后重新打开 Codex。
 
 - **同一台 Mac、同一份 Codex 配置下的另一个 CLI 会话**：复用已有安装即可。重新打开 Codex，用 `/mcp` 检查 Telos 是否加载。
 - **另一台机器**：需要能够访问本仓库，并满足上面的 macOS、Python 3.12+ 和专用 CLI 要求。配置自己的模型凭据，并在该机器上运行安装验证。
@@ -175,7 +175,7 @@ Telos 在隔离工作区中产出已验收的提交。合并、推送和部署�
 ```sh
 git clone https://github.com/pickupdwq/telos.git
 cd telos
-npm install --prefix "$HOME/.local/share/telos-cli" @openai/codex@0.163.0
+npm install --prefix "$HOME/.local/share/telos-cli" @openai/codex@0.171.0
 ```
 
 该专用目录属于沙箱配置的一部分，不能仅用任意全局 `codex` 命令代替。
@@ -191,6 +191,7 @@ python3 install.py --register
 已有受管理安装，可在检出的新版源码中执行：
 
 ```sh
+npm install --prefix "$HOME/.local/share/telos-cli" @openai/codex@0.171.0
 python3 install.py --upgrade --dry-run
 python3 install.py --upgrade
 ```

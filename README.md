@@ -150,12 +150,12 @@ The per-round report was frozen before the final delivery checks; the final summ
 | OS | macOS with `/usr/bin/sandbox-exec`; Linux and Windows execution are not supported |
 | Python | 3.12+; runtime uses the standard library only |
 | Git | Installed and configured; target repository must have a commit and a clean working tree |
-| Codex CLI | **0.163.0 is the tested baseline**; installer accepts newer versions, which need revalidation |
+| Codex CLI | **0.171.0 is the tested baseline**; installer accepts newer versions, which need revalidation |
 | Node.js / npm | Required to install/run the dedicated Codex CLI; Node.js 24 is used in CI |
 | Supervisor | Authenticated Codex session using an allowed OpenAI GPT flagship model |
 | Executor | A valid key/subscription for the selected provider and access to the chosen model |
 
-Local verification has been run on Apple Silicon, macOS 27.0.1, Python 3.13 and Codex CLI 0.163.0. This does not establish compatibility with every Mac or later CLI release. The Desktop callback adapter depends on a versioned internal IPC protocol; use the dedicated CLI for the documented path and revalidate after upgrades.
+On Apple Silicon, a local HTTP fixture captured `service_tier="priority"` from Codex CLI 0.171.0 for `codex_login` + `gpt-6.2-sol` in both work and closed-book exams; `gpt-6.1-sol` omitted the field. The Desktop callback adapter depends on a versioned internal IPC protocol; use the dedicated CLI for the documented path and revalidate after upgrades.
 
 ## Quick start
 
@@ -165,7 +165,7 @@ The installer installs the runtime and its companion **supervisor Skill** togeth
 
 You can paste this into another Codex CLI session. Include the repository URL so Codex can find the correct project and installation instructions:
 
-> Install Telos and its global user Skill from https://github.com/pickupdwq/telos by following its README. Check dependencies, use the tested dedicated Codex CLI 0.163.0, register MCP, and run the offline installation verification. Reuse an existing installation unless I request an upgrade; preserve its configuration and credentials. I will enter any missing provider key myself in the hidden local terminal prompt. Report the verification results and remind me to reopen Codex after registration.
+> Install Telos and its global user Skill from https://github.com/pickupdwq/telos by following its README. Check dependencies, use the tested dedicated Codex CLI 0.171.0, register MCP, and run the offline installation verification. Reuse an existing installation unless I request an upgrade; preserve its configuration and credentials. I will enter any missing provider key myself in the hidden local terminal prompt. Report the verification results and remind me to reopen Codex after registration.
 
 - **Another CLI session on the same Mac, using the same Codex configuration:** reuse the existing installation. Reopen Codex and use `/mcp` to confirm that Telos is loaded.
 - **Another machine:** it must be able to access this repository and meet the macOS, Python 3.12+ and dedicated CLI requirements above. Configure your own provider credentials and run the installation verification on that machine.
@@ -177,7 +177,7 @@ Installer regressions cover fresh installs, managed upgrades, configuration pres
 ```sh
 git clone https://github.com/pickupdwq/telos.git
 cd telos
-npm install --prefix "$HOME/.local/share/telos-cli" @openai/codex@0.163.0
+npm install --prefix "$HOME/.local/share/telos-cli" @openai/codex@0.171.0
 ```
 
 This dedicated location is part of the sandbox configuration. A global `codex` command alone is not the documented installation path.
@@ -193,6 +193,7 @@ This copies the runtime and [key-free example configuration](config.example.json
 To upgrade an existing managed installation from a checked-out release:
 
 ```sh
+npm install --prefix "$HOME/.local/share/telos-cli" @openai/codex@0.171.0
 python3 install.py --upgrade --dry-run
 python3 install.py --upgrade
 ```

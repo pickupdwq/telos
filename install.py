@@ -19,7 +19,7 @@ import tomllib
 import uuid
 
 ROOT = Path(__file__).resolve().parent
-MIN_CODEX = (0, 163, 0)
+MIN_CODEX = (0, 171, 0)
 SKILL_MANIFEST = ".telos-skill.json"
 
 
@@ -123,13 +123,13 @@ def preflight(home: Path) -> tuple[Path, str]:
     codex = cli_root / "node_modules/.bin/codex"
     if not codex.is_file():
         raise RuntimeError('Install the dedicated CLI first: npm install --prefix '
-                           '"$HOME/.local/share/telos-cli" @openai/codex@0.163.0')
+                           '"$HOME/.local/share/telos-cli" @openai/codex@0.171.0')
     result = subprocess.run([str(codex), "--version"], capture_output=True,
                             text=True, check=True, timeout=20)
     version = result.stdout.strip()
     match = re.search(r"\b(\d+)\.(\d+)\.(\d+)\b", version)
     if not match or tuple(map(int, match.groups())) < MIN_CODEX:
-        raise RuntimeError("Codex CLI 0.163.0+ is required; 0.163.0 is the tested baseline.")
+        raise RuntimeError("Codex CLI 0.171.0+ is required; 0.171.0 is the tested baseline.")
     return codex, version
 
 

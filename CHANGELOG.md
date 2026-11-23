@@ -1,3 +1,14 @@
+## 3.17.2 — 2026-11-23
+
+- Fix Fast mode for `codex_login` + `gpt-6.2-sol`. In 3.17.1, CLI 0.163.0
+  silently filtered out `service_tier`: its bundled catalog lacked that model.
+  The dedicated CLI baseline is now 0.171.0, matching the login catalog query.
+  Work, resume and closed-book exams block before inference on a CLI older than
+  0.169.1 instead of quietly using the default tier. A real-CLI regression
+  checks the upstream request body for both the Fast model and a control model.
+- Existing installations: update the dedicated CLI before upgrading Telos:
+  `npm install --prefix "$HOME/.local/share/telos-cli" @openai/codex@0.171.0`.
+
 ## 3.17.1 — 2026-11-23
 
 - **Fast tier for the local Codex login on `gpt-6.2-sol`**: executors that use

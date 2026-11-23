@@ -25,10 +25,10 @@ class InstallerTests(unittest.TestCase):
         self.skill = self.home / ".agents/skills/telos"
         self.state = self.home / "state"
         self.codex = self.home / "codex"
-        self.codex.write_text("#!/bin/sh\nprintf 'codex-cli 0.163.0\\n'\n")
+        self.codex.write_text("#!/bin/sh\nprintf 'codex-cli 0.171.0\\n'\n")
         self.codex.chmod(0o755)
         for mock in (patch.object(Path, "home", return_value=self.home),
-                     patch.object(install, "preflight", return_value=(self.codex, "codex-cli 0.163.0")),
+                     patch.object(install, "preflight", return_value=(self.codex, "codex-cli 0.171.0")),
                      patch.dict(os.environ, {"CODEX_HOME": str(self.home / ".codex"),
                                              "TELOS_STATE_DIR": str(self.state),
                                              "TELOS_CACHE_DIR": str(self.home / "cache")})):
@@ -91,7 +91,7 @@ class InstallerTests(unittest.TestCase):
         self.assertEqual(json.loads(replies[4]['content'][0]['text']), {'experiences': []})
         command = subprocess.run([str(self.prefix / "commands/codex"), "--version"],
                                  capture_output=True, text=True, check=True)
-        self.assertIn("0.163.0", command.stdout)
+        self.assertIn("0.171.0", command.stdout)
         observer = subprocess.run([str(self.bin_dir / "telos"), "watch", "--help"],
                                   capture_output=True, text=True, check=True, timeout=10, env=env)
         self.assertIn("--history", observer.stdout)

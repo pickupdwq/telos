@@ -94,9 +94,15 @@ The installed suite includes the meeting model fixture at `fixtures/meetings/def
 
 A passing report verifies this local CLI/MCP path. It does **not** validate upstream keys, remote model behavior or automatic return to a real Desktop conversation. After a CLI/Desktop upgrade, repeat local tests and a small end-to-end task in the actual host you intend to use.
 
+## Dedicated CLI compatibility
+
+Run `python3 runtime/verify_all.py --module test_service_tier_wire` after changing the CLI pin or launch settings. This starts the actual executor and resumes its thread for a closed-book exam. A localhost server behind the ChatGPT relay checks the final `/v1/responses` body: both turns must send `priority` for `gpt-6.2-sol` and omit the field for `gpt-6.1-sol`. No ChatGPT credentials are required.
+
+On 0.171.0, `fast_mode` defaults to on; the model must also list the tier in its catalog. Unknown `-c` keys are normally ignored (rejected with `--strict-config`), so a successful launch alone cannot confirm that a setting took effect. For custom providers, disable remote compaction with `model_providers.<id>.capabilities.remote_compaction="unsupported"`. Reasoning-summary parameter support belongs in each catalog entry as `supports_reasoning_summary_parameter`; use `model_reasoning_summary="none"` to omit summaries on a turn.
+
 ## Skill validation
 
-Validate the Skill frontmatter/UI metadata and all linked references. Check actual discovery in the target Codex client; on the tested CLI 0.163.0, app-server `skills/list` with `forceReload=true` exposes the parsed Skill, enabled state, scope and MCP dependency without starting a model turn. For a global install, expect a single user-scoped `telos` at the installed path. This checks loading, not model behavior.
+Validate the Skill frontmatter/UI metadata and all linked references. Check actual discovery in the target Codex client; with the 0.171.0 baseline, use app-server `skills/list` with `forceReload=true` to inspect the parsed Skill, enabled state, scope and MCP dependency without starting a model turn. For a global install, expect a single user-scoped `telos` at the installed path. This checks loading, not model behavior.
 
 For substantial workflow changes, simulate realistic requests with an independent reviewer: ordinary advice, explicit development, audit-only findings, authorized repairs, inaccessible screenshots, duplicate callbacks, user pause, unsupported local effort and project child events. Inspect the concrete decisions rather than matching prose. Keep simulated evaluations distinct from real executor work → exam → supervisor acceptance tests; do not launch paid model tests merely to validate Skill metadata.
 
@@ -170,7 +176,7 @@ context behavior. Keep real paid calls out of the default test suite.
 
 ## CI
 
-GitHub Actions runs portable installer tests on Ubuntu and the runtime suite plus a fresh-install smoke test on macOS. The workflow uses Codex CLI 0.163.0 and a local stub model; it needs no repository secrets. Reports are retained as Actions artifacts, not committed source files. CI results are additional evidence, not a promise of compatibility with every machine/provider.
+GitHub Actions runs portable installer tests on Ubuntu and the runtime suite plus a fresh-install smoke test on macOS. The workflow uses Codex CLI 0.171.0 and a local stub model; it needs no repository secrets. Reports are retained as Actions artifacts, not committed source files. CI results are additional evidence, not a promise of compatibility with every machine/provider.
 
 ## 中文说明
 

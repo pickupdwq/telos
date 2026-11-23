@@ -8,6 +8,7 @@ from __future__ import annotations
 import functools
 import os
 from pathlib import Path
+import re
 import shutil
 import subprocess
 import sys
@@ -75,28 +76,42 @@ def _diagnostic(p, label, secrets):
     return f'Environment preflight failed before any model request at {label} (exit {p.returncode}): ' + (detail or 'no diagnostic output')
 
 
+def _check_fast_version(b, output):
+    from codex_login import MODELS_CLIENT_VERSION
+    # Prereleases of the first supported release may still lack its catalog.
+    match = re.fullmatch(r'codex-cli (\d+)\.(\d+)\.(\d+)(-[\w.-]+)?(?:\+[\w.-]+)?', output)
+    if match:
+        release = tuple(map(int, match.groups()[:3]))
+        if release > (0, 169, 1) or (release == (0, 169, 1) and not match[4]):
+            return
+    raise b.GateError('Fast mode for codex_login + gpt-6.2-sol requires Codex CLI 0.169.1+ '
+                      f'(found: {output[:120] or "unknown"}). Upgrade the dedicated CLI: npm install --prefix '
+                      f'"$HOME/.local/share/telos-cli" @openai/codex@{MODELS_CLIENT_VERSION}')
+
+
 def run(b, cli, cwd, env, profile, *, check_repo=False, secrets=(), timeout=20,
-        runner=None, sandbox_exec='/usr/bin/sandbox-exec'):
-    """Verify the chosen CLI, Python and Git in the exact work sandbox.
+        cli_only=False, require_fast=False, runner=None, sandbox_exec='/usr/bin/sandbox-exec'):
+    """Probe the CLI in the launch sandbox; work also checks Python and Git.
 
     Returns bounded version evidence. Raises b.GateError without making a model
     request when any dependency is missing or inaccessible.
     """
     runner = runner or subprocess.run
-    git = git_executable()
-    if not git:
-        raise b.GateError('Environment preflight failed before any model request: Git is not installed or not on PATH; install Apple Command Line Tools or Git')
-    probes = [
-        ('dedicated CLI', [str(cli), '--version']),
-        # Isolated mode keeps the task cwd/repository off sys.path and ignores
-        # PYTHON* startup environment, so repository json.py/ssl.py or startup
-        # customizations cannot run inside the no-model probe.
-        ('Python', [sys.executable, '-I', '-c', 'import json, ssl, sys; print(".".join(map(str, sys.version_info[:3])))']),
-        ('Git', [git, '--version']),
-    ]
-    if check_repo:
-        probes.append(('Git worktree', [git, '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
-                                       '-C', str(cwd), 'rev-parse', '--show-toplevel']))
+    probes = [('dedicated CLI', [str(cli), '--version'])]
+    if not cli_only:
+        git = git_executable()
+        if not git:
+            raise b.GateError('Environment preflight failed before any model request: Git is not installed or not on PATH; install Apple Command Line Tools or Git')
+        probes.extend([
+            # Isolated mode keeps the task cwd/repository off sys.path and ignores
+            # PYTHON* startup environment, so repository json.py/ssl.py or startup
+            # customizations cannot run inside the no-model probe.
+            ('Python', [sys.executable, '-I', '-c', 'import json, ssl, sys; print(".".join(map(str, sys.version_info[:3])))']),
+            ('Git', [git, '--version']),
+        ])
+        if check_repo:
+            probes.append(('Git worktree', [git, '-c', 'core.fsmonitor=false', '-c', 'core.hooksPath=/dev/null',
+                                           '-C', str(cwd), 'rev-parse', '--show-toplevel']))
     evidence = {'status': 'passed', 'cwd': str(cwd),
                 'interpreter': str(sys.executable), 'checks': []}
     for label, argv in probes:
@@ -111,6 +126,8 @@ def run(b, cli, cwd, env, profile, *, check_repo=False, secrets=(), timeout=20,
             raise b.GateError(_diagnostic(p, label, secrets))
         out = p.stdout.decode(errors='replace') if isinstance(p.stdout, bytes) else (p.stdout or '')
         err = p.stderr.decode(errors='replace') if isinstance(p.stderr, bytes) else (p.stderr or '')
+        if label == 'dedicated CLI' and require_fast:
+            _check_fast_version(b, _redact(out.strip(), secrets))
         if label == 'Git' and ('xcrun_db' in err or ("couldn't create cache file" in err and 'Operation not permitted' in err)):
             raise b.GateError(_diagnostic(p, label, secrets))
         evidence['checks'].append({'name': label, 'output': _redact(out.strip()[:240], secrets)})

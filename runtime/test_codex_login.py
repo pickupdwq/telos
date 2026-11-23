@@ -221,7 +221,9 @@ class RelayTests(unittest.TestCase):
     def setUp(self):
         self.home = tempfile.TemporaryDirectory()
         write_login(self.home.name)
-        self.binding = p.resolve_executor(config(), executor_profile='gpt_codex', available=lambda *_: True)
+        cfg = config()
+        cfg['profiles']['gpt_codex']['model'] = 'gpt-6.2-sol'
+        self.binding = p.resolve_executor(cfg, executor_profile='gpt_codex', available=lambda *_: True)
         self.captured = []
         self.status = [200]
         captured, status = self.captured, self.status
@@ -270,7 +272,7 @@ class RelayTests(unittest.TestCase):
             return response.headers.get('Content-Type'), response.read()
 
     def payload(self):
-        return {'model': 'gpt-6.1-sol', 'store': True, 'stream': False, 'previous_response_id': 'resp_old',
+        return {'model': self.binding['model'], 'service_tier': 'priority', 'store': True, 'stream': False, 'previous_response_id': 'resp_old',
                 'reasoning': {'effort': 'high'}, 'input': [{'type': 'message', 'role': 'user',
                                                             'content': [{'type': 'input_text', 'text': 'hi'}]}]}
 
@@ -279,6 +281,7 @@ class RelayTests(unittest.TestCase):
             ctype, raw = self.send(url, token, self.payload())
         sent = self.captured[0]
         self.assertEqual(sent['path'], '/responses')
+        self.assertEqual(sent['body'].get('service_tier'), 'priority')
         self.assertIn(ACCESS, sent['headers']['authorization'])
         self.assertEqual(sent['headers']['chatgpt-account-id'], 'acct-fixture')
         self.assertNotIn(token, json.dumps(sent))
@@ -304,6 +307,7 @@ class RelayTests(unittest.TestCase):
                          upstream_headers=self.upstream) as (url, token, _):
             _, raw = self.send(url, token, payload)
         sent = self.captured[0]['body']
+        self.assertEqual(sent.get('service_tier'), 'priority')
         self.assertEqual((sent['tools'], sent['tool_choice'], sent['store'], sent['stream']), ([], 'none', False, True))
         self.assertIsNone(policy.failure)
         self.assertEqual(len(policy.responses), 1)

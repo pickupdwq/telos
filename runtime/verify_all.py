@@ -50,6 +50,7 @@ MODULES = [
     'test_timing',
     'test_preflight',
     'test_service_tier',
+    'test_service_tier_wire',
     'test_compact',
     'test_mcp_contract',
     'test_integrity',

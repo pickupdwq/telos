@@ -9,6 +9,7 @@ from unittest.mock import patch
 
 import executor
 import preflight
+import project_environment
 import providers
 
 FAST = 'service_tier="priority"'
@@ -80,6 +81,36 @@ class ServiceTierTests(unittest.TestCase):
         self.assertNotIn(FAST, self._argv('local', 'gpt-6.2-sol'))
         self.assertNotIn(FAST, self._argv('ark', 'gpt-6.2-sol'))
         self.assertNotIn(FAST, self._argv('bailian', 'gpt-6.2-sol'))
+
+    def test_old_or_unidentified_cli_blocks_before_work_resume_or_exam(self):
+        contract = {'task': 'task', 'context': '', 'executor': binding()}
+        for version in ('codex-cli 0.169.0', 'codex-cli 0.169.1-alpha.1', 'unrecognized'):
+            for phase, thread in [('work', None), ('work', 'existing-thread'), ('exam', 'existing-thread')]:
+                with self.subTest(version=version, phase=phase, thread=thread):
+                    result = SimpleNamespace(returncode=0, stdout=version.encode(), stderr=b'')
+                    with patch.object(preflight, 'git_executable', return_value=sys.executable), \
+                            patch.object(preflight.subprocess, 'run', return_value=result) as probe, \
+                            patch.object(executor.subprocess, 'Popen') as launch:
+                        with self.assertRaises(project_environment.EnvironmentBlocked) as caught:
+                            executor.run(self.bridge, {**self.state, 'thread_id': thread}, contract, 'message',
+                                         'http://127.0.0.1:9/v1', 'KEY', 1234, phase=phase)
+                    self.assertIn('npm install --prefix "$HOME/.local/share/telos-cli" @openai/codex@0.171.0',
+                                  str(caught.exception))
+                    self.assertIn(version, str(caught.exception))
+                    self.assertEqual(caught.exception.evidence['phase'], phase)
+                    self.assertEqual(probe.call_args.args[0][-2:], [str(self.cli), '--version'])
+                    probe.assert_called_once()
+                    launch.assert_not_called()
+
+    def test_first_fast_capable_cli_is_allowed(self):
+        for version in ('0.169.1', '0.170.0', '0.171.0'):
+            def probe(command, **kwargs):
+                self.assertEqual(command[-2:], [str(self.cli), '--version'])
+                return SimpleNamespace(returncode=0, stdout=f'codex-cli {version}'.encode(), stderr=b'')
+            with self.subTest(version=version):
+                evidence = preflight.run(self.bridge, self.cli, self.work, {}, 'PROFILE',
+                                         cli_only=True, require_fast=True, runner=probe)
+                self.assertEqual(len(evidence['checks']), 1)
 
     def test_tier_is_frozen_into_every_launch_once_only(self):
         argv = self._argv('codex_login', 'gpt-6.2-sol')

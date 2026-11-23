@@ -57,7 +57,7 @@
       "experimental_supported_tools": [],
       "supports_search_tool": false,
       "default_service_tier": null,
-      "supports_reasoning_summaries": true,
+      "supports_reasoning_summary_parameter": true,
       "base_instructions": "You are an independent coding assistant. Follow the assigned task and workspace restrictions. Use available local tools to inspect, implement and verify the change. Report results accurately."
     },
     {
@@ -116,7 +116,7 @@
       "experimental_supported_tools": [],
       "supports_search_tool": false,
       "default_service_tier": null,
-      "supports_reasoning_summaries": true,
+      "supports_reasoning_summary_parameter": true,
       "base_instructions": "You are an independent coding assistant. Follow the assigned task and workspace restrictions. Use available local tools to inspect, implement and verify the change. Report results accurately."
     }
   ]

@@ -28,7 +28,7 @@
       "priority": 1,
       "base_instructions": "You are an independent coding assistant. Follow the assigned task and workspace restrictions. Use available local tools to inspect, implement and verify the change. Report results accurately.",
       "support_verbosity": false,
-      "supports_reasoning_summaries": false,
+      "supports_reasoning_summary_parameter": false,
       "experimental_supported_tools": [],
       "truncation_policy": {"mode": "tokens", "limit": 10000}
     }

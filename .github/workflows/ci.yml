@@ -43,7 +43,7 @@ jobs:
         with:
           node-version: '24'
       - name: Install dedicated CLI
-        run: npm install --prefix "$HOME/.local/share/telos-cli" @openai/codex@0.163.0
+        run: npm install --prefix "$HOME/.local/share/telos-cli" @openai/codex@0.171.0
       - name: Runtime regression (local models only)
         run: |
           mkdir -p .artifacts

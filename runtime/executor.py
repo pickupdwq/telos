@@ -213,11 +213,13 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
     # Provider IDs are persisted CLI protocol identities, not product labels.
     # Preserve them so frozen pre-rename sessions resume without switching identity.
     provider_id = 'ark_exam_loop' if 'backends' not in contract and 'executor' not in contract else 'exam_loop_' + binding['provider']
+    fast_login = binding['provider'] == 'codex_login' and binding['model'] == 'gpt-6.2-sol'
     settings = [f"model_provider={json.dumps(provider_id)}", f"model={json.dumps(binding['model'])}",
                 f"model_providers.{provider_id}.name={json.dumps('TELOS ' + binding['provider'])}",
                 f"model_providers.{provider_id}.base_url={json.dumps(endpoint)}",
                 f"model_providers.{provider_id}.env_key={json.dumps(key_env)}",
                 f'model_providers.{provider_id}.wire_api="responses"',
+                f'model_providers.{provider_id}.capabilities.remote_compaction="unsupported"',
                 'shell_environment_policy.exclude=["ARK_API_KEY","DEEPSEEK_API_KEY","DASHSCOPE_API_KEY","OPENAI_API_KEY","CODEX_API_KEY","TELOS_RELAY_TOKEN","EXAM_LOOP_RELAY_TOKEN"]',
                 # macOS cannot apply a second Seatbelt sandbox inside this process.
                 # The mandatory OUTER profile supplies the write/read/IPC restrictions.
@@ -230,8 +232,7 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
         if not catalog_path.exists():
             write_json(catalog_path, read_json(INSTALL / 'deepseek_models.json'))
         settings += [f'model_catalog_json={json.dumps(str(catalog_path))}',
-                     'model_reasoning_summary="none"', 'show_raw_agent_reasoning=true',
-                     'model_supports_reasoning_summaries=true']
+                     'model_reasoning_summary="none"', 'show_raw_agent_reasoning=true']
     if binding['provider'] == 'bailian':
         # Keep Bailian's tested tool/context capabilities in the isolated
         # session, never the supervisor; no remote compaction endpoint is used.
@@ -239,22 +240,11 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
         if not catalog_path.exists():
             write_json(catalog_path, read_json(INSTALL / 'bailian_models.json'))
         settings += [f'model_catalog_json={json.dumps(str(catalog_path))}',
-                     'features.remote_compaction=false', 'model_reasoning_summary="none"',
-                     'model_supports_reasoning_summaries=false']
+                     'model_reasoning_summary="none"']
     if binding['provider'] == 'local':
-        settings += ['features.remote_compaction=false', 'model_reasoning_summary="none"',
-                     'model_supports_reasoning_summaries=false']
-    if binding['provider'] == 'codex_login':
-        # The relay only forwards /responses; history stays in the CLI (store=false).
-        settings += ['features.remote_compaction=false']
-        # Fast tier: this login's own model catalog lists gpt-6.2-sol with
-        # service_tiers id "priority" (2x speed, increased plan usage). The
-        # request is forwarded by the relay; other models/providers keep the
-        # account default so their acceptance contracts are unchanged.
-        if binding['model'] == 'gpt-6.2-sol':
-            settings += ['service_tier="priority"']
-    if contract.get('reasoning_policy') and binding['provider'] not in ('local', 'bailian'):
-        settings += ['features.remote_compaction=false']
+        settings += ['model_reasoning_summary="none"']
+    if fast_login:
+        settings += ['service_tier="priority"']
     local_config = Path(state["worktree"]) / ".codex/config.toml"
     if local_config.exists():
         raise GateError("Project .codex/config.toml requires explicit compatibility review before isolated peer execution")
@@ -265,7 +255,7 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
         settings += ['project_doc_max_bytes=0']
     if exam:
         cwd.mkdir(exist_ok=True)
-        settings += ['project_doc_max_bytes=0', 'features.remote_compaction=false']
+        settings += ['project_doc_max_bytes=0']
     output = peer_home / (uuid.uuid4().hex + ".txt")
     pinned = data_path(HOME, '.local/share/{name}-cli') / 'node_modules/.bin/codex'
     cli = str(pinned) if pinned.exists() else shutil.which("codex")
@@ -319,15 +309,15 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
                               readable=[] if exam else contract.get('dependency_paths', []),
                               readable_cache=readable_cache)
     guidance = ''
-    if phase == 'work':
-        # One bounded probe per work invocation, in the same sandbox/env/cwd as
-        # the CLI. Exams never probe the worktree; audits use their isolated room.
+    if not exam or fast_login:
+        # Recheck the actual binary on resume. Exams probe only its version in the exam room.
         try:
             evidence = preflight.run(b, cli, cwd, env, profile,
                                      check_repo=(probe is None and contract.get('task_type') != 'audit'),
-                                     secrets=(key,))
+                                     cli_only=exam, require_fast=fast_login, secrets=(key,))
         except b.GateError as error:
-            raise project_environment.EnvironmentBlocked('base_preflight', str(error)) from None
+            raise project_environment.EnvironmentBlocked('base_preflight', str(error), phase=phase) from None
+    if not exam:
         project_evidence = preflight.project(b, contract, cwd, project_scratch, env, profile, phase='work')
         if project_evidence is not None and hasattr(b, 'materialize_commit'):
             public_check_scratch = project_scratch / 'public-check'
