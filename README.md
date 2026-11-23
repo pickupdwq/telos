@@ -315,6 +315,8 @@ new tasks opt into relevant applicability tags. Existing repository experience,
 model choices and acceptance gates remain compatible. No live task updates or
 cross-device synchronization are introduced.
 
+Run `telos dashboard --open` for a [local browser dashboard](docs/watch.md#browser-dashboard) with a flat task wall, animated supervisor-to-executor flows, per-attempt timers and task details.
+
 Use `telos watch` for a live, read-only executor view with task switching and
 history. In Ghostty or iTerm2 with Codex CLI inside tmux, tasks share one
 automatic right-side panel and focus stays on the supervisor. Outside tmux,
