@@ -171,9 +171,9 @@ compatibility was measured separately from the documented function-tool API.
 
 - Only the bridge relay reads the login, freshly for every upstream request. The executor sandbox sees only its per-job relay token. Telos never refreshes or writes the login: refresh tokens rotate on use, so a second refresher could sign Codex out. Open Codex once if its login is near expiry.
 - The relay fixes the backend's required shape (`store=false`, `stream=true`, encrypted reasoning kept in the CLI's own history) and forwards only `/responses`; remote compaction is disabled.
-- `gpt-6.1-sol` supports supervisor-selected `medium`, `high` and `xhigh` (aliases: `minimal`/`low` → `medium`, `max` → `xhigh`), checked live on 2026-11-23.
+- `gpt-6.1-sol` supports supervisor-selected `medium`, `high` and `xhigh` (aliases: `minimal`/`low` → `medium`, `max` → `xhigh`); `gpt-6.2-sol` supports `low`, `medium`, `high`, `xhigh` and `max` (alias `minimal` → `low`). Both checked live on 2026-11-23.
 
-`fallback_profile` names the profile to use when this one's provider is unavailable **when a task is created**. `codex_login` is unavailable when there is no ChatGPT login, the token expires within two hours, or a recent usage-limit (HTTP 429) rejection is still cooling down (its `Retry-After`, else 30 minutes). Other providers are always treated as available. Chains are followed in order; loops and unknown names are errors. An explicit `provider`/`model` is an exact request and skips the chain.
+`fallback_profile` names the profile to use when this one's provider is unavailable **when a task is created**. `codex_login` is unavailable when there is no ChatGPT login, the token expires within two hours, a recent usage-limit (HTTP 429) rejection is still cooling down (its `Retry-After`, else 30 minutes), or **the account's model catalog does not list the profile's model**. The catalog is the one Codex itself fetches (`/backend-api/codex/models`); Telos asks only when choosing a provider for a new task and caches the answer for 10 minutes per account. If the catalog cannot be fetched, the login counts as unavailable and the fallback is used. Other providers are always treated as available. Chains are followed in order; loops and unknown names are errors. An explicit `provider`/`model` is an exact request and skips the chain.
 
 ```json
 "profiles": {
@@ -186,7 +186,7 @@ compatibility was measured separately from the documented function-tool API.
 
 A created task freezes the binding it got and never switches provider while running: its encrypted reasoning history belongs to the account that produced it, and the closed-book exam resumes that same conversation. If the login stops working mid-task, the task stops with an explicit error; reassign it (`telos_project_reassign`) or open a new task, which then selects the fallback.
 
-本机 Codex 登录执行者用你自己 Codex 的 ChatGPT 账号额度，令牌只由 Telos 转发层在每次请求时读取，执行者沙箱拿不到；Telos 不刷新也不改写登录。开任务时若登录缺失、两小时内过期或刚被限额拒绝，就按 `fallback_profile` 改用备选（例如 14000 本地入口）。任务一旦开出就固定通道，中途不切换。
+本机 Codex 登录执行者用你自己 Codex 的 ChatGPT 账号额度，令牌只由 Telos 转发层在每次请求时读取，执行者沙箱拿不到；Telos 不刷新也不改写登录。开任务时若登录缺失、两小时内过期、刚被限额拒绝，或该账号的模型列表里没有配置的模型（例如没有 gpt-6.2-sol），就按 `fallback_profile` 改用备选（例如 14000 本地入口）；模型列表取不到时也按不可用处理。任务一旦开出就固定通道，中途不切换。
 
 ## Local executor endpoints
 

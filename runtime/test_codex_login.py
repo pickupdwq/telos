@@ -98,6 +98,49 @@ class LoginTests(unittest.TestCase):
         codex_login.mark_limited(state, None)
         self.assertFalse(codex_login.available(self.home.name, self.env, now=time.time() + 200, state_dir=state))
 
+    def test_model_must_be_in_the_login_catalog(self):
+        write_login(self.home.name)
+        state = Path(self.home.name) / 'state'
+        calls = []
+
+        def offered(*models):
+            def fetch(token, account):
+                calls.append((token, account))
+                return set(models)
+            return fetch
+        self.assertTrue(codex_login.available(self.home.name, self.env, state_dir=state, model='gpt-6.2-sol',
+                                              fetch=offered('gpt-6.2-sol', 'gpt-6.1-sol')))
+        self.assertIn(ACCESS, calls[0][0])
+        self.assertEqual(calls[0][1], 'acct-fixture')
+        # Cached briefly: a second check does not ask again.
+        self.assertFalse(codex_login.available(self.home.name, self.env, state_dir=state, model='gpt-6.3-sol',
+                                               fetch=offered()))
+        self.assertEqual(len(calls), 1)
+        # After the cache expires the catalog is fetched again.
+        later = time.time() + codex_login.MODELS_TTL_SECONDS + 1
+        self.assertFalse(codex_login.available(self.home.name, self.env, now=later, state_dir=state,
+                                               model='gpt-6.2-sol', fetch=offered('gpt-6.1-sol')))
+        self.assertEqual(len(calls), 2)
+        self.assertNotIn(ACCESS, (state / codex_login.MODELS_FILE).read_text())
+
+    def test_unknown_catalog_falls_back(self):
+        write_login(self.home.name)
+
+        def broken(token, account):
+            raise OSError('network down')
+        self.assertFalse(codex_login.available(self.home.name, self.env, model='gpt-6.2-sol', fetch=broken))
+        # Without a model, the catalog is not consulted.
+        self.assertTrue(codex_login.available(self.home.name, self.env, fetch=broken))
+
+    def test_catalog_cache_is_per_account(self):
+        write_login(self.home.name)
+        state = Path(self.home.name) / 'state'
+        self.assertTrue(codex_login.available(self.home.name, self.env, state_dir=state, model='gpt-6.2-sol',
+                                              fetch=lambda *_: {'gpt-6.2-sol'}))
+        write_login(self.home.name, account='acct-other')
+        self.assertFalse(codex_login.available(self.home.name, self.env, state_dir=state, model='gpt-6.2-sol',
+                                               fetch=lambda *_: {'gpt-6.1-sol'}))
+
     def test_prepare_fixes_backend_shape(self):
         request = codex_login.prepare({'model': 'gpt-6.1-sol', 'store': True, 'stream': False,
                                        'previous_response_id': 'resp_x', 'include': ['other']})
@@ -120,13 +163,35 @@ class BindingTests(unittest.TestCase):
     def test_fallback_follows_availability_only_at_creation(self):
         cfg = config()
         self.assertEqual(p.resolve_executor(cfg, available=lambda *_: True)['provider'], 'codex_login')
-        fallback = p.resolve_executor(cfg, available=lambda _, provider: provider != 'codex_login')
+        fallback = p.resolve_executor(cfg, available=lambda _, provider, model: provider != 'codex_login')
         self.assertEqual((fallback['provider'], fallback['local_endpoint']), ('local', 'asteam14000'))
         self.assertEqual(fallback['reasoning_effort'], 'high')
         # An explicit provider or model is an exact request, not a profile chain.
         explicit = p.resolve_executor(cfg, provider='codex_login', model='gpt-6.1-sol',
                                       available=lambda *_: False)
         self.assertEqual(explicit['provider'], 'codex_login')
+
+    def test_selection_passes_the_profile_model(self):
+        cfg = config()
+        cfg['profiles']['gpt_codex']['model'] = 'gpt-6.2-sol'
+        seen = []
+
+        def available(_, provider, model):
+            seen.append((provider, model))
+            return model == 'gpt-6.2-sol'
+        self.assertEqual(p.resolve_executor(cfg, available=available)['model'], 'gpt-6.2-sol')
+        self.assertEqual(seen, [('codex_login', 'gpt-6.2-sol')])
+        missing = p.resolve_executor(cfg, available=lambda _, provider, model: provider != 'codex_login')
+        self.assertEqual(missing['provider'], 'local')
+
+    def test_gpt62_dynamic_efforts(self):
+        import effort_policy
+        cfg = config()
+        cfg['profiles']['gpt_codex']['model'] = 'gpt-6.2-sol'
+        binding = p.resolve_executor(cfg, available=lambda *_: True)
+        policy = effort_policy.freeze(binding, {'dynamic_reasoning_enabled': True})
+        self.assertEqual(policy['supported_efforts'], ['low', 'medium', 'high', 'xhigh', 'max'])
+        self.assertEqual(policy['initial_effort'], 'high')
 
     def test_fallback_chain_errors_are_explicit(self):
         cfg = config()

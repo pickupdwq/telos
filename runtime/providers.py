@@ -270,7 +270,8 @@ def select_profile(cfg, profile, available=None):
     Only creation-time selection: a task freezes the binding it got, and a
     running task never switches provider (its encrypted history is bound to
     the account that produced it). Today only codex_login has an availability
-    probe; every other provider is treated as available.
+    probe (login, usage-limit cooldown and the account's model catalog); every
+    other provider is treated as available.
     """
     available = provider_available if available is None else available
     profiles = cfg.get('profiles', {})
@@ -285,19 +286,20 @@ def select_profile(cfg, profile, available=None):
         fallback = settings.get('fallback_profile')
         if fallback is not None and (not isinstance(fallback, str) or fallback not in profiles):
             raise ProviderError(f'Unknown fallback_profile for {profile}: {fallback}')
-        if fallback is None or available(cfg, settings.get('provider')):
+        if fallback is None or available(cfg, settings.get('provider'), settings.get('model')):
             return profile
         profile = fallback
 
 
-def provider_available(cfg, provider, home=None, environ=None, state_dir=None):
+def provider_available(cfg, provider, model=None, home=None, environ=None, state_dir=None):
+    """codex_login: signed in, not cooling down, and (with ``model``) offered by that account."""
     if provider != 'codex_login':
         return True
     import codex_login
     from identity import runtime_path
     home = Path.home() if home is None else home
     state_dir = runtime_path(home, 'STATE', environ) if state_dir is None else state_dir
-    return codex_login.available(home, environ, state_dir=state_dir)
+    return codex_login.available(home, environ, state_dir=state_dir, model=model)
 
 
 def public_contract(contract, cfg):

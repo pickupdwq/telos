@@ -8,6 +8,7 @@ token is missing or close to expiry, the provider is unavailable and profile
 fallback (or the user reopening Codex) applies.
 """
 import base64
+import hashlib
 import json
 import os
 from pathlib import Path
@@ -26,6 +27,13 @@ REQUEST_MARGIN_SECONDS = 60
 # After a usage-limit rejection without Retry-After, prefer the fallback for this long.
 LIMIT_COOLDOWN_SECONDS = 1800
 LIMIT_FILE = 'codex-login-limit.json'
+# The login's model catalog, as Codex itself fetches it. Telos asks only when
+# choosing a provider for a new task, and caches the answer briefly.
+MODELS_URL = BASE_URL + '/models'
+MODELS_CLIENT_VERSION = '0.171.0'
+MODELS_FILE = 'codex-login-models.json'
+MODELS_TTL_SECONDS = 600
+MODELS_TIMEOUT = 15
 
 
 def auth_path(home, environ=None):
@@ -64,14 +72,65 @@ def login(home, environ=None, now=None, margin=REQUEST_MARGIN_SECONDS):
     return token.strip(), account if isinstance(account, str) and account else None, expires
 
 
-def available(home, environ=None, now=None, state_dir=None):
-    """Whether a new task should use this login rather than its fallback."""
+def available(home, environ=None, now=None, state_dir=None, model=None, fetch=None):
+    """Whether a new task should use this login rather than its fallback.
+
+    With ``model``, the login's own model catalog must list it. An unknown
+    catalog (network failure) counts as unavailable, so the task falls back.
+    """
     now = time.time() if now is None else now
     try:
-        login(home, environ, now, margin=SELECT_MARGIN_SECONDS)
+        token, account, _ = login(home, environ, now, margin=SELECT_MARGIN_SECONDS)
     except ProviderError:
         return False
-    return limited_until(state_dir) <= now
+    if limited_until(state_dir) > now:
+        return False
+    if model is None:
+        return True
+    models = catalog(token, account, state_dir, now=now, fetch=fetch)
+    return models is not None and model in models
+
+
+def catalog(token, account, state_dir=None, now=None, fetch=None):
+    """Model slugs this login offers, or None when unknown."""
+    now = time.time() if now is None else now
+    identity = hashlib.sha256((account or token).encode()).hexdigest()[:16]
+    path = Path(state_dir) / MODELS_FILE if state_dir is not None else None
+    if path is not None:
+        try:
+            cached = json.loads(path.read_text())
+            if (cached.get('identity') == identity and isinstance(cached.get('models'), list)
+                    and 0 <= now - cached.get('at', 0) < MODELS_TTL_SECONDS):
+                return set(cached['models'])
+        except (OSError, ValueError, AttributeError):
+            pass
+    try:
+        models = (fetch or fetch_models)(token, account)
+    except Exception:  # noqa: BLE001 - any failure means "unknown", never a crash
+        return None
+    if path is not None:
+        try:
+            path.parent.mkdir(parents=True, exist_ok=True, mode=0o700)
+            tmp = path.with_name(path.name + '.tmp')
+            tmp.write_text(json.dumps({'identity': identity, 'at': now, 'models': sorted(models)}))
+            os.replace(tmp, path)
+        except OSError:
+            pass
+    return set(models)
+
+
+def fetch_models(token, account):
+    import urllib.request
+    headers = {'Authorization': 'Bearer ' + token}
+    if account:
+        headers['chatgpt-account-id'] = account
+    request = urllib.request.Request(MODELS_URL + '?client_version=' + MODELS_CLIENT_VERSION, headers=headers)
+    with urllib.request.urlopen(request, timeout=MODELS_TIMEOUT) as response:
+        data = json.loads(response.read(4 << 20))
+    items = data.get('models') if isinstance(data, dict) else data
+    if not isinstance(items, list):
+        raise ValueError('Unexpected model catalog')
+    return {str(m.get('slug') or m.get('id')) for m in items if isinstance(m, dict) and (m.get('slug') or m.get('id'))}
 
 
 def limited_until(state_dir):

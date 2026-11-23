@@ -1,3 +1,15 @@
+## 3.13.1 — 2026-11-23
+
+- `codex_login` availability now also requires the profile's model to be in
+  the ChatGPT account's own model catalog (`/backend-api/codex/models`, as
+  Codex fetches it). A profile such as `gpt-6.2-sol` therefore falls back (for
+  example to the 14000 endpoint) when the account does not offer that model,
+  instead of failing after dispatch. The catalog is fetched only when a new
+  task chooses its provider, cached for 10 minutes per account, and an
+  unreachable catalog counts as unavailable.
+- `gpt-6.2-sol` through the Codex login supports supervisor-selected `low`,
+  `medium`, `high`, `xhigh` and `max` (alias `minimal` → `low`), checked live.
+
 ## 3.13.0 — 2026-11-23
 
 - **Claude Code can be the original supervisor.** `telos claude install` builds a
