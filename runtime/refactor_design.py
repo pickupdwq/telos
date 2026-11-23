@@ -1,6 +1,7 @@
 """Evidence and public design documents for a read-only refactoring meeting."""
 from pathlib import PurePosixPath
 from urllib.parse import quote
+import hashlib
 import os
 
 from providers import ProviderError as GateError
@@ -100,8 +101,9 @@ def validate_design(discovery, design):
     if flows(design['detailed_prd']) != current or flows(design['code_index']) != current:
         invalid('Detailed PRD and code index must cover the same business flows as the current PRD.')
     index = repo_path(design['index_path'])
-    for row in design['structure']:
-        repo_path(row['path'].rstrip('/'))
+    layout = [repo_path(row['path'].rstrip('/')) for row in design['structure']]
+    if len(layout) != len(set(layout)):
+        invalid('Describe each module path once, with its distinct responsibility.')
     for row in design['code_index']:
         for path in row['paths']:
             if repo_path(path) == index:
@@ -143,7 +145,7 @@ def index_block(design):
     return '\n'.join(lines + ['', '<!-- /telos:codemap -->'])
 
 
-def documents(discovery, design=None):
+def documents(discovery, design=None, discussion=None):
     lines = ['# 现状 PRD', '', '走查版本：' + discovery['source_commit'], '', '## 全程序走查', '']
     for row in discovery['walkthrough']:
         lines.append(f"- {', '.join(row['paths'])} [{row['status']}]：{row['finding']}")
@@ -160,19 +162,41 @@ def documents(discovery, design=None):
     lines.extend(f"- {r['path']}：{r['responsibility']}" for r in design['structure'])
     lines += ['', '## 技术选型', '']
     lines.extend(f"- {r['choice']}：{r['rationale']}" for r in design['technology'])
+    if discussion:
+        lines += ['', '## 讨论结论', '', discussion['rationale']]
+        for key, title in [('requirements', '需求'), ('implementation', '实现'), ('workstreams', '分工'), ('verification', '验证')]:
+            lines += ['', '### ' + title, '']
+            lines.extend('- ' + point for point in discussion['plan'][key])
+        for item in discussion['resolutions']:
+            lines += ['', '问：' + item['question'], '', '答：' + item['answer']]
     lines += ['', '## AI 代码索引', '', '仓库内路径：' + design['index_path'], '', index_block(design)]
     docs['refactor-design.md'] = '\n'.join(lines) + '\n'
     return docs
 
 
-def write_documents(folder, discovery, design=None):
+def write_documents(folder, discovery, design=None, discussion=None):
     """Publish derived, human-readable copies; frozen records remain the authority."""
     from tempfile import NamedTemporaryFile
     folder.mkdir(parents=True, exist_ok=True, mode=0o700)
-    for name, contents in documents(discovery, design).items():
+    hashes = {}
+    for name, contents in documents(discovery, design, discussion).items():
         with NamedTemporaryFile(mode='w', encoding='utf-8', dir=folder, delete=False) as out:
             out.write(contents)
         os.replace(out.name, folder / name)
+        hashes[name] = hashlib.sha256(contents.encode('utf-8')).hexdigest()
+    return hashes
+
+
+def verify_documents(folder, hashes):
+    for name, expected in hashes.items():
+        try:
+            with (folder / name).open('rb') as stream:
+                if hashlib.file_digest(stream, 'sha256').hexdigest() == expected:
+                    continue
+        except OSError:
+            pass
+        raise GateError('Review document changed or is missing: ' + name + '. Review a new proposal before dispatch.',
+                        code='refactor_document_changed', next_action='telos_meeting_open')
 
 
 def check_index(root, design):
@@ -191,3 +215,19 @@ def check_index(root, design):
     except (OSError, UnicodeError, RuntimeError) as exc:
         error = 'Unreadable code index: ' + str(exc)
     return {'id': 'telos_refactor_code_index', 'status': 'failed' if error else 'passed', 'stderr': error}
+
+
+def check_structure(root, design):
+    missing = []
+    for row in design['structure']:
+        name = row['path']
+        path = root / name
+        try:
+            local = path.resolve().is_relative_to(root.resolve())
+            if local and (path.is_dir() if name.endswith('/') else path.exists()):
+                continue
+        except (OSError, RuntimeError):
+            pass
+        missing.append(name)
+    return {'id': 'telos_refactor_structure', 'status': 'failed' if missing else 'passed',
+            'stderr': 'Missing agreed module paths: ' + ', '.join(missing[:10]) if missing else ''}

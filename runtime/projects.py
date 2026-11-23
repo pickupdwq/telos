@@ -1448,6 +1448,7 @@ class Projects:
             checks = b.executable_checks(check_contract, target)
             if design := check_contract.get('planning', {}).get('refactor_design'):
                 checks.append(refactor_design.check_index(target, design))
+                checks.append(refactor_design.check_structure(target, design))
             packet = {'project_id': pid, 'commit': commit, 'pins': p['integration']['pins'],
                       'contract_hash': p['contract_hash'], 'checks': checks,
                       'deliveries': deliveries,

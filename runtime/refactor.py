@@ -3,6 +3,7 @@ from pathlib import Path
 import json
 import re
 import time
+import refactor_design
 
 from codex_rpc import RPCError
 from providers import ProviderError as GateError
@@ -123,6 +124,9 @@ def check_revision(b, project, revision):
     if info is None or revision != info['revision']:
         raise GateError('The refactoring plan changed or does not exist. Show the current plan.',
                         code='refactor_plan_mismatch', next_action='telos_project_status')
+    if not info['confirmed']:
+        planning = project['contract']['planning']
+        refactor_design.verify_documents(b.project_manager().path(planning['meeting_id']).parent, planning['document_hashes'])
     return info
 
 

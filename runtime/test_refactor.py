@@ -200,6 +200,16 @@ class RefactorTests(unittest.TestCase):
         self.assertEqual(refactor_design.check_index(self.repo, design)['status'], 'passed')
         (self.repo / 'calc.py').unlink()
         self.assertIn('calc.py', refactor_design.check_index(self.repo, design)['stderr'])
+        self.assertIn('calc.py', refactor_design.check_structure(self.repo, design)['stderr'])
+
+    def test_editing_a_displayed_prd_invalidates_confirmation(self):
+        view = self.open()
+        info = view['refactor']
+        Path(info['documents']['design']).write_text('Different architecture')
+        with patch('refactor.latest_exchange', return_value=('u1', info['confirm_text'], '')), self.assertRaises(b.GateError) as error:
+            self.start(view['project_id'], confirm_refactor=info['revision'])
+        self.assertEqual(error.exception.code, 'refactor_document_changed')
+        self.assertEqual(self.project(view['project_id'])['jobs_started'], 0)
 
     def test_full_product_flow_checks_the_shipped_code_map_at_integration(self):
         for correct in (False, True):
@@ -220,6 +230,8 @@ class RefactorTests(unittest.TestCase):
                 review = test_projects.ProjectTests.check_sync(self, pid)
                 check = next(row for row in review['evidence']['checks'] if row['id'] == 'telos_refactor_code_index')
                 self.assertEqual(check['status'], 'passed' if correct else 'failed')
+                layout = next(row for row in review['evidence']['checks'] if row['id'] == 'telos_refactor_structure')
+                self.assertEqual(layout['status'], 'passed')
                 if correct:
                     result = pm.finish(pid, review['packet_id'], self.scores(), [], 'Reviewed integrated behavior and navigation.')
                     self.assertTrue(result['accepted'])

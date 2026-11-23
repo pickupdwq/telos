@@ -342,9 +342,13 @@ class Meetings:
                     raise b.GateError('Every recorded question must be resolved before implementation')
                 conclusion = {**args, 'arguments_hash': b.digest(args), 'report_ids': [r['report_id'] for r in reports],
                               'source_commit': p['base_commit'], 'at': time.time(), 'accepted': False}
-                conclusion['id'] = b.digest(conclusion)
                 if discovery is not None:
-                    refactor_design.write_documents(self.projects.path(meeting_id).parent, discovery, refactor_design_plan)
+                    by_question = {a['question_id']: a['answer'] for a in answers}
+                    discussion = {'plan': plan, 'rationale': rationale, 'resolutions': [
+                        {'question': q['question'], 'answer': by_question[q['id']]} for q in questions]}
+                    conclusion['document_hashes'] = refactor_design.write_documents(
+                        self.projects.path(meeting_id).parent, discovery, refactor_design_plan, discussion)
+                conclusion['id'] = b.digest(conclusion)
                 b.write_json(self.projects.path(meeting_id).parent / 'discussion-conclusion.json', conclusion)
                 p.update(conclusion=conclusion, phase='discussed', finished_at=time.time())
                 self.projects.save(p)
@@ -391,8 +395,10 @@ class Meetings:
         args['context'] = args.get('context', '') + '\nConfirmed public meeting plan:\n' + b.encoded({k: conclusion[k] for k in ('plan', 'answers', 'rationale')})
         args['_planning'] = {'mode': 'multi_executor', 'meeting_id': mid, 'conclusion_id': conclusion['id']}
         if discovery is not None:
+            refactor_design.verify_documents(self.projects.path(mid).parent, conclusion['document_hashes'])
             args['_planning'].update(refactor_design=conclusion['refactor_design'], source_commit=p['base_commit'],
-                                     current_prd=discovery['current_prd'], discovery_hash=b.digest(discovery))
+                                     current_prd=discovery['current_prd'], discovery_hash=b.digest(discovery),
+                                     document_hashes=conclusion['document_hashes'])
 
     def call(self, name, args, caller):
         if name == 'telos_meeting_open':
