@@ -228,6 +228,18 @@ cd /你的/干净Git项目/绝对路径
 
 注册后重新打开已运行的 Codex 客户端，确认加载了 `telos_*` 工具。Telos 通过可信 MCP 元数据绑定原始 Codex 会话；没有这类元数据的通用 MCP 客户端不能直接替代大总管宿主。
 
+### 5b. 改用 Claude Code 当大总管（3.13.0）
+
+```sh
+telos claude install          # 生成本地插件（Telos MCP、Skill、钩子）并用 claude CLI 安装
+cd /你的/干净Git项目/绝对路径
+telos claude run              # 等同 claude --model opus --effort xhigh
+```
+
+安装后重启已打开的 Claude Code。Telos 用插件钩子确认每次调用来自这个 Claude 会话、当前模型和推理档位（默认只接受 Opus 5.5 的 `xhigh`/`max`，可在 `claude_supervisor` 中修改，设为 `null` 关闭）；子智能体不能调用 Telos。任务完成后由插件的后台钩子唤醒 Claude，不需要轮询。关闭 Claude 后事件会保留，用 `telos claude run --resume <会话ID>` 恢复即可收到。说明见 [Claude Code 大总管](skills/telos/references/claude-code.md)。
+
+执行者想用本机 Codex 的 ChatGPT 账号额度，把默认执行者设为 `codex_login`，并用 `fallback_profile` 指定登录不可用时的备选（例如 14000 本地入口），见[配置说明](docs/configuration.md#codex-login-executor-and-fallback--本机-codex-登录执行者与备选)。
+
 ### 6. 用自然语言发起任务
 
 > $telos 实现这个功能：[需求]。沿用已配置的默认执行者。开始前冻结有针对性的真实检查和私有问卷，完成后由你检查源码与测试证据，在预算内返工直到验收通过。最后告诉我工作区位置和提交。

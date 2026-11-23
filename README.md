@@ -230,6 +230,18 @@ cd /absolute/path/to/your-clean-git-project
 
 Restart an already-open Codex client after MCP registration. Confirm that the `telos_*` tools are loaded. Telos binds tasks to the original Codex thread using trusted MCP metadata; arbitrary MCP clients without that metadata cannot act as an equivalent supervisor.
 
+### 5b. Use Claude Code as the supervisor (3.13.0)
+
+```sh
+telos claude install          # builds a local plugin (Telos MCP, Skill, hooks) and installs it with the claude CLI
+cd /absolute/path/to/your-clean-git-project
+telos claude run              # same as: claude --model opus --effort xhigh
+```
+
+Restart an already-open Claude Code afterwards. Plugin hooks attest that each Telos call comes from this Claude session, with its current model and effort (by default only Opus 5.5 at `xhigh`/`max`; change `claude_supervisor`, or set it to `null` to disable). Subagents cannot call Telos. When a task event is ready, the plugin's background hook wakes Claude; no polling. Events survive closing Claude: resume with `telos claude run --resume <session id>`. See [Claude Code supervision](skills/telos/references/claude-code.md).
+
+To run executors on this Mac's own Codex ChatGPT plan, use a `codex_login` profile with a `fallback_profile` (for example the 14000 local endpoint) for when the login is unavailable; see [configuration](docs/configuration.md#codex-login-executor-and-fallback--本机-codex-登录执行者与备选).
+
 ### 6. Ask for a task
 
 > $telos Implement this feature: [requirements]. Reuse the configured default executor. Freeze relevant executable checks and the private questionnaire before sending work. Review the resulting code and test evidence, and continue until accepted or the configured budget is exhausted. Report the worktree and commit.
