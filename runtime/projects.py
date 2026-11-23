@@ -818,6 +818,7 @@ class Projects:
                         b.create_session(repo=p['repo'], task=t['task'], questions=t['questions'], checks=t['checks'],
                                          context=t['context'], model=t['model'], threshold=t['threshold'], max_rounds=t['max_rounds'],
                                          notify=bool(p['owner']), owner_thread_id=p['owner']['thread_id'] if p['owner'] else None,
+                                         _owner=p['owner'],
                                          provider=t['provider'], exam_provider=t.get('exam_provider'), exam_model=t.get('exam_model'),
                                          assessment_mode=t.get('assessment_mode', 'closed_book'), review_paths=t.get('review_paths'),
                                          dependency_paths=t.get('dependency_paths'), command_network=t.get('command_network', False),

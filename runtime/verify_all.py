@@ -32,6 +32,7 @@ MODULES = [
     'test_rsi',
     'test_providers',
     'test_codex_login',
+    'test_claude_supervisor',
     'test_closed_book',
     'test_maintenance',
     'test_progress_guard',

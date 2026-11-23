@@ -1,4 +1,4 @@
-"""Identity policy for the existing GPT supervisor, never a second model client."""
+"""Identity policy for the original supervisor (Codex GPT, or Claude Code via claude_supervisor), never a second model client."""
 import re
 
 from providers import ProviderError
@@ -34,6 +34,10 @@ def verify_thread(thread, cfg):
 
 
 def verify_owner(b, owner):
+    if owner and owner.get('transport') == 'claude_hook':
+        import claude_supervisor
+        claude_supervisor.verify(b, owner)
+        return
     if not owner or policy(b.config()) is None:
         return
     with b.owner_rpc(owner) as rpc:

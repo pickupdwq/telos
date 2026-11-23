@@ -1,3 +1,43 @@
+## 3.13.0 — 2026-11-23
+
+- **Claude Code can be the original supervisor.** `telos claude install` builds a
+  local Claude Code plugin (Telos MCP server, the bundled Skill and hooks) and
+  installs it with the `claude` CLI; `telos claude run` starts Claude Code with
+  the configured supervisor model and effort (default Opus 5.5, `xhigh`).
+  `claude_supervisor` (`{"models": [...], "efforts": [...]}` or `null` to
+  disable) sets which Claude models and efforts may supervise.
+  - Identity: the supervisor is the Claude session that started the MCP server
+    (`CLAUDE_CODE_SESSION_ID`). A PreToolUse hook attests each Telos tool call
+    with its process, effort and current model; the attestation is single-use
+    and bound to the call's `toolUseId`. Opening a task and grading re-check
+    the model/effort. Subagent calls are denied in the hook and in the server.
+  - Callbacks: SessionStart and Stop hooks run a background waiter
+    (`asyncRewake`). A pending event for this Claude process is marked
+    delivered and wakes the conversation with the usual event text. An event
+    that is not received is re-offered at the next turn boundary, at most three
+    times, then reported as `needs_receipt`. With no Claude process listening,
+    `return_channel.health` reports `waiting_for_owner` /
+    `resume_original_claude_session`.
+  - Project and meeting children inherit the Claude owner bound when the
+    supervisor opened them. Codex owners are unchanged.
+- **Executor via this Mac's own Codex ChatGPT login** (`provider:
+  "codex_login"`, fixed endpoint `https://chatgpt.com/backend-api/codex`,
+  `billing: chatgpt_plan`). Only the bridge relay reads
+  `$CODEX_HOME/auth.json`, freshly for each request; the executor sandbox
+  never sees it and Telos never refreshes it. The relay applies the backend's
+  required `store=false`/`stream=true`, keeps encrypted reasoning in the CLI's
+  history and supplies the missing `Content-Type`. `gpt-6.1-sol` supports
+  supervisor-selected `medium`/`high`/`xhigh`.
+- **`fallback_profile`**: when a profile's provider is unavailable at task
+  creation (no ChatGPT login, token expiring within two hours, or a usage-limit
+  rejection still cooling down) the next profile in the chain is used, for
+  example the 14000 local endpoint. Tasks never switch provider once created.
+- Closed-book exams accept the output-free `response.metadata` stream event from
+  the Codex backend, directly or through a local endpoint serving a GPT model.
+- `verify_live_providers.py` accepts `--profile` (repeatable) and `--config`.
+  Live checks on 2026-11-23: work → checks → same-thread closed-book exam
+  passed through the Codex login (23 s) and through the 14000 endpoint (22 s).
+
 ## 3.12.4 — 2026-11-04
 
 - Bound every MCP result returned to the supervisor at `mcp_result_max_bytes`

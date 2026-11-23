@@ -2,7 +2,7 @@
 name: telos
 description: "Supervise Telos delegated development, scoped system audits (code, APIs, page interactions and visual evidence), and confirmed-bug repairs through MCP. Use for requests to use Telos, coordinate independent executors with evidence-based acceptance, or continue an existing TELOS_EVENT. Ordinary coding, general review and questions about Telos do not by themselves authorize starting an executor."
 metadata:
-  version: "3.12.4"
+  version: "3.13.0"
 ---
 
 # Telos
@@ -17,6 +17,7 @@ The current conversation is the supervisor. Understand the user's goal, coordina
 - Before dispatching a new task, read [executors](references/executors.md) to reuse the installed configuration.
 - For role-based assignments and reusable lessons, read [roles and shared experience](references/roles-experience.md). Use `telos_roles` to choose only the jobs the task needs; preserve existing model preferences and acceptance gates.
 - For any completion event, repair loop or final acceptance, read [acceptance](references/acceptance.md). Resume the existing task rather than opening a replacement.
+- When this conversation is Claude Code, also read [Claude Code supervision](references/claude-code.md) before the first Telos call: identity, subagent limits and how callbacks wake you differ from Codex.
 
 Read only the references relevant to this stage. Use the connected `telos_*` tool schemas for current arguments; this skill is workflow guidance, not another tool catalog. Explicit user instructions and already granted authorization take precedence over skill preferences; runtime constraints still apply.
 

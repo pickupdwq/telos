@@ -276,7 +276,7 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
     if exam or probe:
         args += ["--skip-git-repo-check", "--ignore-rules"]
     args += ["-o", str(output), "-"]
-    initial = (f"You are an independent coding session using {binding['model']}, communicating with the GPT supervisor through a local MCP bridge. "
+    initial = (f"You are an independent coding session using {binding['model']}, communicating with the original supervisor through a local MCP bridge. "
                "Work only on the specified task in this isolated git worktree. Do not use subagents, OMX team, MCP, "
                "or read reviewer materials. Leave your changes for the bridge to snapshot; do not push, merge, or deploy. "
                "Report your work to the supervisor for independent verification.\n"
