@@ -31,6 +31,7 @@ MODULES = [
     'test_shared_experience',
     'test_rsi',
     'test_providers',
+    'test_codex_login',
     'test_closed_book',
     'test_maintenance',
     'test_progress_guard',

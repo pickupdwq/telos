@@ -570,8 +570,12 @@ def _normalize_bailian_request(request, binding):
 @contextlib.contextmanager
 def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=None, diagnostics=None,
                 usage_ledger=None, usage_context=None, budget_failure=None, closeout=None, activity_recorder=None,
-                reasoning_effort=None):
-    """Only the bridge holds upstream credentials. No arbitrary URL/proxy methods."""
+                reasoning_effort=None, upstream_headers=None):
+    """Only the bridge holds upstream credentials. No arbitrary URL/proxy methods.
+
+    ``upstream_headers`` (codex_login only) returns ``(headers, secret)`` read
+    fresh for each upstream request; ``secret`` is redacted like ``key``.
+    """
     if reasoning_effort is not None:
         from providers import EFFORTS
         if (not isinstance(reasoning_effort, str) or reasoning_effort not in EFFORTS
@@ -580,6 +584,10 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
     token = secrets.token_urlsafe(48)
     local = binding is not None and binding.get('provider') == 'local'
     bailian = binding is not None and binding.get('provider') == 'bailian'
+    chatgpt = binding is not None and binding.get('provider') == 'codex_login'
+    if chatgpt != (upstream_headers is not None):
+        raise ValueError('Codex login requests need their per-request login headers, and only they may use them')
+    secrets_seen = [key]
     context = usage_context or {}
     work_guidance = (context.get('phase') == 'work' and policy is None
                      and not (local and binding.get('wire_api') == 'chat'))
@@ -604,7 +612,7 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
         def do_POST(self):
             if not hmac.compare_digest(self.headers.get('Authorization', ''), 'Bearer ' + token):
                 self.send_error(403); return
-            allowed = ('/v1/responses',) if policy or local or bailian or reasoning_effort is not None else ('/v1/responses', '/v1/responses/compact')
+            allowed = ('/v1/responses',) if policy or local or bailian or chatgpt or reasoning_effort is not None else ('/v1/responses', '/v1/responses/compact')
             if self.path not in allowed:
                 self.send_error(404); return
             if budget_failure and budget_failure.get('message'):
@@ -665,6 +673,12 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                 if bailian:
                     body_object = json.loads(body)
                     _normalize_bailian_request(body_object, binding)
+                if chatgpt:
+                    # Before the exam policy, so its recorded request hash
+                    # covers the exact body that is sent upstream.
+                    import codex_login
+                    body_object = json.loads(body)
+                    codex_login.prepare(body_object)
                 if reasoning_effort is not None:
                     # The worker's CLI/history cannot override the supervisor's
                     # committed per-job selection. Normalize before all adapters.
@@ -736,7 +750,12 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                     body = _apply_work_guidance(
                         body, usage_ledger=usage_ledger, request_id=request_id, closeout=closeout)
                 headers = {'Content-Type': 'application/json'}
-                if key:
+                if chatgpt:
+                    login_headers, login_secret = upstream_headers()
+                    if login_secret not in secrets_seen:
+                        secrets_seen.append(login_secret)
+                    headers.update(login_headers)
+                elif key:
                     headers['Authorization'] = 'Bearer ' + key
                 req = urllib.request.Request(endpoint.rstrip('/') + suffix, data=body, headers=headers)
                 try:
@@ -755,6 +774,8 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                     except Exception:
                         failed_usage = None
                     complete('failed', failed_usage, 'http_' + str(error.code))
+                    if chatgpt and error.code == 429:
+                        upstream_headers.limited(error.headers.get('Retry-After') if error.headers else None)
                     # Never return arbitrary provider diagnostics or redirect locations.
                     if policy and (error.code in (408, 429) or error.code >= 500):
                         policy.transport_error = 'Exam endpoint HTTP ' + str(error.code)
@@ -763,6 +784,9 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                     track_response(response)
                     validated = None
                     content_type = response.headers.get('Content-Type', 'application/json')
+                    if chatgpt and not response.headers.get('Content-Type'):
+                        # This backend omits Content-Type; its requests are always streamed.
+                        content_type = 'text/event-stream'
                     if chat_request is not None:
                         from chat_adapter import convert, encode
                         raw = response.read(16 * 1024 * 1024 + 1)
@@ -854,7 +878,10 @@ def model_relay(endpoint, key, timeout=180, policy=None, binding=None, validate=
                 complete('failed', seen_usage, 'protocol' if seen_usage is not None else 'transport')
                 if diagnostics is not None:
                     detail = str(error).replace(token, '[REDACTED]')
-                    diagnostics['failure'] = (detail.replace(key, '[REDACTED]') if key else detail)[:600]
+                    for secret in secrets_seen:
+                        if secret:
+                            detail = detail.replace(secret, '[REDACTED]')
+                    diagnostics['failure'] = detail[:600]
                 if policy:
                     # The private policy error is consumed by the bridge, not by
                     # a model; provider output cannot become an executable event.

@@ -10,6 +10,10 @@ CAPABILITIES = {
         'supported_efforts': ['low', 'high', 'max'],
         'aliases': {'minimal': 'low', 'medium': 'high', 'xhigh': 'high'},
         'source': 'https://help.aliyun.com/zh/model-studio/qwen-api-via-openai-responses'},
+    'codex_login:gpt-6.1-sol:responses': {
+        'supported_efforts': ['medium', 'high', 'xhigh'],
+        'aliases': {'minimal': 'medium', 'low': 'medium', 'max': 'xhigh'},
+        'source': 'Local live check 2026-11-23: chatgpt.com/backend-api/codex echoed medium/high/xhigh'},
 }
 
 

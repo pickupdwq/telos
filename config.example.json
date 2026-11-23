@@ -36,6 +36,12 @@
       "provider": "bailian",
       "model": "deepseek-v4.1-flash-1017",
       "reasoning_effort": "max"
+    },
+    "gpt_codex": {
+      "provider": "codex_login",
+      "model": "gpt-6.1-sol",
+      "reasoning_effort": "high",
+      "fallback_profile": "local"
     }
   },
   "threshold": 90,

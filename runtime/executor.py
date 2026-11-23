@@ -244,6 +244,9 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
     if binding['provider'] == 'local':
         settings += ['features.remote_compaction=false', 'model_reasoning_summary="none"',
                      'model_supports_reasoning_summaries=false']
+    if binding['provider'] == 'codex_login':
+        # The relay only forwards /responses; history stays in the CLI (store=false).
+        settings += ['features.remote_compaction=false']
     if contract.get('reasoning_policy') and binding['provider'] not in ('local', 'bailian'):
         settings += ['features.remote_compaction=false']
     local_config = Path(state["worktree"]) / ".codex/config.toml"

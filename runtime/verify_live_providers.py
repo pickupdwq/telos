@@ -13,8 +13,16 @@ from closed_book import validate_evidence
 
 def job(sid, kind, message=None):
     # Keep real job reservation, checks, packet production and callbacks. Only
-    # replace the daemon spawn so this disposable probe can await it directly.
-    with patch.object(b.subprocess, 'Popen', return_value=Mock(pid=os.getpid())):
+    # replace the daemon spawn so this disposable probe can await it directly;
+    # every other subprocess (git, preflight) stays real.
+    real = b.subprocess.Popen
+
+    def popen(argv, *args, **kwargs):
+        if isinstance(argv, list) and '_job' in argv:
+            return Mock(pid=os.getpid())
+        return real(argv, *args, **kwargs)
+
+    with patch.object(b.subprocess, 'Popen', side_effect=popen):
         jid = b.start_job(sid, kind, message)['job_id']
     b.background_job(sid, jid)
     state, contract = b.load_session(b.run_dir(sid))
@@ -27,17 +35,23 @@ def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument('--live', action='store_true')
     parser.add_argument('--report', type=Path, required=True)
+    parser.add_argument('--profile', action='append', dest='profiles',
+                        help='Configured executor profile to probe (repeatable; default: deepseek_official, ark_coding_plan)')
+    parser.add_argument('--config', type=Path, help='Base configuration (default: installed config.json)')
     args = parser.parse_args()
     if not args.live:
         parser.error('--live is required; calls consume configured API/Coding Plan quota')
     report = {'version': b.VERSION, 'passed': False, 'synthetic_repository_only': True, 'cases': []}
-    cfg = b.config()
+    cfg = b.read_json(args.config) if args.config else b.config()
+    profiles = args.profiles or ['deepseek_official', 'ark_coding_plan']
     started = time.time()
     try:
         with tempfile.TemporaryDirectory(prefix='telos-live-workflow-') as folder:
             root = Path(folder).resolve()
             b.STATE, b.CACHE, b.CONFIG = root / 'state', root / 'cache', root / 'config.json'
-            b.write_json(b.CONFIG, {**cfg, 'job_timeout': 180, 'http_timeout': 120})
+            # The probe drives each stage itself: no automatic follow-up jobs.
+            b.write_json(b.CONFIG, {**cfg, 'job_timeout': 180, 'http_timeout': 120,
+                                    'auto_run_checks': False, 'auto_continue_checkpoints': False})
             repo = root / 'repo'; repo.mkdir()
             b.git(repo, 'init', '-q')
             (repo / 'calc.py').write_text('# Work memory token: BOOK_742159\ndef add(a, b):\n    raise NotImplementedError\n')
@@ -52,15 +66,18 @@ def main():
                 'from calc import add; assert add(2,3)==5; assert add(-9,4)==-5; assert add(0,0)==0; assert add(10**40,7)==10**40+7']}]
             task = ('Implement integer addition in calc.py. Inspect its original content and preserve the comment. '
                     'Modify only calc.py. Use no dependencies. Run a short Python check and reply briefly.')
-            for profile in ('deepseek_official', 'ark_coding_plan'):
+            for profile in profiles:
                 sid = b.create_session(str(repo), task, questions, checks, executor_profile=profile)['session_id']
-                print(profile + ': work phase (max)', flush=True)
+                selected = b.load_session(b.run_dir(sid))[1]['executor']
+                print(f"{profile}: work phase ({selected['provider']} {selected['model']} {selected['reasoning_effort']})", flush=True)
                 state, contract = job(sid, 'send', 'Implement the assigned change now.')
-                assert state['phase'] == 'responded'
+                assert state['phase'] == 'responded', json.dumps(
+                    {'phase': state['phase'], 'last_error': state.get('last_error'),
+                     'summary': str((state.get('last_result') or {}).get('summary', ''))[:1500]}, ensure_ascii=False)
                 thread_id = state['thread_id']
                 report['cases'].append({'name': profile + '_work', 'backend': state['last_result']['backend'],
                                         'usage': state['last_result']['usage']})
-                print(profile + ': same-thread closed-book examination (max)', flush=True)
+                print(profile + ': same-thread closed-book examination', flush=True)
                 state, contract = job(sid, 'evaluate')
                 assert state['phase'] == 'awaiting_review', 'Expected supervisor review; model must never self-accept'
                 packet = b.review_packet(sid)['evidence']

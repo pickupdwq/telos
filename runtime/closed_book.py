@@ -72,6 +72,12 @@ class ExamPolicy:
                               'text_format': text_format.get('type') if isinstance(text_format, dict) else None})
         return json.dumps(request, ensure_ascii=False).encode()
 
+    def metadata_event_allowed(self):
+        if self.binding.get('provider') == 'codex_login':
+            return True
+        return (self.binding.get('provider') == 'local'
+                and str(self.binding.get('model', '')).startswith(('gpt-', 'codex-')))
+
     @staticmethod
     def check_item(item):
         if not isinstance(item, dict) or item.get('type') not in ('message', 'reasoning'):
@@ -96,6 +102,9 @@ class ExamPolicy:
                 kind = event.get('type', '')
                 if not (kind in ('response.created', 'response.in_progress', 'response.queued',
                                   'response.output_item.added', 'response.output_item.done', 'response.completed')
+                        # The Codex backend (direct login, or relayed through a local
+                        # endpoint) adds one output-free metadata event.
+                        or kind == 'response.metadata' and self.metadata_event_allowed()
                         or kind.startswith(('response.output_text.', 'response.content_part.',
                                             'response.reasoning', 'response.refusal.'))):
                     raise ProviderError('Closed-book response contains a disallowed stream event')

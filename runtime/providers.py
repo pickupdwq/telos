@@ -42,10 +42,14 @@ PROVIDERS = {
                 'default_model': 'deepseek-v4.1-flash-1017',
                 'models': ('deepseek-v4.1-flash-1017',),
                 'exam_wire_api': 'responses', 'billing': 'tokens'},
+    # This Mac's own Codex ChatGPT login; see codex_login.py. No API key.
+    'codex_login': {'base_url': 'https://chatgpt.com/backend-api/codex', 'env': None,
+                    'credential_provider': None, 'default_model': 'gpt-6.1-sol', 'models': None,
+                    'exam_wire_api': 'responses', 'billing': 'chatgpt_plan'},
 }
 LIMITS = {'http_timeout': (1, 3600, 180), 'job_timeout': (1, 86400, 600),
           'exam_max_tokens': (1, 131072, 8192), 'exam_format_attempts': (1, 3, 3)}
-PROFILE_FIELDS = {'provider', 'model', 'reasoning_effort', 'credential_provider', *LIMITS}
+PROFILE_FIELDS = {'provider', 'model', 'reasoning_effort', 'credential_provider', 'fallback_profile', *LIMITS}
 
 
 def registry(cfg):
@@ -250,11 +254,50 @@ def public_binding(binding):
             'billing': PROVIDERS.get(binding['provider'], {}).get('billing', 'provider_defined')}
 
 
-def resolve_executor(cfg, *, executor_profile=None, provider=None, model=None, reasoning_effort=None):
+def resolve_executor(cfg, *, executor_profile=None, provider=None, model=None, reasoning_effort=None,
+                     available=None):
     if executor_profile is None and provider is None:
         executor_profile = cfg.get('default_executor_profile')
+    if executor_profile is not None and provider is None and model is None:
+        executor_profile = select_profile(cfg, executor_profile, available)
     return resolve_binding(cfg, profile=executor_profile, provider=provider, model=model,
                            reasoning_effort=reasoning_effort)
+
+
+def select_profile(cfg, profile, available=None):
+    """Follow fallback_profile while the profile's provider is unavailable.
+
+    Only creation-time selection: a task freezes the binding it got, and a
+    running task never switches provider (its encrypted history is bound to
+    the account that produced it). Today only codex_login has an availability
+    probe; every other provider is treated as available.
+    """
+    available = provider_available if available is None else available
+    profiles = cfg.get('profiles', {})
+    seen = []
+    while True:
+        if not isinstance(profiles, dict) or profile not in profiles or not isinstance(profiles[profile], dict):
+            return profile  # resolve_binding reports the unknown profile
+        if profile in seen:
+            raise ProviderError('fallback_profile chain loops: ' + ' -> '.join([*seen, profile]))
+        seen.append(profile)
+        settings = profiles[profile]
+        fallback = settings.get('fallback_profile')
+        if fallback is not None and (not isinstance(fallback, str) or fallback not in profiles):
+            raise ProviderError(f'Unknown fallback_profile for {profile}: {fallback}')
+        if fallback is None or available(cfg, settings.get('provider')):
+            return profile
+        profile = fallback
+
+
+def provider_available(cfg, provider, home=None, environ=None, state_dir=None):
+    if provider != 'codex_login':
+        return True
+    import codex_login
+    from identity import runtime_path
+    home = Path.home() if home is None else home
+    state_dir = runtime_path(home, 'STATE', environ) if state_dir is None else state_dir
+    return codex_login.available(home, environ, state_dir=state_dir)
 
 
 def public_contract(contract, cfg):
@@ -272,6 +315,12 @@ def credential(binding, home, environ=None):
     """Each fallback must be explicitly bound to the selected provider's exact host/path."""
     binding = validate_binding(binding)
     environ = os.environ if environ is None else environ
+    if binding['provider'] == 'codex_login':
+        # A per-request login, not a stored key: the relay reads it for every
+        # upstream request. Returned here only for redaction and diagnostics.
+        import codex_login
+        token, _, _ = codex_login.login(home, environ)
+        return token, 'local Codex ChatGPT login (read at request time)'
     env_name = binding['credential_ref']['env']
     if binding['version'] == 3 and env_name is None:
         return '', 'local endpoint without authentication'

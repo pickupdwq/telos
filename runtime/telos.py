@@ -1550,9 +1550,12 @@ def peer_turn(state, contract, message, phase="work", policy=None):
     usage_context = {'phase': phase, 'provider': binding['provider'], 'model': binding['model'],
                      'job': state.get('job_id'),
                      **({'reasoning_effort': binding['reasoning_effort']} if contract.get('reasoning_policy') else {})}
-    options = {'binding': binding, 'diagnostics': diagnostics} if local or binding['provider'] == 'bailian' or contract.get('reasoning_policy') else {}
+    options = {'binding': binding, 'diagnostics': diagnostics} if local or binding['provider'] in ('bailian', 'codex_login') or contract.get('reasoning_policy') else {}
     if local:
         options['validate'] = lambda: assert_active(bridge_services(), binding)
+    if binding['provider'] == 'codex_login':
+        import codex_login
+        options['upstream_headers'] = codex_login.Upstream(HOME, STATE)
     # New work admission uses an explicit frozen reserve. Historical contracts
     # without one retain their original job deadline.
     margin = (contract.get('budget') or {}).get('closeout_reserve_seconds', 0) if phase == 'work' else 0
@@ -1610,7 +1613,7 @@ def peer_turn(state, contract, message, phase="work", policy=None):
                 error.thread_id = failure.thread_id
             raise error from failure
         if diagnostics.get('failure'):
-            label = 'Local' if local else 'Bailian'
+            label = 'Local' if local else {'bailian': 'Bailian', 'codex_login': 'Codex login'}.get(binding['provider'], binding['provider'])
             error = GateError(label + ' executor relay: ' + diagnostics['failure'])
             if getattr(failure, 'thread_id', None):
                 error.thread_id = failure.thread_id
