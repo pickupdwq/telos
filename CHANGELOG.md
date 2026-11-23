@@ -1,3 +1,12 @@
+## 3.16.0 — 2026-11-23
+
+- **Local browser dashboard** (merged from `feature/local-dashboard`;
+  `telos dashboard --open`): a live, animated task wall in the browser showing
+  tasks, stages, supervisor-to-executor flows, per-attempt timers, callbacks,
+  checks and activity from real runs, with Chinese labels. It reads existing
+  state and activity only; it never starts work, grades or accepts.
+- Includes 3.15.0 (automatic evaluation after passing checks) unchanged.
+
 ## 3.15.0 — 2026-11-23
 
 - **Automatic evaluation after passing checks** (`auto_evaluate`, default
@@ -10,7 +19,6 @@
   no-progress guard still notify the supervisor first; an explicit
   `telos_evaluate` supersedes the pending automatic one. Status shows
   `next_action=automatic_evaluation_pending` meanwhile.
-
 ## 3.14.0 — 2026-11-23
 
 - **Up to 8 executors run at once by default.** The fixed limit of 3 is now
