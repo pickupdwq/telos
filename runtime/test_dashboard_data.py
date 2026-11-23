@@ -6,6 +6,7 @@ import unittest
 from unittest.mock import patch
 
 import activity
+import dashboard_presence
 from dashboard_data import DashboardData
 import timing
 from serialization import digest
@@ -23,6 +24,33 @@ class DashboardDataTest(unittest.TestCase):
     def write(self, path, value):
         path.parent.mkdir(parents=True, exist_ok=True)
         path.write_text(json.dumps(value))
+
+    def test_claude_presence_before_dispatch_and_after_disconnect_or_pid_reuse(self):
+        import subprocess
+        import sys
+        from processes import process_start
+        pid = os.getpid()
+        sid = 'abababab-1111-2222-3333-444444444444'
+        path = self.root / 'claude' / 'sessions' / f'{pid}.json'
+        record = {'claude_pid': pid, 'claude_start': process_start(pid),
+                  'model': 'claude-test', 'session_id': sid}
+        self.write(path, record)
+        self.assertEqual(dashboard_presence._connected(self.root / 'claude'), [])
+        # Same process layout as the Claude plugin, no model or user task required.
+        script = self.root / 'telos.py'
+        script.write_text('import sys; sys.stdin.read()')
+        with subprocess.Popen([sys.executable, str(script), 'serve'], cwd=self.root,
+                              stdin=subprocess.PIPE) as bridge:
+            try:
+                rows = dashboard_presence._connected(self.root / 'claude')
+                self.assertEqual([(r['id'], r['project']) for r in rows], [(sid, self.root.name)])
+                self.assertEqual(self.board.snapshot()['projects'], [])
+                self.write(path, {**record, 'claude_start': 'reused-pid'})
+                self.assertEqual(dashboard_presence._connected(self.root / 'claude'), [])
+                self.write(path, record)
+            finally:
+                bridge.stdin.close()
+        self.assertEqual(dashboard_presence._connected(self.root / 'claude'), [])
 
     def project(self, **updates):
         project = {'project_id': self.pid, 'phase': 'running', 'owner': self.owner, 'repo': '/src/foo',

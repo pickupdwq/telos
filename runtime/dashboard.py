@@ -55,7 +55,7 @@ def _without_clock_ticks(snapshot):
         row = {key: value for key, value in project.items() if key not in ('tasks', 'timing')}
         row['tasks'] = [{k: v for k, v in task.items() if k != 'timing'} for task in project['tasks']]
         projects.append(row)
-    return projects, snapshot['warnings']
+    return projects, snapshot['warnings'], snapshot.get('supervisors')
 
 
 def _snapshot_frame(snapshot):

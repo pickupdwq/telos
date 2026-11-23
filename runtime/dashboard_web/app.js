@@ -15,7 +15,8 @@ const state = {
     dialog: null,
     detail: null,
     detailState: "",
-    expanded: false,
+    presence: null,
+    sessions: new Map(),
 };
 const signatures = new Map();
 const views = [
@@ -86,7 +87,8 @@ function shortId(id) {
     return String(id || "").slice(0, 8);
 }
 function ownerId(p) {
-    return p.owner?.id || "unbound";
+    const id = p.owner?.id || "unbound";
+    return state.sessions.get(id)?.id || id;
 }
 function ownerLabel(p) {
     return p.owner?.label || "未绑定大总管";
@@ -305,7 +307,6 @@ function flowLine(row) {
     const line = el("div", "flow-row moving");
     line.dataset.lane = t?.id || p.id;
     line.append(
-        identify("owner", "大总管", p.owner?.model || ownerLabel(p), supervisor(p)),
         wire(false),
         identify("worker", isCheck ? "整体验证" : "执行者", workerModel(row), workerLabel(row)),
         wire(true),
@@ -357,78 +358,91 @@ function flowSignature(row) {
 }
 // Preserve nodes between snapshots: continuous motion is never restarted by an unrelated update.
 const laneNodes = new Map();
+function groupKey(p) {
+    const id = ownerId(p);
+    // No recorded identity: don't invent one supervisor for unrelated projects.
+    return ["manual", "unbound"].includes(id) ? "project:" + p.id : id;
+}
+function sessionFlow(key, group) {
+    const box = el("section", "session-flow");
+    box.dataset.supervisor = key;
+    const live = group.presence, owner = group.owner || {};
+    const name = live?.label || owner.label || "未绑定大总管";
+    const details = [live?.model || owner.model];
+    if (owner.id && !["unbound", "manual"].includes(owner.id)) details.push("会话 " + shortId(key));
+    const hub = el("div", "session-hub" + (group.rows.length ? " moving" : ""));
+    const copy = el("div", "hub-copy");
+    copy.append(identify("owner", "大总管", name, details.filter(Boolean).join(" · ")));
+    if (live) {
+        const context = el("div", "session-context");
+        context.append(el("span", "presence-online", "已连接"));
+        context.append(el("span", "", live.project ? "当前项目 " + live.project : "工作目录未知"));
+        copy.append(context);
+    }
+    hub.append(copy);
+    if (group.rows.length) hub.append(el("i", "trunk-lead"));
+
+    const branches = el("div", "branches");
+    for (const row of group.rows) branches.append(laneNodes.get(row.t?.id || row.p.id).node);
+    if (!group.rows.length) branches.append(el("p", "idle-branch", group.wait));
+    box.append(hub, branches);
+    return box;
+}
 function drawFlow() {
+    const groups = new Map(), lanes = new Set();
     const active = state.connected ? state.rows.filter(running) : [];
-    const display = state.expanded ? active : active.slice(0, 3);
+    // A new action must not move an executor to another branch mid-animation.
+    active.sort((a, b) => groupKey(a.p).localeCompare(groupKey(b.p)) ||
+        a.p.id.localeCompare(b.p.id) || String(a.t?.key || "").localeCompare(String(b.t?.key || "")));
+    for (const row of active) {
+        const key = groupKey(row.p);
+        if (!groups.has(key)) groups.set(key, { owner: row.p.owner, rows: [] });
+        groups.get(key).rows.push(row);
+    }
+    if (state.connected) for (const presence of state.presence || []) {
+        const group = groups.get(presence.id) || { owner: presence, rows: [] };
+        group.presence = presence;
+        groups.set(presence.id, group);
+    }
+
     const head = $("flow-state");
     head.className = active.length ? "live" : "";
-    head.textContent = !state.loaded
-        ? "等待数据"
-        : !state.connected
-          ? "未连接"
-          : active.length + " 路正在工作";
-    const keys = [],
-        nodes = [];
-    for (const row of display) {
-        const id = row.t?.id || row.p.id;
-        const sig = JSON.stringify([
-            row.p.id,
-            row.p.title,
-            row.p.owner,
-            row.p.kind,
-            row.p.phase,
-            row.p.status,
-            row.p.verification_started_at,
-            row.t?.run_id,
-            row.t?.display_id,
-            row.t?.display_title,
-            row.t?.title,
-            row.t?.model,
-            row.t?.role,
-            row.t?.status,
-            row.t?.run_started_at,
-        ]);
-        let entry = laneNodes.get(id);
-        if (entry?.sig !== sig) {
-            entry = { sig, node: flowLine(row) };
-            laneNodes.set(id, entry);
+    head.textContent = !state.loaded ? "等待数据" : !state.connected ? "未连接" : active.length + " 路正在工作";
+    const layout = [];
+    for (const [key, group] of groups) {
+        const keys = [];
+        for (const row of group.rows) {
+            const id = row.t?.id || row.p.id;
+            lanes.add(id);
+            const sig = JSON.stringify([row.p.title, row.p.kind, row.p.phase, row.p.status,
+                row.p.verification_started_at, row.t?.run_id, row.t?.display_id, row.t?.display_title,
+                row.t?.title, row.t?.model, row.t?.role, row.t?.status, row.t?.run_started_at]);
+            let entry = laneNodes.get(id);
+            if (entry?.sig !== sig) {
+                entry = { sig, node: flowLine(row) };
+                laneNodes.set(id, entry);
+            }
+            const text = entry.node.querySelector(".latest-action"), note = short(actionText(row), 100);
+            if (text.textContent !== note) text.textContent = note;
+            keys.push([id, sig]);
         }
-        const note = short(actionText(row), 100),
-            text = entry.node.querySelector(".latest-action");
-        if (text.textContent !== note) text.textContent = note;
-        nodes.push(entry.node);
-        keys.push([id, sig]);
+        if (!group.rows.length) {
+            const pending = state.rows.find(row => groupKey(row.p) === key &&
+                attention(row.t || row.p) && !["pending", "ready", "planned"].includes((row.t || row.p).phase));
+            const item = pending && (pending.t || pending.p);
+            group.wait = item?.wait || item?.status || "等待派发";
+        }
+        layout.push([key, group.owner, group.presence, group.wait, keys]);
     }
-    const shown = new Set(display.map((r) => r.t?.id || r.p.id));
-    for (const id of laneNodes.keys()) if (!shown.has(id)) laneNodes.delete(id);
-    update("flows", [keys, active.length, state.expanded, state.connected, state.loaded], () => {
-        if (!nodes.length) {
-            const text = !state.loaded
-                ? "正在连接 Telos…"
-                : !state.connected
-                  ? "实时连接已断开"
-                  : "等待真实任务启动";
-            const standby = el("div", "standby");
-            const symbol = el("span", "standby-symbol");
-            symbol.setAttribute("aria-hidden", "true");
-            standby.append(symbol, el("span", "", text));
-            nodes.push(standby);
-        }
-        if (active.length > 3) {
-            const tools = el("div", "flow-tools");
-            tools.append(
-                btn(
-                    "text-button",
-                    state.expanded ? "收起" : "展开其余 " + (active.length - 3) + " 路",
-                    () => {
-                        state.expanded = !state.expanded;
-                        drawFlow();
-                    },
-                ),
-            );
-            nodes.push(tools);
-        }
-        return nodes;
+    for (const id of laneNodes.keys()) if (!lanes.has(id)) laneNodes.delete(id);
+    update("flows", [layout, state.connected, state.loaded, state.presence === null], () => {
+        if (groups.size) return [...groups].map(([key, group]) => sessionFlow(key, group));
+        const text = !state.loaded ? "正在连接 Telos…" : !state.connected ? "实时连接已断开"
+            : state.presence === null ? "暂时无法确认大总管连接" : "等待真实任务启动";
+        const standby = el("div", "standby"), symbol = el("span", "standby-symbol");
+        symbol.setAttribute("aria-hidden", "true");
+        standby.append(symbol, el("span", "", text));
+        return [standby];
     });
 }
 function identity(cls, label, model, context) {
@@ -466,7 +480,6 @@ function card(row) {
     if (t && sourceDescription(t)) body.append(el("span", "card-action", short(sourceDescription(t), 150)));
     const actors = el("span", "card-actors");
     actors.append(
-        identity("owner", "大总管", p.owner?.model || "型号未记录", supervisor(p)),
         identity("worker", "执行者", workerModel(row), workerLabel(row)),
     );
     body.append(actors);
@@ -561,14 +574,16 @@ function render() {
         row.p.tone,
         workerLabel(row),
         repoBase(row.p),
+        ownerId(row.p),
     ]);
     update("cards", [rowSignatures, state.focus, state.loaded, state.connected], () => {
         // Keep unchanged card contents (and in-flight event effects) when a
         // different executor publishes activity or moves up the wall.
         const visibleIds = new Set(visible.map((row) => row.t?.id || row.p.id));
         for (const key of cardNodes.keys()) if (!visibleIds.has(key)) cardNodes.delete(key);
-        if (visible.length)
-            return visible.map((row, i) => {
+        if (visible.length) {
+            const groups = new Map();
+            visible.forEach((row, i) => {
                 const id = row.t?.id || row.p.id;
                 const sig = JSON.stringify([
                     rowSignatures[i],
@@ -576,8 +591,16 @@ function render() {
                     same(ref(row.p, row.t), state.focus),
                 ]);
                 if (cardNodes.get(id)?.sig !== sig) cardNodes.set(id, { sig, node: card(row) });
-                return cardNodes.get(id).node;
+                const owner = ownerId(row.p);
+                if (!groups.has(owner)) {
+                    const heading = el("h3", "wall-owner");
+                    heading.append(el("span", "", "大总管"), document.createTextNode([supervisor(row.p), row.p.owner?.model].filter(Boolean).join(" · ")));
+                    groups.set(owner, [heading]);
+                }
+                groups.get(owner).push(cardNodes.get(id).node);
             });
+            return [...groups.values()].flat();
+        }
         let text = state.loaded ? "还没有任务记录。" : "正在读取任务…";
         if (state.rows.length) text = "没有符合筛选条件的任务。";
         const message = el("p", "empty", text);
@@ -877,6 +900,11 @@ function observeNow() {
 function applySnapshot(overview, source, baseline) {
     if (!Array.isArray(overview?.projects)) throw new Error("invalid snapshot");
     state.projects = overview.projects.map((p) => ({ ...p, tasks: Array.isArray(p.tasks) ? p.tasks : [] }));
+    state.presence = Array.isArray(overview.supervisors) ? overview.supervisors : null;
+    state.sessions.clear();
+    for (const peer of state.presence || []) {
+        for (const id of [peer.id, ...(peer.sessions || [])]) state.sessions.set(id, peer);
+    }
     state.rows = readRows(state.projects);
     const changes = changedActions(state.rows, baseline);
     state.loaded = true;

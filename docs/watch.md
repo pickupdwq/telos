@@ -44,9 +44,14 @@ any foreground dashboard, remove the default port's access file from
 `TELOS_STATE_DIR/dashboard/access-47831` (normally under `~/.local/state/telos`),
 and restart the supervising Telos processes.
 
-The wall shows all project tasks, meeting assignments and standalone tasks side
-by side, including pending and historical ones. Each card identifies the original
-supervisor, executor, project and task; click it for activity and callback details.
+The live view shows one supervisor hub per conversation with separate branches for
+each running executor, even across projects. Matching Claude session hooks and
+a live Telos MCP child also identify connected Claude Code supervisors before
+their first assignment. The hub shows the project directory and waits without
+animation until real work starts. Closing the connection removes the idle hub.
+The wall groups cards by supervisor session and shows all project tasks, meeting assignments and standalone tasks side
+by side, including pending and historical ones. The group identifies the original
+supervisor; each card identifies the executor, project and task; click it for activity and callback details.
 The browser subscribes to a local event stream. The animated links show current
 execution, and a new recorded tool action, command result, file change or message
 triggers a pulse on the corresponding executor. The timer measures the current

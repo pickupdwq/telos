@@ -54,7 +54,7 @@ class DashboardHTTPTests(unittest.TestCase):
         self.assertEqual(self.request('/api/overview', headers={**auth, 'Origin': 'https://elsewhere.test'})[0], 403)
         status, _, body = self.request('/api/overview', headers=auth)
         self.assertEqual(status, 200)
-        self.assertEqual(json.loads(body), {'projects': [], 'warnings': []})
+        self.assertEqual(json.loads(body), {'projects': [], 'warnings': [], 'supervisors': []})
         self.assertEqual(self.request('/api/tasks/' + 'b' * 32, headers=auth)[0], 404)
         self.assertEqual(self.request('/state.json', headers=auth)[0], 404)
         self.assertEqual(self.request('/api/overview', method='POST', headers=auth)[0], 501)
@@ -125,11 +125,23 @@ class DashboardHTTPTests(unittest.TestCase):
             reconnected.close()
             self.wait_for_idle()
 
+    def test_presence_changes_push_without_any_task_or_project(self):
+        self.server.live.interval = .025
+        peers = []
+        with patch.object(self.server.data.presence, 'snapshot', side_effect=lambda: list(peers)):
+            stream = self.open_stream()
+            self.assertEqual(self.frame(stream)['supervisors'], [])
+            peers.append({'id': 'session', 'project': 'rexue'})
+            self.assertEqual(self.next_snapshot(stream)['supervisors'], peers)
+            peers.clear()
+            self.assertEqual(self.next_snapshot(stream)['supervisors'], [])
+            stream.close()
+
     def test_stream_observes_real_state_and_ends_on_read_failure(self):
         feed = self.server.live
         feed.interval, feed.heartbeat = .025, .10
         stream = self.open_stream()
-        self.assertEqual(self.frame(stream), {'projects': [], 'warnings': []})
+        self.assertEqual(self.frame(stream), {'projects': [], 'warnings': [], 'supervisors': []})
         sid = 'b' * 32
         directory = self.root / 'runs' / sid
         directory.mkdir(parents=True)
