@@ -281,6 +281,8 @@ def install(prefix: Path, bin_dir: Path, *, register: bool = False,
     files = {p.name: p for p in sorted((ROOT / "runtime").glob("*.py"))}
     for name in ('deepseek_models.json', 'bailian_models.json', 'audit_browser.cjs'):
         files[name] = ROOT / 'runtime' / name
+    for name in ('index.html', 'style.css', 'access.js', 'app.js'):
+        files['dashboard_web/' + name] = ROOT / 'runtime/dashboard_web' / name
     files['fixtures/meetings/default.js'] = ROOT / 'postman/mocks/meetings/default.js'
     if not files or not all(p.is_file() and not p.is_symlink() for p in files.values()):
         raise RuntimeError("Runtime source is missing or contains unexpected symlinks.")

@@ -489,6 +489,8 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
     write_json(root / "contract.json", frozen)
     state = {"session_id": sid, "repo": str(repo), "worktree": str(worktree), "base_commit": base,
              "model": model, "contract_hash": digest(frozen), "phase": "ready", "thread_id": None,
+             "task_title": activity.clean(task)[:160],
+             "role_name": role_snapshot["name"] if role_snapshot else None,
              "usage_id": _usage_id or sid,
              "turns": 0, "rounds": 0, "created_at": time.time(), "last_result": None,
              "owner": owner, "continuation": "active", "events": {}, "project_id": _project_id,
@@ -2978,6 +2980,10 @@ def serve():
     stop = threading.Event()
     watcher = threading.Thread(target=recovery_loop, args=(stop,), name="telos-outbox", daemon=True)
     watcher.start()
+    # A user who has opened the browser dashboard once can return to its URL
+    # on future Telos sessions. Otherwise no listener is started.
+    from dashboard import host_when_enabled
+    threading.Thread(target=host_when_enabled, args=(STATE, stop), name="telos-dashboard", daemon=True).start()
     try:
         serve_messages()
     finally:
@@ -2989,6 +2995,9 @@ def main():
     if sys.argv[1:2] == ['compare']:
         from comparison import main as compare_main
         return compare_main(sys.argv[2:])
+    if sys.argv[1:2] == ['dashboard']:
+        from dashboard import cli
+        return cli(STATE, sys.argv[2:])
     if sys.argv[1:2] == ['watch']:
         return watch_runtime.main(bridge_services(), sys.argv[2:])
     if sys.argv[1:2] == ['claude-hook']:
@@ -2998,7 +3007,7 @@ def main():
         import claude_supervisor
         return claude_supervisor.cli(bridge_services(), sys.argv[2:])
     parser = argparse.ArgumentParser(description=__doc__)
-    parser.add_argument("command", choices=["serve", "doctor", "auth", "local", "status", "review", "receive", "pause", "resume", "cancel", "recover", "cache", "compare", "watch", "_job", "_dispatch", "_project_check"])
+    parser.add_argument("command", choices=["serve", "doctor", "auth", "local", "status", "review", "receive", "pause", "resume", "cancel", "recover", "cache", "compare", "watch", "dashboard", "_job", "_dispatch", "_project_check"])
     parser.add_argument("ids", nargs="*")
     parser.add_argument('--action', choices=['inventory', 'archive', 'cleanup'], default='inventory')
     parser.add_argument('--apply', action='store_true', help='Apply explicit archive/cleanup; default is preview')

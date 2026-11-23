@@ -313,6 +313,8 @@ telos claude run              # 等同 claude --model opus --effort xhigh
 摘要，供其他项目的新任务按适用标签读取。旧经验、模型偏好和验收规则保持兼容。
 本版本不实时更新正在运行的任务，也不提供跨电脑同步。
 
+运行 `telos dashboard --open` 可以在浏览器查看本机所有大总管、项目、任务归属和当前等待原因。首次打开后，后续启动 Telos 时可直接使用同一个[本机地址](http://127.0.0.1:47831/)。[看板使用说明](docs/watch.md#browser-dashboard)
+
 `telos watch` 提供执行者实时记录、任务切换和历史回看。在 Ghostty 或 iTerm2
 中通过 tmux 启动 Codex CLI 后，多个执行者共用一个自动打开的右侧观察面板，
 焦点留在主对话；关闭面板不停止任务。非 tmux 环境可手动查看。

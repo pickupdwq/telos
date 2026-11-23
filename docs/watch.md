@@ -26,6 +26,33 @@ all retained history, including older content outside that display buffer.
 `--json` emits JSONL for piping and defaults to following until Ctrl-C.
 `--no-follow` prints recorded events once and exits.
 
+## Browser dashboard
+
+Run `telos dashboard --open` to open the browser on this machine, or
+`telos dashboard` to print its private opening link. The default address is
+<http://127.0.0.1:47831/>. The first visit in each browser uses the printed
+link; after that the plain address works in that browser. Different Codex
+and Claude conversations using the same Telos state appear in the same view.
+The page follows changes automatically; closing it does not stop any tasks.
+
+The first invocation hosts the dashboard while the command is running. Once
+enabled on the default port, newly started Telos MCP processes can also host
+it while Telos is running. If a matching dashboard already exists, the command
+uses it instead. Set `--port` to run a separate foreground dashboard (for
+example for another `TELOS_STATE_DIR`). No tmux or extra dependencies are needed. To turn automatic hosting off, stop
+any foreground dashboard, remove the default port's access file from
+`TELOS_STATE_DIR/dashboard/access-47831` (normally under `~/.local/state/telos`),
+and restart the supervising Telos processes.
+
+Projects, discussion meetings and independent tasks are grouped by their original
+supervising conversations. Project confirmation is separate from child completion.
+The task view shows recorded public activity, check and callback status; older
+records may lack titles, logs or timing. Project durations accumulate task time,
+so parallel tasks can add up to more than elapsed time. The observer reads
+persisted results without running checks or changing task state.
+The access link is private to the local user; the page keeps the key on this browser
+origin and removes it from the address bar.
+
 ## Ghostty and iTerm2 with tmux
 
 Run Codex CLI **inside tmux**, in either terminal:

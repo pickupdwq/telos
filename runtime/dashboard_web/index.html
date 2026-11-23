@@ -1,0 +1,49 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width,initial-scale=1">
+  <meta name="color-scheme" content="light">
+  <title>运行看板 · Telos</title>
+  <link rel="icon" href="data:,">
+  <link rel="stylesheet" href="/style.css">
+  <script src="/access.js" defer></script>
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <a class="brand" href="/" aria-label="Telos 看板首页"><i class="logo" aria-hidden="true"></i>Telos</a>
+    <span class="top-separator"></span><span class="product">本机工作台</span>
+    <div class="connection" role="status"><i id="light" class="light"></i><span id="connection">正在连接</span></div>
+  </header>
+  <main>
+    <div class="heading">
+      <div><h1>运行看板</h1><p id="summary">正在读取本机的运行记录…</p></div>
+      <div class="sync"><span id="synced"></span><button id="refresh" class="icon-button" aria-label="立即刷新" title="立即刷新">↻</button></div>
+    </div>
+    <div id="notice" role="status" hidden></div>
+    <div class="toolbar">
+      <div id="filters" class="filters" aria-label="按项目状态筛选"></div>
+      <label class="search"><i aria-hidden="true"></i><input id="query" type="search" placeholder="搜索项目、任务或模型" aria-label="搜索项目、任务或模型" autocomplete="off"></label>
+    </div>
+    <section class="priority" id="priority" hidden>
+      <b class="priority-label">现在等谁</b><span id="priority-text"></span><button id="priority-open" type="button">定位任务 <span aria-hidden="true">→</span></button>
+    </section>
+    <div class="workspace">
+      <aside class="panel owners">
+        <div class="panel-head"><h2>大总管会话</h2><span id="owner-count" class="count"></span></div>
+        <div id="owners"></div>
+      </aside>
+      <section class="panel projects">
+        <div class="panel-head"><h2>项目与任务</h2><span id="project-count" class="count"></span></div>
+        <div id="projects"></div>
+      </section>
+      <aside id="inspector" class="panel inspector">
+        <div class="panel-head"><h2 id="detail-heading">项目详情</h2><span id="detail-id" class="mono"></span></div>
+        <div id="detail"></div>
+      </aside>
+    </div>
+    <noscript>请启用 JavaScript，查看本机运行状态。</noscript>
+  </main>
+</body>
+</html>

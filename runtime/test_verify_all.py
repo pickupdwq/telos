@@ -53,6 +53,8 @@ EXPECTED_MODULES = [
     'test_meetings',
     'test_comparison',
     'test_watch',
+    'test_dashboard',
+    'test_dashboard_data',
     'test_reasoning',
     'test_effort_policy',
     'test_verify_all',
