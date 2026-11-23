@@ -1,3 +1,20 @@
+## 3.17.0 — 2026-11-23
+
+- **Project refactoring mode** (merged from `feat/refactor-mode`; ask for it
+  with "请使用 Telos 对这个项目进行重构"): the supervisor walks the whole program
+  first, extracts a current-state PRD, discusses it read-only with executors,
+  and produces a detailed PRD that keeps existing behaviour, plus directory
+  responsibilities, technology choices and an AI code index. No source is
+  changed until the user confirms the whole plan; after integration the frozen
+  index targets are verified to exist. Reviewed documents and planned module
+  paths are checked before a refactor is accepted, and PRD links stay available
+  after approval.
+- **Dashboard supervisor presence** (merged from
+  `feature/dashboard-supervisor-presence`): the browser dashboard shows
+  connected Claude sessions and fans out live executor lanes per supervisor, so
+  concurrent supervisors no longer look like one undifferentiated stream.
+- Includes 3.16.0 (dashboard) and 3.15.0 (automatic evaluation) unchanged.
+
 ## 3.16.0 — 2026-11-23
 
 - **Local browser dashboard** (merged from `feature/local-dashboard`;
