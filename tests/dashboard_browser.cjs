@@ -29,7 +29,10 @@ async function main(modulePath, executablePath) {
     id: 'f'.repeat(32), title: '订单项目', kind: 'project', phase: 'planned', status: '已规划', tone: 'wait',
     owner: { id: 'original-owner', label: 'Claude Code', model: 'supervisor-test' }, tasks, updated: now,
   };
-  const snapshot = () => JSON.stringify({ projects: [project], warnings: [] });
+  const peer = { id: 'original-owner', sessions: ['original-owner'], label: 'Claude Code', model: 'supervisor-test', project: 'rexue' };
+  const peers = [peer];
+  const projects = [project];
+  const snapshot = () => JSON.stringify({ projects, supervisors: peers, warnings: [] });
   const frame = () => Buffer.from('event: snapshot\ndata: ' + snapshot() + '\n\n');
   const key = 'a'.repeat(64);
   const clients = new Set();
@@ -91,6 +94,11 @@ async function main(modulePath, executablePath) {
     assert.equal(await page.getByRole('button', { name: /预览.*动画/ }).count(), 0);
     assert.equal(await page.locator('#flows .moving').count(), 0);
     assert.equal(connects, 1);
+    const hub = page.locator('#flows [data-supervisor="original-owner"]');
+    assert.match(await hub.innerText(), /已连接/);
+    assert.match(await hub.innerText(), /当前项目 rexue/);
+    assert.match(await hub.innerText(), /等待派发/);
+    assert.equal(await page.locator('.wall-owner').count(), 1);
 
     Object.assign(task, { phase: 'running', status: '执行中', tone: 'active', run_id: 'job-one',
       run_started_at: now - 2, run_finished_at: null });
@@ -100,8 +108,9 @@ async function main(modulePath, executablePath) {
     const card = page.locator('#cards .live-card');
     await flow.waitFor();
     const cardText = await card.innerText();
-    for (const label of ['大总管', '执行者', 'supervisor-test', 'worker-test', '任务一']) assert.ok(cardText.includes(label), label);
-    assert.ok(!cardText.includes(task.key));
+    for (const label of ['执行者', 'worker-test', '任务一']) assert.ok(cardText.includes(label), label);
+    assert.ok(!cardText.includes(task.key) && !cardText.includes('supervisor-test'));
+    assert.match(await hub.locator('.session-hub').innerText(), /supervisor-test/);
     assert.ok(await flow.evaluate(n => n.getAnimations({ subtree: true }).length > 0));
     const time = await flow.locator('.clock strong').innerText();
     assert.match(time, /^\d+:\d{2}$/);
@@ -135,6 +144,27 @@ async function main(modulePath, executablePath) {
     assert.equal(await cards.count(), tasks.length);
     await page.setViewportSize({ width: 390, height: 844 });
     assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+    // Same model, independent conversations; all branches remain visible on mobile.
+    peers.push({ ...peer, id: 'other-owner', sessions: ['other-owner'], project: 'other' });
+    const other = { ...project, id: 'e'.repeat(32), owner: {...project.owner, id: 'other-owner'}, tasks: [
+      {...task, id: 'e'.repeat(31) + '1', phase: 'running', tone: 'active', status: '执行中', run_finished_at: null}] };
+    projects.push(other);
+    for (const t of tasks.slice(0, 4)) Object.assign(t, { phase: 'running', tone: 'active', status: '执行中', run_finished_at: null });
+    await publish();
+    await page.waitForFunction(() => document.querySelectorAll('.flow-row.moving').length === 5);
+    assert.equal(await page.locator('#flows .actor.owner').count(), 2);
+    assert.equal(await hub.locator('.actor.owner').count(), 1);
+    assert.equal(await hub.locator('.branches .worker').count(), 4);
+    assert.equal(await page.locator('.wall-owner').count(), 2);
+    assert.equal(await cards.count(), tasks.length + 1);
+    assert.ok(await page.evaluate(() => document.documentElement.scrollWidth <= innerWidth + 1));
+    await hub.locator('.flow-select').last().click();
+    assert.match(await page.locator('dialog[open]').innerText(), /大总管/);
+    await page.keyboard.press('Escape');
+    projects.pop();
+    peers.pop();
+    await publish();
+    await page.locator('#flows [data-supervisor="other-owner"]').waitFor({state:'detached'});
     assert.deepEqual(errors, []);
     console.log('Live dashboard browser checks passed.');
   } finally {

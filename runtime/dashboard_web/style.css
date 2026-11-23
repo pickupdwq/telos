@@ -251,9 +251,8 @@ h3 {
 .flow-row {
     display: grid;
     align-items: center;
-    grid-template-columns:
-        minmax(0, 1fr) clamp(22px, 4vw, 68px) minmax(0, 1.05fr) clamp(22px, 4vw, 68px)
-        minmax(0, 1.7fr) minmax(76px, 0.49fr);
+    grid-template-columns: clamp(16px, 3vw, 48px) minmax(0, 1fr) clamp(16px, 3vw, 48px)
+        minmax(0, 1.6fr) minmax(70px, 0.4fr);
     padding: 11px 0;
     gap: 6px;
     border-bottom: 1px solid #32405499;
@@ -471,12 +470,28 @@ h3 {
 .moving .clock strong {
     color: var(--mint);
 }
-.flow-tools {
-    display: flex;
+.session-flow {
+    display: grid;
+    grid-template-columns: minmax(160px, 24%) minmax(0, 1fr);
     align-items: center;
-    justify-content: flex-end;
-    gap: 7px;
+    padding: 10px 0;
 }
+.session-flow + .session-flow { border-top: 1px solid var(--line); }
+.session-hub { min-width: 0; display: grid; align-items: center; padding-left: 4px; }
+.session-hub.moving { grid-template-columns: minmax(0, max-content) minmax(15px, 1fr); gap: 6px; }
+.hub-copy { min-width: 0; overflow-wrap: anywhere; }
+.session-context { display: flex; align-items: baseline; flex-wrap: wrap; gap: 8px; color: var(--muted); font-size: 12px; margin: 7px 0 0 5px; overflow-wrap: anywhere; }
+.presence-online { color: var(--mint); }
+.presence-online::before { content: "●"; margin-right: 5px; font-size: 9px; }
+.branches { min-width: 0; position: relative; }
+.trunk-lead { height: 2px; background: linear-gradient(90deg, #267082, var(--cyan)); box-shadow: 0 0 6px #65e4ed80; }
+.branches .flow-row { padding-left: 0; }
+.branches .flow-row::before { content: ""; position: absolute; z-index: -1; left: 0; top: 0; bottom: 0; border-left: 1px solid var(--cyan); }
+.branches .flow-row:first-child::before { top: 50%; }
+.branches .flow-row:last-child::before { bottom: 50%; }
+.idle-branch { margin: 0; color: var(--muted); font-size: 13px; padding: 12px; }
+.wall-owner { grid-column: 1/-1; margin: 8px 0 0; overflow-wrap: anywhere; font-size: 13px; color: var(--soft); }
+.wall-owner span { color: var(--cyan); font-size: 11px; margin-right: 8px; }
 .text-button {
     color: var(--cyan);
     background: none;
@@ -1152,7 +1167,7 @@ summary,
 }
 @media (max-width: 900px) {
     .flow-row {
-        grid-template-columns: minmax(0, 1fr) 23px minmax(0, 1fr) 23px minmax(0, 1.5fr) minmax(70px, 0.5fr);
+        grid-template-columns: 16px minmax(0, 1fr) 16px minmax(0, 1.35fr) 64px;
         gap: 5px;
     }
     .actor {
@@ -1201,8 +1216,15 @@ summary,
     #flows {
         padding: 0 10px 7px;
     }
+    .session-flow { grid-template-columns: minmax(0, 1fr); gap: 8px; }
+    .session-hub { padding: 0; }
+    .session-context { margin-left: 4px; }
+    .branches { margin-left: 16px; }
+    .session-hub.moving { grid-template-columns: 1fr; }
+    .trunk-lead { display: none; }
+    .branches .flow-row:first-child::before { top: 0; }
     .flow-row {
-        grid-template-columns: minmax(0, 1fr) 25px minmax(0, 1fr);
+        grid-template-columns: 14px minmax(0, 1fr) auto;
         gap: 7px;
         padding: 9px 0;
     }
@@ -1210,10 +1232,12 @@ summary,
         display: none;
     }
     .flow-select {
-        grid-column: 1/3;
-        padding: 6px 2px 0;
+        grid-column: 2/4;
+        grid-row: 2;
+        padding: 1px 0;
     }
     .clock {
+        grid-row: 1;
         grid-column: 3;
     }
     .actor-copy strong {

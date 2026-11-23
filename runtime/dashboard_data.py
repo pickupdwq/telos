@@ -14,6 +14,7 @@ import time
 
 import activity
 import continuation
+from dashboard_presence import ClaudePresence
 from processes import process_running
 from serialization import digest
 import progress_guard
@@ -489,6 +490,7 @@ def _events(stream, sid):
 class DashboardData:
     def __init__(self, state_dir):
         self.root = Path(state_dir)
+        self.presence = ClaudePresence(self.root)
         self.cache = {}
         self.legacy_titles = {}
         self.activity_summaries = {}
@@ -636,7 +638,8 @@ class DashboardData:
                                 activity_at=event['at'], activity_kind=event['kind'])
         ranks = {'active': 0, 'issue': 1, 'wait': 2, 'idle': 3, 'done': 4}
         result.sort(key=lambda p: (ranks[p['tone']], -p['updated'], p['id']))
-        return {'projects': result, 'warnings': [f'{unreadable} 条记录缺失或暂时无法读取'] if unreadable else []}
+        return {'projects': result, 'supervisors': self.presence.snapshot(),
+                'warnings': [f'{unreadable} 条记录缺失或暂时无法读取'] if unreadable else []}
 
     def _activity(self, sid):
         try:
