@@ -11,6 +11,8 @@ from pathlib import Path
 import re
 import secrets
 import tempfile
+import threading
+import time
 import webbrowser
 
 from dashboard_data import DashboardData
@@ -45,21 +47,141 @@ def access_key(state_dir, port, *, create=False):
     return key
 
 
+def _without_clock_ticks(snapshot):
+    # Timing accrues in the current phase even with no new Telos event. The
+    # browser ticks its own clock; all non-timing fields still trigger a frame.
+    projects = []
+    for project in snapshot['projects']:
+        row = {key: value for key, value in project.items() if key not in ('tasks', 'timing')}
+        row['tasks'] = [{k: v for k, v in task.items() if k != 'timing'} for task in project['tasks']]
+        projects.append(row)
+    return projects, snapshot['warnings']
+
+
+def _snapshot_frame(snapshot):
+    data = json.dumps(snapshot, ensure_ascii=False, allow_nan=False, separators=(',', ':')).encode('utf-8')
+    return b'event: snapshot\ndata: ' + data + b'\n\n'
+
+
+class LiveFeed:
+    """One on-demand sampler; slow readers coalesce to the latest full state."""
+    interval = 0.45
+    heartbeat = 3
+
+    def __init__(self, data):
+        self.data = data
+        self.changed = threading.Condition()
+        self.subscribers = 0
+        self.worker = None
+        self.closed = False
+        self.failed = False
+        self.revision = 0
+        self.last_sample = 0.0
+        self.latest = None
+        self.frame = None
+        self.stable = None
+
+    def frames(self):
+        with self.changed:
+            if self.closed:
+                return
+            self.subscribers += 1
+            if self.worker is None:
+                self.latest = self.frame = self.stable = None
+                self.failed = False
+                self.worker = threading.Thread(target=self._sample, name='telos-dashboard-live', daemon=True)
+                self.worker.start()
+        previous = None
+        connected = time.monotonic()
+        try:
+            while True:
+                with self.changed:
+                    self.changed.wait_for(lambda: self.closed or self.failed or
+                                          (self.latest is not None and previous != self.revision),
+                                          timeout=self.heartbeat)
+                    if self.closed or self.failed:
+                        return
+                    # Don't keep claiming a healthy live connection if disk or
+                    # process observation has stalled, including on first load.
+                    reference = self.last_sample if self.latest is not None else connected
+                    if time.monotonic() - reference > 3 * self.heartbeat:
+                        return
+                    if self.latest is None:
+                        continue
+                    if previous == self.revision:
+                        frame = b': keepalive\n\n'
+                    elif previous is None:
+                        # Include up-to-date elapsed counters even on a late join.
+                        frame = _snapshot_frame(self.latest)
+                    else:
+                        frame = self.frame
+                    previous = self.revision
+                yield frame
+        finally:
+            with self.changed:
+                self.subscribers -= 1
+                self.changed.notify_all()
+
+    def _sample(self):
+        while True:
+            with self.changed:
+                if self.closed or not self.subscribers:
+                    self.worker = None
+                    self.latest = self.frame = self.stable = None
+                    self.changed.notify_all()
+                    return
+            try:
+                snapshot = self.data.snapshot()
+                stable = _without_clock_ticks(snapshot)
+                frame = _snapshot_frame(snapshot) if stable != self.stable else None
+            except Exception:
+                # A background sampler must never strand waiters on an unhandled read error.
+                # Close the stream instead of leaving clients believing stale
+                # work is still running. A reconnect requests a fresh snapshot.
+                with self.changed:
+                    self.failed = True
+                    self.changed.notify_all()
+            else:
+                with self.changed:
+                    self.failed = False
+                    self.last_sample = time.monotonic()
+                    self.latest = snapshot
+                    if frame is not None:
+                        self.frame, self.stable = frame, stable
+                        self.revision += 1
+                        self.changed.notify_all()
+            with self.changed:
+                self.changed.wait_for(lambda: self.closed or not self.subscribers, timeout=self.interval)
+
+    def close(self):
+        with self.changed:
+            self.closed = True
+            self.changed.notify_all()
+
+
 class Server(ThreadingHTTPServer):
     def __init__(self, state_dir, port, key):
         self.key = key
         self.data = DashboardData(state_dir)
+        self.live = LiveFeed(self.data)
         super().__init__((HOST, port), Handler)
+
+    def server_close(self):
+        self.live.close()
+        super().server_close()
 
 
 class Handler(BaseHTTPRequestHandler):
     def log_message(self, fmt, *args):
         pass  # Never mix browser output with the supervisor's MCP protocol.
 
-    def reply(self, code, body=b'', mime='text/plain; charset=utf-8'):
+    def response_headers(self, code, mime, length=None):
         self.send_response(code)
         self.send_header('Content-Type', mime)
-        self.send_header('Content-Length', str(len(body)))
+        if length is not None:
+            self.send_header('Content-Length', str(length))
+        else:
+            self.send_header('Connection', 'close')
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Referrer-Policy', 'no-referrer')
@@ -68,8 +190,20 @@ class Handler(BaseHTTPRequestHandler):
                          "img-src 'self' data:; connect-src 'self'; frame-ancestors 'none'; "
                          "base-uri 'none'; form-action 'none'")
         self.end_headers()
+
+    def reply(self, code, body=b'', mime='text/plain; charset=utf-8'):
+        self.response_headers(code, mime, len(body))
         with contextlib.suppress(BrokenPipeError, ConnectionResetError):
             self.wfile.write(body)
+
+    def stream_live(self):
+        self.close_connection = True
+        self.connection.settimeout(5)
+        with contextlib.suppress(OSError), contextlib.closing(self.server.live.frames()) as frames:
+            self.response_headers(200, 'text/event-stream; charset=utf-8')
+            for frame in frames:
+                self.wfile.write(frame)
+                self.wfile.flush()
 
     def do_GET(self):
         port = self.server.server_port
@@ -97,6 +231,8 @@ class Handler(BaseHTTPRequestHandler):
         auth = self.headers.get('Authorization', '').encode('latin-1')
         if not hmac.compare_digest(auth, ('Bearer ' + self.server.key).encode('ascii')):
             return self.reply(401)
+        if path == '/api/live':
+            return self.stream_live()
         detail = re.fullmatch(r'/api/tasks/([0-9a-f]{32})', path)
         if path != '/api/overview' and not detail:
             return self.reply(404)

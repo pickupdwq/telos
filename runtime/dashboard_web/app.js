@@ -15,7 +15,6 @@ const state = {
     dialog: null,
     detail: null,
     detailState: "",
-    preview: null,
     expanded: false,
 };
 const signatures = new Map();
@@ -42,8 +41,7 @@ const eventNames = {
 const clock = new Intl.DateTimeFormat("zh-CN", { hour: "2-digit", minute: "2-digit", hour12: false });
 const calendar = new Intl.DateTimeFormat("zh-CN", { month: "short", day: "numeric" });
 const authorize = "在终端运行 telos dashboard --open，用当前浏览器打开授权地址。";
-let loading = false,
-    detailRequest = 0,
+let detailRequest = 0,
     returnFocus = null,
     priorityItem = null;
 
@@ -217,7 +215,7 @@ function order(row) {
 }
 function inView(row, key) {
     const item = row.t || row.p;
-    if (key === "active") return running(row);
+    if (key === "active") return state.connected && running(row);
     if (key === "attention") return attention(item);
     if (key === "history") return historical(item);
     return true;
@@ -246,26 +244,17 @@ function elapsed(start, end) {
         mm = Math.floor(seconds / 60);
     return String(mm).padStart(2, "0") + ":" + String(seconds % 60).padStart(2, "0");
 }
-function timer(row, preview = false) {
+function timer(row) {
     const item = row.t,
         active = running(row);
-    const start = preview ? state.preview?.start : item ? item.run_started_at : row.p.verification_started_at;
-    let label = active ? "本轮已处理" : "上轮耗时";
-    let end = item?.run_finished_at;
-    if (preview) {
-        label = "预览用时";
-        end = Date.now() / 1000;
-    } else if (active) {
-        end = state.connected ? Date.now() / 1000 : state.lastSync;
-        if (!state.connected) label = "上次已处理";
-    } else if (["pending", "ready", "starting"].includes((item || row.p).phase) && !start) label = "尚未开工";
-    const box = el("span", "clock");
-    box.append(el("small", "", label));
-    const num = el("strong", "", elapsed(start, end));
-    if (Number.isFinite(start) && (preview || (active && state.connected)))
-        num.dataset.started = String(start);
-    if (num.textContent === "—") num.title = label === "尚未开工" ? label : "没有完整的本轮时间记录";
-    box.append(num);
+    const start = item ? item.run_started_at : row.p.verification_started_at;
+    const end = active ? (state.connected ? Date.now() / 1000 : state.lastSync) : item?.run_finished_at;
+    const label = active ? (state.connected ? "本轮已处理" : "上次已处理") : "上轮耗时";
+    const box = el("span", "clock"),
+        num = el("strong", "", elapsed(start, end));
+    box.append(el("small", "", label), num);
+    if (Number.isFinite(start) && active && state.connected) num.dataset.started = String(start);
+    if (num.textContent === "—") num.title = "没有完整的本轮时间记录";
     return box;
 }
 function tick() {
@@ -278,6 +267,9 @@ function identify(cls, caption, model, sub) {
         avatar = el("i", "avatar"),
         copy = el("div", "actor-copy");
     avatar.setAttribute("aria-hidden", "true");
+    const orbit = el("span", "orbit");
+    orbit.append(el("i", "satellite"));
+    avatar.append(orbit, el("span", "scan-line"));
     copy.append(el("span", "", caption), el("strong", "", model), el("span", "", sub));
     box.append(avatar, copy);
     return box;
@@ -285,7 +277,7 @@ function identify(cls, caption, model, sub) {
 function wire(second) {
     const n = el("span", "link" + (second ? " second" : ""));
     n.setAttribute("aria-hidden", "true");
-    n.append(el("i"));
+    n.append(el("i", "packet"), el("i", "packet echo"));
     return n;
 }
 function actionText(row) {
@@ -302,58 +294,41 @@ function focusDetail(p, t) {
     state.detail = null;
     state.detailState = t ? "load" : "";
     detailRequest++;
-    state.preview = null;
     if (!$("inspector").open) $("inspector").showModal();
     $("detail").scrollTop = 0;
     render();
     if (t) fetchDetail(t.id);
 }
-function flowLine(row, mode) {
-    const { p, t } = row;
-    const moving = mode === "live" || mode === "preview";
-    const line = el(
-        "div",
-        "flow-row" + (moving ? " moving" : "") + (mode === "preview" ? " previewing" : ""),
-    );
+function flowLine(row) {
+    const { p, t } = row,
+        isCheck = !t && p.phase === "verifying";
+    const line = el("div", "flow-row moving");
+    line.dataset.lane = t?.id || p.id;
     line.append(
         identify("owner", "大总管", p.owner?.model || ownerLabel(p), supervisor(p)),
         wire(false),
-        identify(
-            "worker",
-            t ? "执行者" : p.phase === "verifying" ? "整体验证" : "执行者",
-            workerModel(row),
-            workerLabel(row),
-        ),
+        identify("worker", isCheck ? "整体验证" : "执行者", workerModel(row), workerLabel(row)),
         wire(true),
     );
     const task = btn("flow-select", null, () => focusDetail(p, t));
-    const number = t ? taskId(t) : "项目";
-    const project = p.kind === "standalone" ? "独立任务" : short(projectTitle(p), 42);
-    const label =
-        mode === "preview"
-            ? "动画预览 · 非实时"
-            : mode === "live"
-              ? phaseText(t || p)
-              : state.connected
-                ? "记录 · " + phaseText(t || p)
-                : "离线记录";
-    task.append(el("span", "task-meta", [number, project, label].join(" · ")));
+    task.append(
+        el(
+            "span",
+            "task-meta",
+            [
+                t ? taskId(t) : "项目",
+                p.kind === "standalone" ? "独立任务" : short(projectTitle(p), 42),
+                phaseText(t || p),
+            ].join(" · "),
+        ),
+    );
     task.append(el("span", "flow-task", t ? taskTitle(t) : projectTitle(p)));
     if (t && sourceDescription(t)) task.append(el("span", "flow-action", short(sourceDescription(t), 90)));
-    task.append(el("span", "flow-action", short(actionText(row), 100)));
+    task.append(el("span", "flow-action latest-action", short(actionText(row), 100)));
     task.title = "查看详情";
     task.dataset.focus = "flow:" + (t?.id || p.id);
-    line.append(task, timer(row, mode === "preview"));
+    line.append(task, timer(row));
     return line;
-}
-function eligiblePreview(row) {
-    return (
-        row?.t &&
-        row.t.model &&
-        !["manual", "unbound"].includes(ownerId(row.p)) &&
-        !["ready", "pending", "starting", "missing"].includes(row.t.phase) &&
-        !running(row)
-    );
 }
 function flowSignature(row) {
     const { p, t } = row;
@@ -380,101 +355,81 @@ function flowSignature(row) {
         t?.run_finished_at,
     ];
 }
+// Preserve nodes between snapshots: continuous motion is never restarted by an unrelated update.
+const laneNodes = new Map();
 function drawFlow() {
-    const active = state.rows.filter(running);
-    let selected = resolve(state.focus);
-    if (selected && !selected.t && selected.p.phase !== "verifying" && selected.p.tasks.length) {
-        selected = state.rows.find((row) => row.p.id === selected.p.id && row.t);
-    }
-    if (active.length || !state.connected) state.preview = null;
-    const playable = eligiblePreview(selected)
-        ? selected
-        : state.rows.reduce(
-              (latest, row) =>
-                  eligiblePreview(row) && (!latest || recent(row) > recent(latest)) ? row : latest,
-              null,
-          );
-    const preview = state.preview && resolve(state.preview);
-    let rows = [...active];
-    const staticRow = preview || selected || playable || state.rows[0];
-    if (
-        staticRow &&
-        !rows.some((r) => same(ref(r.p, r.t), ref(staticRow.p, staticRow.t))) &&
-        (selected || !active.length)
-    )
-        rows.unshift(staticRow);
-    if (selected)
-        rows.sort(
-            (a, b) =>
-                Number(same(ref(b.p, b.t), ref(selected.p, selected.t))) -
-                Number(same(ref(a.p, a.t), ref(selected.p, selected.t))),
-        );
-    const display = state.expanded ? rows : rows.slice(0, 3);
+    const active = state.connected ? state.rows.filter(running) : [];
+    const display = state.expanded ? active : active.slice(0, 3);
     const head = $("flow-state");
-    head.className = preview ? "preview" : state.connected && active.length ? "live" : "";
-    head.textContent = preview
-        ? "动画预览 · 非实时"
-        : !state.loaded
-          ? "等待数据"
-          : !state.connected
-            ? "离线 · 上次记录"
-            : active.length
-              ? active.length + " 路正在工作"
-              : "当前空闲 · 非实时";
-    update(
-        "flows",
-        [
-            state.connected,
-            state.loaded,
-            state.connected ? 0 : state.lastSync,
-            display.map(flowSignature),
-            state.preview,
-            rows.length,
-            state.expanded,
-            state.focus,
-            !!playable,
-        ],
-        () => {
-            const nodes = display.map((row) =>
-                flowLine(
-                    row,
-                    preview && same(ref(row.p, row.t), state.preview)
-                        ? "preview"
-                        : running(row) && state.connected
-                          ? "live"
-                          : "record",
+    head.className = active.length ? "live" : "";
+    head.textContent = !state.loaded
+        ? "等待数据"
+        : !state.connected
+          ? "未连接"
+          : active.length + " 路正在工作";
+    const keys = [],
+        nodes = [];
+    for (const row of display) {
+        const id = row.t?.id || row.p.id;
+        const sig = JSON.stringify([
+            row.p.id,
+            row.p.title,
+            row.p.owner,
+            row.p.kind,
+            row.p.phase,
+            row.p.status,
+            row.p.verification_started_at,
+            row.t?.run_id,
+            row.t?.display_id,
+            row.t?.display_title,
+            row.t?.title,
+            row.t?.model,
+            row.t?.role,
+            row.t?.status,
+            row.t?.run_started_at,
+        ]);
+        let entry = laneNodes.get(id);
+        if (entry?.sig !== sig) {
+            entry = { sig, node: flowLine(row) };
+            laneNodes.set(id, entry);
+        }
+        const note = short(actionText(row), 100),
+            text = entry.node.querySelector(".latest-action");
+        if (text.textContent !== note) text.textContent = note;
+        nodes.push(entry.node);
+        keys.push([id, sig]);
+    }
+    const shown = new Set(display.map((r) => r.t?.id || r.p.id));
+    for (const id of laneNodes.keys()) if (!shown.has(id)) laneNodes.delete(id);
+    update("flows", [keys, active.length, state.expanded, state.connected, state.loaded], () => {
+        if (!nodes.length) {
+            const text = !state.loaded
+                ? "正在连接 Telos…"
+                : !state.connected
+                  ? "实时连接已断开"
+                  : "等待真实任务启动";
+            const standby = el("div", "standby");
+            const symbol = el("span", "standby-symbol");
+            symbol.setAttribute("aria-hidden", "true");
+            standby.append(symbol, el("span", "", text));
+            nodes.push(standby);
+        }
+        if (active.length > 3) {
+            const tools = el("div", "flow-tools");
+            tools.append(
+                btn(
+                    "text-button",
+                    state.expanded ? "收起" : "展开其余 " + (active.length - 3) + " 路",
+                    () => {
+                        state.expanded = !state.expanded;
+                        drawFlow();
+                    },
                 ),
             );
-            if (!nodes.length)
-                nodes.push(el("p", "empty", state.loaded ? "还没有可展示的协作记录。" : "正在读取执行关系…"));
-            const tools = el("div", "flow-tools");
-            if (rows.length > 3)
-                tools.append(
-                    btn(
-                        "text-button",
-                        state.expanded ? "收起" : "其余 " + (rows.length - 3) + " 路 ↓",
-                        () => {
-                            state.expanded = !state.expanded;
-                            drawFlow();
-                        },
-                    ),
-                );
-            if (!active.length && playable && state.connected) {
-                const toggle = btn("preview-btn", preview ? "结束预览" : "预览运行动画", () => {
-                    state.preview = state.preview
-                        ? null
-                        : { ...ref(playable.p, playable.t), start: Date.now() / 1000 };
-                    drawFlow();
-                    tick();
-                });
-                toggle.setAttribute("aria-pressed", String(!!preview));
-                toggle.dataset.focus = "preview";
-                tools.append(toggle);
-            }
-            if (tools.childElementCount) nodes.push(tools);
-            return nodes;
-        },
-    );
+            nodes.push(tools);
+        }
+        return nodes;
+    });
 }
 function identity(cls, label, model, context) {
     const node = el("span", "identity " + cls);
@@ -490,6 +445,7 @@ function card(row) {
         "article",
         "card" + (live ? " live-card" : "") + (same(state.focus, ref(p, t)) ? " selected" : ""),
     );
+    tile.dataset.lane = t?.id || p.id;
     const head = el("div", "card-head");
     const project = btn(
         "project-link",
@@ -590,6 +546,7 @@ function drawPriority(rows) {
             .join(" · ");
     }
 }
+const cardNodes = new Map();
 function render() {
     const scope = scopedRows(),
         visible = scope.filter((r) => inView(r, state.filter));
@@ -597,7 +554,7 @@ function render() {
     drawControls(scope);
     drawPriority(visible);
     $("task-count").textContent = String(visible.filter((row) => row.t).length);
-    const signatures = visible.map((row) => [
+    const rowSignatures = visible.map((row) => [
         flowSignature(row),
         row.t?.tone,
         row.t?.updated,
@@ -605,8 +562,22 @@ function render() {
         workerLabel(row),
         repoBase(row.p),
     ]);
-    update("cards", [signatures, state.focus, state.loaded, state.connected], () => {
-        if (visible.length) return visible.map(card);
+    update("cards", [rowSignatures, state.focus, state.loaded, state.connected], () => {
+        // Keep unchanged card contents (and in-flight event effects) when a
+        // different executor publishes activity or moves up the wall.
+        const visibleIds = new Set(visible.map((row) => row.t?.id || row.p.id));
+        for (const key of cardNodes.keys()) if (!visibleIds.has(key)) cardNodes.delete(key);
+        if (visible.length)
+            return visible.map((row, i) => {
+                const id = row.t?.id || row.p.id;
+                const sig = JSON.stringify([
+                    rowSignatures[i],
+                    state.connected,
+                    same(ref(row.p, row.t), state.focus),
+                ]);
+                if (cardNodes.get(id)?.sig !== sig) cardNodes.set(id, { sig, node: card(row) });
+                return cardNodes.get(id).node;
+            });
         let text = state.loaded ? "还没有任务记录。" : "正在读取任务…";
         if (state.rows.length) text = "没有符合筛选条件的任务。";
         const message = el("p", "empty", text);
@@ -822,8 +793,11 @@ async function get(path) {
     if (!res.ok) throw new Error("unavailable");
     return res.json();
 }
+let pendingDetail = null;
 async function fetchDetail(id) {
+    if (pendingDetail?.id === id && pendingDetail.request === detailRequest) return;
     const request = ++detailRequest;
+    pendingDetail = { id, request };
     try {
         const detail = await get("/api/tasks/" + encodeURIComponent(id));
         if (request !== detailRequest || state.dialog?.tid !== id) return;
@@ -833,51 +807,219 @@ async function fetchDetail(id) {
         if (request !== detailRequest || state.dialog?.tid !== id) return;
         state.detailState = error.message === "unauthorized" ? "unauthorized" : "error";
         if (state.detailState === "unauthorized") state.detail = null;
+    } finally {
+        if (pendingDetail?.request === request) pendingDetail = null;
     }
     drawDetail();
 }
-async function refresh() {
-    if (loading) return;
-    loading = true;
-    $("refresh").disabled = true;
-    try {
-        const overview = await get("/api/overview");
-        if (!Array.isArray(overview?.projects)) throw new Error("invalid overview");
-        state.projects = overview.projects.map((p) => ({
-            ...p,
-            tasks: Array.isArray(p.tasks) ? p.tasks : [],
-        }));
-        state.rows = readRows(state.projects);
-        state.loaded = true;
-        state.connected = true;
-        state.lastSync = Date.now() / 1000;
-        $("connection").textContent = "已连接 · 自动刷新";
-        $("light").className = "online";
-        $("synced").textContent = "更新于 " + clock.format(new Date(state.lastSync * 1000));
-        $("notice").textContent = (overview.warnings || []).join("\n");
-        $("notice").hidden = !$("notice").textContent;
-        render();
-        if (state.dialog?.tid) fetchDetail(state.dialog.tid);
-    } catch (error) {
-        state.connected = false;
-        state.preview = null;
-        $("light").className = "offline";
-        $("connection").textContent = error.message === "unauthorized" ? "尚未授权" : "连接中断";
-        $("notice").hidden = false;
-        $("notice").textContent =
-            error.message === "unauthorized"
-                ? authorize
-                : state.loaded
-                  ? "连接中断，显示上次读取的记录；动画和计时已停止。"
-                  : "无法读取本机记录，请确认看板服务正在运行。";
-        if (!state.loaded) $("summary").textContent = "本机数据暂不可用";
-        render();
-    } finally {
-        loading = false;
-        $("refresh").disabled = false;
+// Each stream starts with a baseline. A new pulse always belongs to an event
+// observed during this connection and the same run, never a historic snapshot.
+const observed = new Map();
+let baselineAt = 0;
+function changedActions(rows, baseline) {
+    const now = Date.now() / 1000;
+    if (baseline) {
+        observed.clear();
+        baselineAt = now;
+    }
+    const current = new Set(),
+        changed = [];
+    for (const row of rows) {
+        const t = row.t;
+        if (!t || !running(row)) continue;
+        const run = t.run_id || t.run_started_at || null;
+        current.add(t.id);
+        let prior = observed.get(t.id);
+        if (!prior || prior.run !== run) {
+            prior = { run, ids: new Set(), at: 0 };
+            observed.set(t.id, prior);
+        }
+        if (!t.activity_id || !Number.isFinite(t.activity_at) || prior.ids.has(t.activity_id)) continue;
+        const fresh =
+            t.activity_at >= baselineAt &&
+            t.activity_at >= prior.at &&
+            (!t.run_started_at || t.activity_at >= t.run_started_at);
+        prior.at = Math.max(prior.at, t.activity_at);
+        prior.ids.add(t.activity_id);
+        if (prior.ids.size > 128) prior.ids.delete(prior.ids.values().next().value);
+        if (!baseline && fresh) changed.push(t);
+    }
+    for (const key of observed.keys()) if (!current.has(key)) observed.delete(key);
+    return changed;
+}
+function signalActions(changed) {
+    if (!changed.length || !state.connected || document.hidden) return;
+    const targets = [...document.querySelectorAll(".flow-row.moving[data-lane],.card.live-card[data-lane]")];
+    for (const t of changed) {
+        for (const target of targets.filter((node) => node.dataset.lane === t.id)) {
+            // Replace an unfinished burst with the latest real action; at most
+            // one pulse is visible per task, even during a fast command stream.
+            target.querySelector(".activity-pulse")?.remove();
+            const burst = el("span", "activity-pulse");
+            burst.dataset.activityPulse = t.activity_id;
+            burst.dataset.kind = t.activity_kind || "";
+            burst.setAttribute("aria-hidden", "true");
+            const label = el("span", "signal-label", eventNames[t.activity_kind] || "新动作");
+            burst.append(el("i", "signal-wave"), label);
+            target.append(burst);
+            burst.addEventListener("animationend", (ev) => {
+                if (ev.target === burst) burst.remove();
+            });
+            // Reduced motion uses a static highlight, not an infinite badge.
+            window.setTimeout(() => burst.remove(), 1500);
+        }
     }
 }
-$("refresh").addEventListener("click", refresh);
+function observeNow() {
+    state.lastSync = Date.now() / 1000;
+    $("synced").textContent = "观测于 " + clock.format(new Date(state.lastSync * 1000));
+}
+function applySnapshot(overview, source, baseline) {
+    if (!Array.isArray(overview?.projects)) throw new Error("invalid snapshot");
+    state.projects = overview.projects.map((p) => ({ ...p, tasks: Array.isArray(p.tasks) ? p.tasks : [] }));
+    state.rows = readRows(state.projects);
+    const changes = changedActions(state.rows, baseline);
+    state.loaded = true;
+    state.connected = true;
+    observeNow();
+    $("connection").textContent = source === "stream" ? "实时连接" : "定时读取";
+    $("light").className = "online";
+    $("notice").textContent = (overview.warnings || []).join("\n");
+    $("notice").hidden = !$("notice").textContent;
+    render();
+    signalActions(changes);
+}
+let generation = 0,
+    controller = null,
+    retryTimer = 0,
+    backoff = 1000;
+function halt() {
+    generation++;
+    clearTimeout(retryTimer);
+    controller?.abort();
+    controller = null;
+}
+function disconnected(error) {
+    state.connected = false;
+    const unauthorized = error?.message === "unauthorized";
+    $("light").className = "offline";
+    $("connection").textContent = unauthorized ? "尚未授权" : "连接中断";
+    $("notice").hidden = false;
+    $("notice").textContent = unauthorized
+        ? authorize
+        : state.loaded
+          ? "实时连接中断，任务卡保留最后一次观测；计时已冻结。"
+          : "无法读取本机记录，正在重连。";
+    if (!state.loaded) $("summary").textContent = "本机数据暂不可用";
+    render();
+}
+function nextConnection(id, delay) {
+    if (id === generation && !document.hidden) retryTimer = window.setTimeout(() => connect(), delay);
+}
+async function snapshot(signal) {
+    const res = await window.dashboardFetch("/api/overview", {
+        cache: "no-store",
+        signal: AbortSignal.any([signal, AbortSignal.timeout(10000)]),
+    });
+    if (res.status === 401) throw new Error("unauthorized");
+    if (!res.ok) throw new Error("overview unavailable");
+    return res.json();
+}
+async function connect(manual = false) {
+    halt();
+    if (document.hidden) return;
+    const id = generation,
+        abort = new AbortController();
+    controller = abort;
+    const active = () => id === generation && !document.hidden;
+    let hadFrame = false,
+        timeout = 0,
+        hardError = null;
+    const resetTimeout = () => {
+        clearTimeout(timeout);
+        timeout = setTimeout(() => abort.abort(), 12000);
+    };
+    if (manual) $("refresh").disabled = true;
+    try {
+        if (manual) {
+            const overview = await snapshot(abort.signal);
+            if (!active()) return;
+            applySnapshot(overview, "poll", true);
+            if (state.dialog?.tid) fetchDetail(state.dialog.tid);
+        }
+        resetTimeout();
+        const res = await window.dashboardFetch("/api/live", {
+            cache: "no-store",
+            headers: { Accept: "text/event-stream" },
+            signal: abort.signal,
+        });
+        if (res.status === 401) throw new Error("unauthorized");
+        if (!res.ok || !res.body || !res.headers.get("content-type")?.startsWith("text/event-stream"))
+            throw new Error("stream unavailable");
+        const reader = res.body.getReader(),
+            decoder = new TextDecoder();
+        let buffer = "";
+        try {
+            while (active()) {
+                const { done, value } = await reader.read();
+                if (!active()) return;
+                if (done) throw new Error("stream ended");
+                buffer += decoder.decode(value, { stream: true });
+                let delimiter;
+                while ((delimiter = /\r?\n\r?\n/.exec(buffer))) {
+                    const block = buffer.slice(0, delimiter.index);
+                    buffer = buffer.slice(delimiter.index + delimiter[0].length);
+                    const lines = block.split(/\r?\n/);
+                    const data = lines
+                        .filter((line) => line.startsWith("data:"))
+                        .map((line) => line.slice(5).replace(/^ /, ""));
+                    if (data.length) {
+                        applySnapshot(JSON.parse(data.join("\n")), "stream", !hadFrame);
+                        hadFrame = true;
+                        backoff = 1000;
+                        $("refresh").disabled = false;
+                        resetTimeout();
+                    } else if (hadFrame && lines.some((line) => line.startsWith(":"))) {
+                        observeNow();
+                        resetTimeout();
+                    }
+                }
+            }
+        } finally {
+            reader.releaseLock();
+        }
+    } catch (error) {
+        if (!active()) return;
+        hardError = error;
+    } finally {
+        clearTimeout(timeout);
+        abort.abort();
+        if (active()) $("refresh").disabled = false;
+    }
+    if (!active()) return;
+    disconnected(hardError);
+    if (hardError?.message === "unauthorized") return;
+    if (!hadFrame) {
+        // Old runtimes or unavailable streams can still supply genuine snapshots.
+        // A fallback read is always a new baseline; never replay a missed action.
+        const fallback = new AbortController();
+        controller = fallback;
+        try {
+            const value = await snapshot(fallback.signal);
+            if (!active()) return;
+            applySnapshot(value, "poll", true);
+            nextConnection(id, 4000);
+            return;
+        } catch (error) {
+            if (!active()) return;
+            disconnected(error);
+            if (error.message === "unauthorized") return;
+        }
+    }
+    nextConnection(id, backoff);
+    backoff = Math.min(8000, backoff * 2);
+}
+$("refresh").addEventListener("click", () => connect(true));
 $("query").addEventListener("input", () => {
     state.query = $("query").value.trim().toLocaleLowerCase();
     render();
@@ -916,20 +1058,35 @@ $("inspector").addEventListener("close", () => {
             ?.focus({ preventScroll: true });
     returnFocus = null;
 });
+function suspend() {
+    halt();
+    state.connected = false;
+    observed.clear();
+    if (state.loaded) {
+        $("connection").textContent = "实时连接已暂停";
+        $("light").className = "";
+        render();
+    }
+}
 document.addEventListener("visibilitychange", () => {
-    if (!document.hidden) refresh();
+    if (document.hidden) suspend();
+    else connect();
+});
+window.addEventListener("pagehide", suspend);
+window.addEventListener("pageshow", (event) => {
+    if (event.persisted && !document.hidden) connect();
 });
 window.addEventListener("offline", () => {
-    state.connected = false;
-    state.preview = null;
-    $("light").className = "offline";
-    $("connection").textContent = "正在确认本机连接";
-    render();
-    refresh();
+    halt();
+    disconnected();
+    nextConnection(generation, 1000);
+});
+window.addEventListener("online", () => {
+    if (!document.hidden) connect();
 });
 render();
-refresh();
-window.setInterval(() => {
-    if (!document.hidden) refresh();
-}, 4000);
+connect();
 window.setInterval(tick, 1000);
+window.setInterval(() => {
+    if (!document.hidden && state.connected && state.dialog?.tid) fetchDetail(state.dialog.tid);
+}, 4000);

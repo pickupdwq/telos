@@ -47,9 +47,11 @@ and restart the supervising Telos processes.
 The wall shows all project tasks, meeting assignments and standalone tasks side
 by side, including pending and historical ones. Each card identifies the original
 supervisor, executor, project and task; click it for activity and callback details.
-The animated flow and per-second timer show the current attempt, not time since
-the task was created. With no execution in progress the wall stays idle; click
-“预览运行动画” for a labeled preview that does not change the running-task count.
+The browser subscribes to a local event stream. The animated links show current
+execution, and a new recorded tool action, command result, file change or message
+triggers a pulse on the corresponding executor. The timer measures the current
+attempt. Waiting and historical records stay on the wall without animation.
+Reconnecting restores the current state without replaying old actions.
 Project confirmation is separate from child completion.
 The task view shows recorded public activity, check and callback status; older
 records may lack titles, logs or timing. Project durations accumulate task time,

@@ -58,7 +58,7 @@ Codex CLI with a local model fixture, and a separate tmux server when available.
 No existing terminal panes are changed. It verifies streaming before process
 completion, one shared panel, focus retention, task switching, close/reopen,
 history and private-exam boundaries. See [observer behavior](watch.md). To check the browser task wall, animated live
-timer, Chinese task labels, dialog and idle animation preview, use an existing browser:
+timer, Chinese task labels, dialog, event pulses and reconnection, use an existing browser:
 
 ```sh
 node tests/dashboard_browser.cjs /path/to/node_modules/playwright-core /path/to/chrome

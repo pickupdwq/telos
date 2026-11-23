@@ -64,7 +64,7 @@ class DashboardDataTest(unittest.TestCase):
         self.assertIsNone(self.board.detail(self.pid))
 
     def test_live_activity_and_read_only_stale_detection(self):
-        self.run_state(self.first, phase='running', job_pid=os.getpid(), job_started=100)
+        self.run_state(self.first, phase='running', job_pid=os.getpid(), job_started=100, execution_started_at=101)
         log = activity.Recorder(self.root / 'runs' / self.first, self.first)
         log.emit('tool', 'pwd')
         self.assertEqual(self.board.snapshot()['projects'][0]['tasks'][0]['activity'], 'pwd')
@@ -72,11 +72,62 @@ class DashboardDataTest(unittest.TestCase):
             self.assertEqual(self.board.snapshot()['projects'][0]['phase'], 'stale')
         self.assertEqual(json.loads((log.directory / 'state.json').read_text())['phase'], 'running')
 
+    def test_distinct_repeated_actions_are_stable_and_scoped_to_the_attempt(self):
+        current, earlier = '1' * 32, '2' * 32
+        state = dict(phase='running', job_pid=os.getpid(), job_started=99,
+                     job_id=current, execution_claim=current, execution_started_at=100)
+        self.run_state(self.first, **state)
+        path = self.root / 'runs' / self.first / activity.FILENAME
+        def record(job, kind='tool', text='pwd', phase='work', **extra):
+            row = {'version': 1, 'time': 120, 'session_id': self.first, 'job_id': job,
+                   'phase': phase, 'kind': kind, 'text': text, **extra}
+            with path.open('a') as stream:
+                stream.write(json.dumps(row) + '\n')
+        def task():
+            return self.board.snapshot()['projects'][0]['tasks'][0]
+        record(earlier)
+        self.assertIsNone(task()['activity_id'])
+        record(current)
+        first = task()
+        self.assertEqual((first['activity_kind'], first['activity_at'], first['run_id']), ('tool', 120, current))
+        self.assertEqual(task()['activity_id'], first['activity_id'])
+        record(current)  # same text, time, kind, and no native UUID
+        second = task()['activity_id']
+        self.assertNotEqual(first['activity_id'], second)
+        record(earlier, text='old attempt appended late')
+        record(current, 'reasoning', 'PRIVATE')
+        record(current, 'message', 'PRIVATE', phase='exam')
+        self.assertEqual(task()['activity_id'], second)
+        record(current, 'files', 'M main.py', id='f' * 32)
+        last = task()
+        self.assertEqual((last['activity_id'], last['activity_kind'], last['activity']), ('f' * 32, 'files', 'M main.py'))
+        self.assertNotIn('PRIVATE', repr(self.board.snapshot()))
+        self.run_state(self.first, **{**state, 'phase': 'awaiting_review'})
+        self.assertIsNone(task()['activity_id'])
+
+    def test_starting_or_dead_worker_does_not_pose_as_running(self):
+        import time
+        self.run_state(self.first, phase='running', job_pid=os.getpid(), job_started=time.time(),
+                       job_id='1' * 32, execution_claim='2' * 32)
+        task = self.board.snapshot()['projects'][0]['tasks'][0]
+        self.assertEqual((task['phase'], task['tone']), ('starting', 'wait'))
+        self.project(phase='verifying', verification_started=time.time())
+        project = next(p for p in self.board.snapshot()['projects'] if p['kind'] == 'project')
+        self.assertEqual((project['phase'], project['tone']), ('verification_starting', 'wait'))
+        self.project(phase='verifying', continuation='paused', verification_started=1, verification_pid=os.getpid())
+        finishing = next(p for p in self.board.snapshot()['projects'] if p['kind'] == 'project')
+        self.assertEqual((finishing['phase'], finishing['status']), ('verifying', '项目检查收尾中'))
+        self.project(phase='verifying', verification_started=1, verification_pid=os.getpid())
+        with patch('dashboard_data.process_running', return_value=False):
+            projects = self.board.snapshot()['projects']
+        self.assertTrue(all(p['phase'] == 'stale' and p['tone'] == 'issue' for p in projects))
+
     def test_cancelled_project_paused_children_and_discussion(self):
         self.project(continuation='cancelled')
         self.assertEqual(self.board.snapshot()['projects'][0]['phase'], 'cancelled')
         self.assertEqual(self.board.snapshot()['projects'][0]['tasks'][0]['phase'], 'cancelled')
-        self.run_state(self.first, project_id=self.pid, phase='running', continuation='cancelled', job_pid=os.getpid())
+        self.run_state(self.first, project_id=self.pid, phase='running', continuation='cancelled',
+                       job_pid=os.getpid(), job_started=100, execution_started_at=101)
         draining = self.board.snapshot()['projects'][0]
         self.assertEqual(draining['tone'], 'active')
         self.assertEqual(draining['tasks'][0]['status'], '收尾中')
