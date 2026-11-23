@@ -1,47 +1,26 @@
-# Refactor an existing project / 老项目重构
+# 老项目重构 / Refactor an existing project
 
-“请使用 Telos 对这个项目进行重构” starts discovery, not permission to dispatch a
-code change. Route natural-language equivalents here as well. For a question
-about feasibility, answer it; do not create a project. Use this same project
-flow with a single batch for a small refactor.
+“请使用 Telos 对这个项目进行重构”启动以下流程，即使只重构一个细节，也先了解整个产品。可行性咨询只回答问题。确认前允许原大总管走查、执行者只读讨论；任何修改业务仓库的任务都要等用户确认整版方案。
 
-1. **Find the user's points.** Inspect the requested repository and its actual
-   entry points and callers. Use user priorities, change history and concrete
-   maintenance pain to rank candidates, not file size alone. If the repository
-   or a consequential business choice is ambiguous, ask a focused question.
-   Do this initial investigation in the original supervisor conversation.
-2. **Capture old behavior.** On the original revision, run the useful existing
-   checks and capture representative inputs/results, old stored data, failure
-   paths and important public interfaces. Record pre-existing failures or
-   unavailable evidence separately. Don't freeze an accidental bug as a
-   requirement: ask before changing visible behavior. Use an isolated clean
-   checkout if the original contains ongoing edits.
-3. **Prepare the proposal.** Use `telos_project_open(refactor_plan=...)`. Supply
-   concrete public points under all four keys: `scope` (priorities, included and
-   excluded areas), `preserve` (behaviors the user relies on), `improve` (the
-   maintenance problem and observable improvement), `verify` (how to compare
-   the old and new outcomes). Split by reviewable behavior, with literal paths
-   and real dependencies. Freeze appropriate checks for each batch and for
-   the complete project. The public brief goes to each executor; keep private
-   test programs, reference answers and credentials out of it.
-4. **Confirm before dispatch.** Present those points and the batches in plain
-   language, with the exact `refactor.confirm_text` in the final question. For
-   example: “这次只收拢同步状态判断；旧设备的状态和接口不变。用同一批旧数据前后各跑
-   一次，再验证新增状态只需改一处。这些点对吗？确认请回复：确认重构 …” Use the
-   returned code, never the ellipsis. Wait for the actual user. Where the
-   client exposes the immediately preceding assistant message, an unqualified
-   “好” or “确认” in reply to this one card also works. Otherwise use the displayed
-   reply. Silence, the original request, a tool result, an executor opinion or
-   an answer with amendments is not confirmation. If they correct scope,
-   revise and show the corrected proposal; retire a superseded pending plan.
-   Query `telos_project_status` to recover the same pending proposal after a
-   reconnect. Only then call `telos_project_start(project_id, confirm_refactor=
-   <full revision>)`. No need to reconfirm unchanged batches or routine retries.
-   Substantive additions or a changed handoff require the new revision.
-5. **Check both promises and finish.** Run each batch against the captured
-   behavior and the stated maintainability goal. Resolve an introduced
-   regression in its batch. Integrate and rerun the critical paths with all
-   changes together; review the final diff and actual outputs before project
-   acceptance. Report scope covered, what stayed compatible, which maintenance
-   problem improved, and any unverified cases. Separate schema migrations,
-   breaking public changes and deployment from the approved refactor.
+## 先走查：产品现在是怎么工作的？
+
+- 固定干净的 Git 版本。大总管亲自盘点全部跟踪目录和入口，沿用户场景追到界面或 CLI、接口、后端规则、数据读写、定时任务和外部边界。库、纯后端或单端项目按真实入口走，不虚构前端。
+- 用已有测试或代表性样例走通主流程和失败分支，特别看权限、历史数据、错误和外部可见行为。记下输入、原结果和复跑方式。读过代码与实际跑通过要区分；没跑通、现有故障、外部依赖写明原因。构建产物和第三方目录可成组说明排除理由。
+- 写现状 PRD：按业务场景给出稳定名称、角色、触发条件、规则、正常与异常结果和对应源码。文档与现状冲突、疑似旧 bug、需要业务方决定的事单列，不擅自把猜测写成需求。
+- 用 `telos_meeting_open(refactor_discovery=...)` 提交当前完整 `source_commit`、`walkthrough`（每组的仓库相对路径、`exercised/source_only/unverified/excluded`、证据或原因）和 `current_prd`（每个 `flow/behavior/sources`）。路径可用实际目录覆盖其下文件，源码引用则用具体文件。不漏掉跟踪区域，不把整个仓库写成一个点号。Telos 保存可阅读的 `current-prd.md`，不往业务仓库写草稿。
+- 后续同一版已确认方案按批次推进，不重复全仓走查。源版本有变时，复用已核实的记录，复查变动及上下游，用新版本的完整覆盖记录重新讨论。
+
+## 再讨论：先核对业务，再定结构
+
+1. 按 [设计讨论](meetings.md) 启动只读讨论。让熟悉业务的一方对照现状 PRD 查遗漏，另一方从代码、兼容性和测试角度挑错；保留关键异议、证据和处理理由。追问技术事实找代码；产品取舍只有用户能定时再问。不开普通实现任务来代替讨论。
+2. 大总管先汇总详细 PRD：沿用每个现状场景名称，分别写 `preserve`（什么行为不变）、`internal_changes`（内部怎么改）、`verify`（如何对同一输入检查前后结果）。产品新增、流程改义不混进重构；未解决的关键业务问题先问，不用讨论意见代替授权。
+3. PRD 明确后才做技术设计：列出旧位置 → 目标目录、接口边界、依赖方向、每个模块负责什么。前后端都存在时分别说明；没有的层不新造。每项技术选择写清沿用或调整、理由、代价和替代方案。结合项目现状按业务职责拆文件，不把页面、接口、数据访问都塞进同一文件，也不设统一行数指标。
+4. 规划 AI 代码索引，默认 `docs/CODEMAP.md`，已有合适的索引则沿用。用每个业务场景串起入口、主要规则、数据读写和测试，路径按重构完成后的实际位置填写。例如“订单取消 → 页面按钮 → 接口 → 状态规则 → 回归测试”。自然语言说明保留在生成段外。
+5. 收齐实际讨论报告后，用 `telos_meeting_conclude` 同时提交常规会议结论和 `refactor_design_plan`：`detailed_prd`、`structure`（路径、职责）、`technology`（选型、理由）、`index_path` 和 `code_index`（场景、代码和测试文件）。场景与现状 PRD 一一对应。Telos 保存 `refactor-design.md`，内含可直接放入目标索引的 Markdown 段；两个文档路径都在讨论结果里。
+
+## 用户确认后才派工
+
+- 用 `telos_project_open(meeting_id=..., refactor_plan=...)` 引用刚结束的同仓库、同版本讨论。具体填写 `scope/preserve/improve/verify`，按可独立检查的业务行为拆批；每批用 `refactor_flows` 列出对应 PRD 场景、指定可改路径和真实依赖。把索引维护分给有该路径权限的批次；并行任务不要争写同一索引。为各批和整体准备前后行为对照与维护改进检查，私有测试代码不进入公开 PRD。
+- 向用户展示两份文档和一段摘要：业务范围与不变项、拆哪些模块、技术是否替换、索引在哪里、怎么确认行为没变。给出这一版的 `refactor.confirm_text`，等待原对话真实答复。没有回复、带条件的答复和执行者意见都不能派工。客户端能辨认上一条确认卡时可直接回复“好”；否则使用卡片上的完整确认短语。
+- 只有用户同意才调用 `telos_project_start(project_id, confirm_refactor=<完整 revision>)`。恢复时从项目状态找回同一版方案；正常重试和后续已同意的批次不反复问。实质性变更业务、技术选型、模块边界或索引目标：重开只读讨论形成新版，停用被替换的计划并重新确认；仅增加现有设计内的批次，也要确认新的派工清单。
+- 每批验证旧行为与维护目标；移动入口时同步索引，或交给有明确依赖的索引批次统一更新。整合后用原来的场景复跑、核对目录职责和最终差异。Telos 会检查索引包含约定的生成段，且列出的代码与测试文件在整合结果中确实存在。交付说明链接两份 PRD/设计和最终索引，区分实际跑过的行为与未验证项。

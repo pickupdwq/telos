@@ -6,6 +6,7 @@ import time
 import uuid
 import effort_policy
 import progress_guard
+import refactor_design
 import roles
 
 
@@ -88,7 +89,7 @@ class Meetings:
         return out
 
     def create(self, repo, requirement, participants, decision_reason, context='', max_parallel=None,
-               notify=True, caller=None, single_executor_reason=None, dependency_paths=None):
+               notify=True, caller=None, single_executor_reason=None, dependency_paths=None, refactor_discovery=None):
         b = self.b
         if not isinstance(requirement, str) or not requirement.strip() or not isinstance(context, str):
             raise b.GateError('Provide the requirement and public context')
@@ -101,16 +102,29 @@ class Meetings:
         repo = Path(b.git(repo, 'rev-parse', '--show-toplevel')).resolve()
         if b.git(repo, 'status', '--porcelain'):
             raise b.GateError('Prepare a clean source checkout for a pinned read-only meeting')
+        base = b.git(repo, 'rev-parse', 'HEAD')
+        if refactor_discovery is not None:
+            if not notify or not caller:
+                raise b.GateError('Refactor discussions belong to the original user conversation.', code='refactor_owner_required')
+            refactor_design.validate_discovery(b, repo, base, refactor_discovery)
+            context += ('\nReview this current PRD against source; identify omissions, business-rule drift, '
+                        'and evidence for internal changes. Discuss layout, stack and a code map only after '
+                        'settling existing business behavior. Read-only discussion; do not implement.\n'
+                        + refactor_design.documents(refactor_discovery)['current-prd.md'])
+            b.validate_public_material({'questions': [], 'checks': []}, discovery=context)
         dependencies = b.validate_dependencies(dependency_paths or [])
         owner = b.bind_owner(caller) if notify else None
         mid = uuid.uuid4().hex
         contract = {'task': requirement, 'context': context, 'questions': [], 'checks': [],
                     'dependency_paths': dependencies, 'task_type': 'discussion'}
+        if refactor_discovery is not None:
+            contract['refactor_discovery'] = refactor_discovery
+            refactor_design.write_documents(self.projects.path(mid).parent, refactor_discovery)
         for t in tasks:
             t['context'] = requirement + '\n' + context + '\nYour role: ' + t['role']
             t['dependency_paths'] = dependencies
         p = {'project_id': mid, 'kind': 'discussion', 'repo': str(repo),
-             'base_commit': b.git(repo, 'rev-parse', 'HEAD'), 'owner': owner,
+             'base_commit': base, 'owner': owner,
              'execution_mode': 'parallel', 'strategy': 'parallel', 'max_parallel': max_parallel,
              'max_jobs': None, 'jobs_started': 0, 'phase': 'planned', 'continuation': 'active',
              'decision_reason': decision_reason, 'single_executor_reason': single_executor_reason,
@@ -137,7 +151,14 @@ class Meetings:
         reports, questions = self.observations(p)
         blockers = [{'participant_id': t['id'], 'session_id': t['session_id'], 'progress_guard': t['progress_guard']}
                     for t in p['tasks'] if t.get('active', True) and (t.get('progress_guard') or {}).get('blocked')]
+        files = {}
+        if 'refactor_discovery' in p['contract']:
+            folder = self.projects.path(p['project_id']).parent
+            files['current_prd'] = str(folder / 'current-prd.md')
+            if p.get('conclusion'):
+                files['design'] = str(folder / 'refactor-design.md')
         return {'meeting_id': p['project_id'], 'rounds': p.get('discussion_rounds', []),
+                **({'refactor_documents': files} if files else {}),
                 'progress_guard': progress_guard.view(p),
                 'blockers': blockers,
                 'reports': reports, 'questions': questions, 'conclusion': p.get('conclusion'),
@@ -285,7 +306,7 @@ class Meetings:
                              automatic=True)
         t.pop('discussion_pending', None)
 
-    def conclude(self, meeting_id, plan, answers, rationale):
+    def conclude(self, meeting_id, plan, answers, rationale, refactor_design_plan=None):
         b = self.b
         if (not isinstance(plan, dict) or set(plan) != {'requirements', 'implementation', 'workstreams', 'verification'}
                 or any(not isinstance(plan[k], list) or not plan[k] or any(not isinstance(v, str) or not v.strip() for v in plan[k]) for k in plan)
@@ -294,6 +315,14 @@ class Meetings:
         with self.projects.lock():
             p = self.projects.refresh(self.load(meeting_id)); self.projects.active(p)
             args = {'plan': plan, 'answers': answers, 'rationale': rationale}
+            discovery = p['contract'].get('refactor_discovery')
+            if discovery is not None:
+                refactor_design.validate_design(discovery, refactor_design_plan)
+                b.validate_public_material(p['contract'], refactor_design=b.encoded(refactor_design_plan))
+                args['refactor_design'] = refactor_design_plan
+            elif refactor_design_plan is not None:
+                raise b.GateError('Start a refactor meeting with the walkthrough and current PRD first.',
+                                  code='refactor_discovery_required', next_action='telos_meeting_open')
             if p.get('conclusion'):
                 self.validated_conclusion(p)
                 if p['conclusion']['arguments_hash'] != b.digest(args):
@@ -314,6 +343,8 @@ class Meetings:
                 conclusion = {**args, 'arguments_hash': b.digest(args), 'report_ids': [r['report_id'] for r in reports],
                               'source_commit': p['base_commit'], 'at': time.time(), 'accepted': False}
                 conclusion['id'] = b.digest(conclusion)
+                if discovery is not None:
+                    refactor_design.write_documents(self.projects.path(meeting_id).parent, discovery, refactor_design_plan)
                 b.write_json(self.projects.path(meeting_id).parent / 'discussion-conclusion.json', conclusion)
                 p.update(conclusion=conclusion, phase='discussed', finished_at=time.time())
                 self.projects.save(p)
@@ -334,6 +365,9 @@ class Meetings:
         mid = args.pop('meeting_id', None)
         reason = args.pop('skip_meeting_reason', None)
         if not mid:
+            if 'refactor_plan' in args:
+                raise b.GateError('Refactoring requires the concluded read-only PRD/design discussion.',
+                                  code='refactor_meeting_required', next_action='telos_meeting_open')
             mode = b.config().get('planning_mode', 'multi_executor')
             if mode not in ('multi_executor', 'direct'):
                 raise b.GateError('planning_mode must be multi_executor or direct')
@@ -346,11 +380,19 @@ class Meetings:
         if p['phase'] != 'discussed' or p.get('continuation') != 'active':
             raise b.GateError('Conclude the active meeting before implementation')
         conclusion = self.validated_conclusion(p)
+        discovery = p['contract'].get('refactor_discovery')
+        if ('refactor_plan' in args) != (discovery is not None):
+            raise b.GateError('A refactor meeting and a user-confirmed refactor project must be used together.',
+                              code='refactor_meeting_required', next_action=(
+                                  'telos_project_open_with_refactor_plan' if discovery else 'telos_meeting_open'))
         repo = str(Path(b.git(args['repo'], 'rev-parse', '--show-toplevel')).resolve())
         if repo != p['repo'] or b.git(repo, 'rev-parse', 'HEAD') != p['base_commit']:
             raise b.GateError('Implementation source differs from the discussed source; review it in a new meeting')
         args['context'] = args.get('context', '') + '\nConfirmed public meeting plan:\n' + b.encoded({k: conclusion[k] for k in ('plan', 'answers', 'rationale')})
         args['_planning'] = {'mode': 'multi_executor', 'meeting_id': mid, 'conclusion_id': conclusion['id']}
+        if discovery is not None:
+            args['_planning'].update(refactor_design=conclusion['refactor_design'], source_commit=p['base_commit'],
+                                     current_prd=discovery['current_prd'], discovery_hash=b.digest(discovery))
 
     def call(self, name, args, caller):
         if name == 'telos_meeting_open':

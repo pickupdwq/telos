@@ -1,28 +1,62 @@
 """Project refactoring goes through an actual user confirmation before worker admission."""
 import json
 import os
+from pathlib import Path
 import unittest
 from unittest.mock import Mock, patch
 
 import claude_supervisor
 from desktop_rpc import DesktopRPC
 import refactor
+import refactor_design
+import test_meetings
 import test_projects
 from test_callbacks import FakeRPC, OWNER, OTHER
 from test_telos import b
 
 
 class RefactorTests(unittest.TestCase):
-    setUp = test_projects.BridgeTests.setUp
-    tearDown = test_projects.BridgeTests.tearDown
+    setUp = test_meetings.MeetingTests.setUp
+    tearDown = test_meetings.MeetingTests.tearDown
+    no_workers = test_meetings.MeetingTests.no_workers
+    finish = test_meetings.MeetingTests.finish
+    child = test_meetings.MeetingTests.child
+    project = test_meetings.MeetingTests.project
+    state = test_meetings.MeetingTests.project
+    scores = test_projects.ProjectTests.scores
     task = test_projects.ProjectTests.task
+
+    def discovery(self):
+        return {'source_commit': b.git(self.repo, 'rev-parse', 'HEAD'),
+                'walkthrough': [{'paths': ['calc.py'], 'status': 'source_only', 'finding': 'Read add and its callers.'}],
+                'current_prd': [{'flow': 'Addition', 'behavior': 'Signed operands produce their sum.', 'sources': ['calc.py']}]}
+
+    def design(self):
+        return {'detailed_prd': [{'flow': 'Addition', 'preserve': 'Keep signed sums.', 'internal_changes': 'Separate arithmetic.',
+                                 'verify': 'Compare representative sums before and after.'}],
+                'structure': [{'path': 'calc.py', 'responsibility': 'Public arithmetic entry point.'}],
+                'technology': [{'choice': 'Keep Python', 'rationale': 'No new framework needed for arithmetic.'}],
+                'index_path': 'docs/CODEMAP.md', 'code_index': [{'flow': 'Addition', 'paths': ['calc.py']}]}
+
+    def meeting(self):
+        caller = {'threadId': OWNER}
+        mid = test_meetings.MeetingTests.open(self, caller=caller, notify=True, refactor_discovery=self.discovery())
+        test_meetings.MeetingTests.start(self, mid, caller)
+        for worker in ('p0', 'p1'):
+            self.finish(mid, worker)
+        b.call_tool('telos_meeting_conclude', {'meeting_id': mid, 'plan': test_meetings.PLAN,
+                    'answers': [], 'rationale': 'Reviewed both independent reports.', 'refactor_design_plan': self.design()}, caller)
+        return mid
 
     def open(self, **changes):
         self.plan = {'scope': ['Only the addition module; no API changes.'],
                      'preserve': ['Existing signed inputs and errors.'],
                      'improve': ['One place to change the addition rule.'],
                      'verify': ['Compare baseline and integrated results on the same inputs.']}
-        args = {'repo': str(self.repo), 'task': 'Refactor arithmetic', 'tasks': [self.task('add', paths=['calc.py'])],
+        if 'meeting_id' not in changes:
+            changes['meeting_id'] = self.meeting()
+        args = {'repo': str(self.repo), 'task': 'Refactor arithmetic', 'tasks': [
+                self.task('add', paths=['calc.py', 'docs/CODEMAP.md'], refactor_flows=['Addition'])],
                 'questions': self.q, 'checks': self.checks, 'decision_reason': 'One cohesive change',
                 'refactor_plan': self.plan, **changes}
         self.owner = {'thread_id': OWNER, 'transport': 'cli_queue', 'socket': '/fixture', 'cwd': str(self.repo)}
@@ -73,7 +107,9 @@ class RefactorTests(unittest.TestCase):
         self.assertEqual(sum(item.get('action') == 'refactor_confirmed' for item in project['history']), 1)
         child = b.read_json(b.run_dir(project['tasks'][0]['session_id']) / 'contract.json')
         self.assertIn(self.plan['preserve'][0], child['context'])
-        updated = b.project_manager().update(pid, 'Include another maintained module', add_tasks=[self.task('other')])
+        self.assertIn(refactor_design.index_block(self.design()), child['context'])
+        updated = b.project_manager().update(pid, 'Include another maintained module',
+                    add_tasks=[self.task('other', refactor_flows=['Addition'])])
         self.assertFalse(updated['refactor']['confirmed'])
         self.assertNotEqual(info['revision'], updated['refactor']['revision'])
         with self.assertRaises(b.GateError):
@@ -115,6 +151,96 @@ class RefactorTests(unittest.TestCase):
             self.open(refactor_plan={'scope': ['all']})
         with self.assertRaises(b.GateError):
             self.open(notify=False)
+
+    def test_no_direct_or_unrelated_meeting_bypass(self):
+        with self.assertRaises(b.GateError) as error:
+            self.open(meeting_id=None, skip_meeting_reason='small refactor')
+        self.assertEqual(error.exception.code, 'refactor_meeting_required')
+        mid = test_meetings.MeetingTests.open(self)
+        test_meetings.MeetingTests.start(self, mid)
+        for worker in ('p0', 'p1'):
+            self.finish(mid, worker)
+        test_meetings.MeetingTests.conclude(self, mid)
+        with self.assertRaisesRegex(b.GateError, 'used together'):
+            self.open(meeting_id=mid)
+        mid = self.meeting()
+        with self.assertRaisesRegex(b.GateError, 'used together'):
+            b.call_tool('telos_open', {'meeting_id': mid, 'repo': str(self.repo), 'task': 'normal task',
+                        'questions': self.q, 'checks': self.checks}, {'threadId': OWNER})
+
+    def test_discovery_coverage_and_design_cannot_drop_a_flow(self):
+        src = self.discovery()
+        for mutation in ({'source_commit': 'old'}, {'current_prd': []}, {'walkthrough': [
+                {'paths': ['calc.py'], 'status': 'unverified', 'finding': 'Unknown.'}]}):
+            with self.assertRaises(b.GateError):
+                refactor_design.validate_discovery(b, self.repo, src['source_commit'], {**src, **mutation})
+        (self.repo / 'legacy.py').write_text('data = 10')
+        b.git(self.repo, 'add', 'legacy.py')
+        b.git(self.repo, '-c', 'user.name=Test', '-c', 'user.email=test@localhost', 'commit', '-qm', 'legacy')
+        src = self.discovery()
+        with self.assertRaisesRegex(b.GateError, 'legacy.py'):
+            refactor_design.validate_discovery(b, self.repo, src['source_commit'], src)
+        design = self.design()
+        design['detailed_prd'][0]['flow'] = 'Different new feature'
+        with self.assertRaisesRegex(b.GateError, 'same business flows'):
+            refactor_design.validate_design(src, design)
+
+    def test_artifacts_are_readable_and_integrated_index_cannot_point_nowhere(self):
+        view = self.open()
+        info = view['refactor']
+        self.assertEqual(info['design'], self.design())
+        self.assertIn('现状 PRD', Path(info['documents']['current_prd']).read_text())
+        self.assertIn('Keep Python', Path(info['documents']['design']).read_text())
+        design = self.design()
+        index = self.repo / design['index_path']
+        self.assertFalse(index.exists())
+        self.assertEqual(refactor_design.check_index(self.repo, design)['status'], 'failed')
+        index.parent.mkdir()
+        index.write_text('# Custom introduction\n' + refactor_design.index_block(design))
+        self.assertEqual(refactor_design.check_index(self.repo, design)['status'], 'passed')
+        (self.repo / 'calc.py').unlink()
+        self.assertIn('calc.py', refactor_design.check_index(self.repo, design)['stderr'])
+
+    def test_full_product_flow_checks_the_shipped_code_map_at_integration(self):
+        for correct in (False, True):
+            with self.subTest(correct=correct):
+                design = self.design()
+                if not correct:
+                    design['code_index'][0]['paths'].append('missing.py')
+                with patch.object(self, 'design', return_value=design):
+                    view = self.open()
+                pid, info = view['project_id'], view['refactor']
+                with self.no_workers(), patch('refactor.latest_exchange', return_value=('u1', info['confirm_text'], '')):
+                    started = self.start(pid, confirm_refactor=info['revision'])
+                self.assertEqual(started['jobs_started'], 1)
+                contents = refactor_design.index_block(info['design'])
+                test_projects.ProjectTests.submit(self, pid, 'add', {'docs/CODEMAP.md': contents})
+                pm = b.project_manager()
+                pm.integrate(pid)
+                review = test_projects.ProjectTests.check_sync(self, pid)
+                check = next(row for row in review['evidence']['checks'] if row['id'] == 'telos_refactor_code_index')
+                self.assertEqual(check['status'], 'passed' if correct else 'failed')
+                if correct:
+                    result = pm.finish(pid, review['packet_id'], self.scores(), [], 'Reviewed integrated behavior and navigation.')
+                    self.assertTrue(result['accepted'])
+                else:
+                    self.assertIn('missing.py', check['stderr'])
+                    with self.assertRaises(b.GateError):
+                        pm.finish(pid, review['packet_id'], self.scores(), [], 'Cannot accept a broken index.')
+
+    def test_legacy_unconfirmed_plan_requires_design_but_existing_approval_survives(self):
+        view = self.open()
+        p = self.project(view['project_id'])
+        del p['contract']['planning']
+        del p['tasks'][0]['refactor_flows']
+        p['contract_hash'] = b.digest(p['contract'])
+        b.project_manager().save(p)
+        pending = self.start(p['project_id'])
+        self.assertEqual(pending['next_action'], 'telos_meeting_open')
+        with self.assertRaisesRegex(b.GateError, 'predates'):
+            self.start(p['project_id'], confirm_refactor=pending['refactor']['revision'])
+        p['refactor_approval'] = {'signature': pending['refactor']['revision']}
+        self.assertTrue(refactor.proposal(b, p)['confirmed'])
 
     def test_explicit_command_cannot_fall_back_to_unconfirmed_work(self):
         for name in ('telos_open', 'telos_project_open', 'telos_meeting_open'):

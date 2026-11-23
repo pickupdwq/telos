@@ -35,14 +35,21 @@ def proposal(b, project):
     plan = project.get('contract', {}).get('refactor_plan')
     if plan is None:
         return None
-    batches = [{k: task[k] for k in ('id', 'task', 'message', 'allowed_paths', 'depends_on')}
+    batches = [{k: task[k] for k in ('id', 'task', 'message', 'allowed_paths', 'depends_on', 'refactor_flows') if k in task}
                for task in project['tasks']]
     signature = b.digest({'project': project['project_id'], 'base': project['base_commit'],
                           'contract': project['contract_hash'], 'batches': batches})
     receipt = project.get('refactor_approval') or {}
     if receipt.get('signature') == signature:
         return {'revision': signature, 'confirmed': True}
+    planning = project['contract'].get('planning', {})
+    if 'refactor_design' not in planning:
+        return {'revision': signature, 'confirmed': False, 'next_action': 'telos_meeting_open',
+                'reason': 'This pending plan predates the walkthrough. Prepare a replacement from a refactor discussion.'}
+    folder = b.project_manager().path(planning['meeting_id']).parent
     return {'plan': plan, 'batches': batches, 'revision': signature, 'confirmed': False,
+            'current_prd': planning['current_prd'], 'design': planning['refactor_design'],
+            'documents': {'current_prd': str(folder / 'current-prd.md'), 'design': str(folder / 'refactor-design.md')},
             'confirm_text': '确认重构 ' + signature[:12]}
 
 
@@ -111,6 +118,8 @@ def latest_exchange(b, owner):
 
 def check_revision(b, project, revision):
     info = proposal(b, project)
+    if info and info.get('next_action') == 'telos_meeting_open':
+        raise GateError(info['reason'], code='refactor_meeting_required', next_action='telos_meeting_open')
     if info is None or revision != info['revision']:
         raise GateError('The refactoring plan changed or does not exist. Show the current plan.',
                         code='refactor_plan_mismatch', next_action='telos_project_status')

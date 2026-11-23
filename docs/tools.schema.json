@@ -1017,7 +1017,7 @@
     },
     {
       "name": "telos_project_open",
-      "description": "Plan a project owned by THIS original supervisor. Default execution_mode=auto: supervisor decides strategy single/parallel/phased with decision_reason after inspecting task size, dependencies and shared files. Honor user single/parallel override. Never ask the user to choose unless needed. Maximum 3 simultaneous jobs. Every task has literal allowed_paths and private frozen checks/questions; unordered overlapping writers are rejected. No model calls until start. Final project checks are separate from child acceptance. Set notify=false for manual mode only. Final checks inherit the read-only dependency_paths from frozen child contracts. Optional project dependency_paths add read-only access for final checks only; network and write permissions are unchanged. Default planning_mode=multi_executor requires a concluded meeting_id before implementation. Use skip_meeting_reason only for a concrete user-directed or trivial direct-work exception. The meeting plan is attached to the frozen contract; its opinions do not satisfy acceptance. For a project refactor (even a single batch), pass refactor_plan: scope and exclusions, existing behaviors to preserve, measurable maintainability improvements, and baseline/comparison checks. This prepares the proposal; no batch can start until the user confirms this revision. Optional auto_continue_checkpoints is frozen on new implementation tasks, including queued project children. It resumes valid checkpoints in the same thread under existing control/concurrency/budget/progress gates, never evaluates or grades. New work replies use protocol v2: completed, checkpoint, blocked_environment, needs_clarification; malformed replies are protocol_error with one bounded same-session correction. Legacy contracts retain their original semantics. environment_requirements declares only relevant tools, lock/config files, read-only download sources, loopback services, browsers and explicitly authorized bootstrap argv. Probe inside actual work/check sandboxes before inference; no new dependency or permission is inferred. Project-level requirements are inherited by implementation children; dependency_paths permissions must also be explicitly declared. Optional auto_run_checks freezes authorization to pin valid completed work and run only frozen local checks automatically. It never invokes models/exams, receives events or accepts; existing capacity/control/budget/progress gates apply. Queued project children freeze the policy at creation. Old contracts keep the original workflow. Check freshness defaults to never: snapshot explicitly asserts deterministic declared inputs; max_age requires 1-3600 seconds. Unverifiable/expired freshness allows one explicit same-round recheck; tampered or changed identity blocks. Optional role_profile selects versioned public job guidance from telos_roles. Select only needed jobs; it grants no extra permissions and does not change acceptance. Supply precise experience_tags for problem and technical applicability to retrieve reviewed shared lessons. Queued project/meeting jobs freeze role guidance and model defaults at creation. Audit children use task_type=audit, audit boundaries and allowed_paths=[]; read-only auditors may overlap. Split by independently reviewable scope; include interface/visual checks and shared end-to-end flows as needed. Add authorized repair tasks after findings are confirmed, using repair_of and dependencies. Final checks can read TELOS_AUDIT_REPORTS; final review includes child audit reports.",
+      "description": "Plan a project owned by THIS original supervisor. Default execution_mode=auto: supervisor decides strategy single/parallel/phased with decision_reason after inspecting task size, dependencies and shared files. Honor user single/parallel override. Never ask the user to choose unless needed. Maximum 3 simultaneous jobs. Every task has literal allowed_paths and private frozen checks/questions; unordered overlapping writers are rejected. No model calls until start. Final project checks are separate from child acceptance. Set notify=false for manual mode only. Final checks inherit the read-only dependency_paths from frozen child contracts. Optional project dependency_paths add read-only access for final checks only; network and write permissions are unchanged. Default planning_mode=multi_executor requires a concluded meeting_id before implementation. Use skip_meeting_reason only for a concrete user-directed or trivial direct-work exception. The meeting plan is attached to the frozen contract; its opinions do not satisfy acceptance. For a project refactor (even a single batch), pass refactor_plan: scope and exclusions, existing behaviors to preserve, measurable maintainability improvements, and baseline/comparison checks. Supply the concluded refactor meeting_id and refactor_flows per batch. No direct-work exception. No implementation batch can start until the user confirms this PRD, architecture, code index and batch revision. Optional auto_continue_checkpoints is frozen on new implementation tasks, including queued project children. It resumes valid checkpoints in the same thread under existing control/concurrency/budget/progress gates, never evaluates or grades. New work replies use protocol v2: completed, checkpoint, blocked_environment, needs_clarification; malformed replies are protocol_error with one bounded same-session correction. Legacy contracts retain their original semantics. environment_requirements declares only relevant tools, lock/config files, read-only download sources, loopback services, browsers and explicitly authorized bootstrap argv. Probe inside actual work/check sandboxes before inference; no new dependency or permission is inferred. Project-level requirements are inherited by implementation children; dependency_paths permissions must also be explicitly declared. Optional auto_run_checks freezes authorization to pin valid completed work and run only frozen local checks automatically. It never invokes models/exams, receives events or accepts; existing capacity/control/budget/progress gates apply. Queued project children freeze the policy at creation. Old contracts keep the original workflow. Check freshness defaults to never: snapshot explicitly asserts deterministic declared inputs; max_age requires 1-3600 seconds. Unverifiable/expired freshness allows one explicit same-round recheck; tampered or changed identity blocks. Optional role_profile selects versioned public job guidance from telos_roles. Select only needed jobs; it grants no extra permissions and does not change acceptance. Supply precise experience_tags for problem and technical applicability to retrieve reviewed shared lessons. Queued project/meeting jobs freeze role guidance and model defaults at creation. Audit children use task_type=audit, audit boundaries and allowed_paths=[]; read-only auditors may overlap. Split by independently reviewable scope; include interface/visual checks and shared end-to-end flows as needed. Add authorized repair tasks after findings are confirmed, using repair_of and dependencies. Final checks can read TELOS_AUDIT_REPORTS; final review includes child audit reports.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -1207,6 +1207,12 @@
                 },
                 "command_network": {
                   "type": "boolean"
+                },
+                "refactor_flows": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
                 },
                 "reasoning_policy": {
                   "type": "object",
@@ -2486,6 +2492,12 @@
                 "command_network": {
                   "type": "boolean"
                 },
+                "refactor_flows": {
+                  "type": "array",
+                  "items": {
+                    "type": "string"
+                  }
+                },
                 "reasoning_policy": {
                   "type": "object",
                   "properties": {
@@ -3459,7 +3471,7 @@
     },
     {
       "name": "telos_meeting_open",
-      "description": "Default first step for a new requirement: create a read-only design meeting BEFORE freezing implementation checks. Supervisor chooses participant count and concrete roles from difficulty/domains/risk; normally at least two, with an explicit single_executor_reason for a small direct exception. Participants may exceed max_parallel and run in batches. No default token/round/job cap and no inference until telos_project_start(project_id=meeting_id). Use project status/receive/control for the meeting. Opinions are not acceptance. Optional role_profile selects versioned public job guidance from telos_roles. Select only needed jobs; it grants no extra permissions and does not change acceptance. Supply precise experience_tags for problem and technical applicability to retrieve reviewed shared lessons. Queued project/meeting jobs freeze role guidance and model defaults at creation.",
+      "description": "Default first step for a new requirement: create a read-only design meeting BEFORE freezing implementation checks. Supervisor chooses participant count and concrete roles from difficulty/domains/risk; normally at least two, with an explicit single_executor_reason for a small direct exception. Participants may exceed max_parallel and run in batches. No default token/round/job cap and no inference until telos_project_start(project_id=meeting_id). Use project status/receive/control for the meeting. Opinions are not acceptance. For project refactors, first walk the whole pinned program and supply refactor_discovery: account for tracked areas and give the current PRD by business flow with inspected source paths. Discussion is read-only. Optional role_profile selects versioned public job guidance from telos_roles. Select only needed jobs; it grants no extra permissions and does not change acceptance. Supply precise experience_tags for problem and technical applicability to retrieve reviewed shared lessons. Queued project/meeting jobs freeze role guidance and model defaults at creation.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3561,6 +3573,77 @@
             "items": {
               "type": "string"
             }
+          },
+          "refactor_discovery": {
+            "type": "object",
+            "properties": {
+              "source_commit": {
+                "type": "string"
+              },
+              "walkthrough": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "paths": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    },
+                    "status": {
+                      "enum": [
+                        "exercised",
+                        "source_only",
+                        "unverified",
+                        "excluded"
+                      ]
+                    },
+                    "finding": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "paths",
+                    "status",
+                    "finding"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "current_prd": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "flow": {
+                      "type": "string"
+                    },
+                    "behavior": {
+                      "type": "string"
+                    },
+                    "sources": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "flow",
+                    "behavior",
+                    "sources"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "source_commit",
+              "walkthrough",
+              "current_prd"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [
@@ -3710,7 +3793,7 @@
     },
     {
       "name": "telos_meeting_conclude",
-      "description": "Original supervisor freezes the public implementation plan after reviewing independent opinions and evidence. Resolve every recorded question by its ID; ask the user for unresolved business decisions. Requires all active participants to have returned valid reports, no running/queued rounds, and multiple contributors unless a single-executor exception was recorded. Discussion completion is not code acceptance. Then call telos_project_open or telos_open with meeting_id and newly frozen private checks/questions.",
+      "description": "Original supervisor freezes the public implementation plan after reviewing independent opinions and evidence. Resolve every recorded question by its ID; ask the user for unresolved business decisions. Requires all active participants to have returned valid reports, no running/queued rounds, and multiple contributors unless a single-executor exception was recorded. Discussion completion is not code acceptance. Then call telos_project_open or telos_open with meeting_id and newly frozen private checks/questions. A refactor meeting requires refactor_design_plan: detailed PRD preserving each current flow, module responsibilities, stack decisions with reasons, and an AI-readable code index with target files per flow.",
       "inputSchema": {
         "type": "object",
         "properties": {
@@ -3774,6 +3857,109 @@
               ],
               "additionalProperties": false
             }
+          },
+          "refactor_design_plan": {
+            "type": "object",
+            "properties": {
+              "detailed_prd": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "flow": {
+                      "type": "string"
+                    },
+                    "preserve": {
+                      "type": "string"
+                    },
+                    "internal_changes": {
+                      "type": "string"
+                    },
+                    "verify": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "flow",
+                    "preserve",
+                    "internal_changes",
+                    "verify"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "structure": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "path": {
+                      "type": "string"
+                    },
+                    "responsibility": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "path",
+                    "responsibility"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "technology": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "choice": {
+                      "type": "string"
+                    },
+                    "rationale": {
+                      "type": "string"
+                    }
+                  },
+                  "required": [
+                    "choice",
+                    "rationale"
+                  ],
+                  "additionalProperties": false
+                }
+              },
+              "index_path": {
+                "type": "string"
+              },
+              "code_index": {
+                "type": "array",
+                "items": {
+                  "type": "object",
+                  "properties": {
+                    "flow": {
+                      "type": "string"
+                    },
+                    "paths": {
+                      "type": "array",
+                      "items": {
+                        "type": "string"
+                      }
+                    }
+                  },
+                  "required": [
+                    "flow",
+                    "paths"
+                  ],
+                  "additionalProperties": false
+                }
+              }
+            },
+            "required": [
+              "detailed_prd",
+              "structure",
+              "technology",
+              "index_path",
+              "code_index"
+            ],
+            "additionalProperties": false
           }
         },
         "required": [

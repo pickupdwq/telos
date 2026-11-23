@@ -17,7 +17,7 @@ There are two model roles. Each task has one executor; the original supervisor o
 
 **20-round RSI campaign completed:** 17 improvements accepted, 2 experiments rejected, and the final task comparison inconclusive. Local regression verification ran **3.25× faster** with four processes. Faster model responses or faster overall task delivery at equal quality have **not** been demonstrated. [Results and limits ↓](#20-round-rsi-campaign)
 
-To refactor an existing project, ask “Use Telos to refactor this project.” The supervisor inspects the baseline and presents scope, compatibility, improvements and verification. No implementation batch starts until you confirm that plan revision. [Refactoring workflow](skills/telos/references/refactoring.md)
+To refactor an existing project, ask “Use Telos to refactor this project.” The supervisor walks the entire product and extracts its current PRD. Executors review it read-only; the supervisor presents the detailed PRD, module layout, technology decisions, business-flow code index and batches. No implementation batch starts until you confirm that plan revision. [Refactoring workflow](skills/telos/references/refactoring.md)
 
 ## System architecture
 

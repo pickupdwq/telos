@@ -2659,12 +2659,23 @@ for name in ('telos_open', 'telos_project_open'):
     tool['inputSchema']['properties'].update({'meeting_id': STR, 'skip_meeting_reason': STR})
 
 import refactor
+import refactor_design
+meeting_open_tool = next(t for t in TOOLS if t['name'] == 'telos_meeting_open')
+meeting_open_tool['inputSchema']['properties']['refactor_discovery'] = obj(refactor_design.DISCOVERY)
+meeting_open_tool['description'] += (' For project refactors, first walk the whole pinned program and supply refactor_discovery: '
+    'account for tracked areas and give the current PRD by business flow with inspected source paths. Discussion is read-only.')
+meeting_conclude_tool = next(t for t in TOOLS if t['name'] == 'telos_meeting_conclude')
+meeting_conclude_tool['inputSchema']['properties']['refactor_design_plan'] = obj(refactor_design.DESIGN)
+meeting_conclude_tool['description'] += (' A refactor meeting requires refactor_design_plan: detailed PRD preserving each '
+    'current flow, module responsibilities, stack decisions with reasons, and an AI-readable code index with target files per flow.')
+PROJECT_TASK['properties']['refactor_flows'] = refactor_design.PATHS
 project_open_tool = next(t for t in TOOLS if t['name'] == 'telos_project_open')
 project_open_tool['inputSchema']['properties']['refactor_plan'] = obj({
     key: {'type': 'array', 'items': STR} for key in refactor.FIELDS})
 project_open_tool['description'] += (' For a project refactor (even a single batch), pass refactor_plan: scope and exclusions, '
     'existing behaviors to preserve, measurable maintainability improvements, and baseline/comparison checks. '
-    'This prepares the proposal; no batch can start until the user confirms this revision.')
+    'Supply the concluded refactor meeting_id and refactor_flows per batch. No direct-work exception. '
+    'No implementation batch can start until the user confirms this PRD, architecture, code index and batch revision.')
 project_start_tool = next(t for t in TOOLS if t['name'] == 'telos_project_start')
 project_start_tool['inputSchema']['properties']['confirm_refactor'] = STR
 project_start_tool['description'] += (' Only after the user approves the displayed refactor brief in the original conversation, '
@@ -2857,9 +2868,9 @@ def call_tool(name, args, meta=None):
     if name == 'telos_experience_publish':
         return invoke_tool(experience_manager().shared().publish, args, caller=caller)
     if name in ('telos_open', 'telos_project_open', 'telos_meeting_open') and refactor.explicit_request(
-            args.get('task') or args.get('requirement')) and not args.get('refactor_plan'):
-        raise GateError('Inspect the repository and prepare the user confirmation points before delegating a refactor.',
-                        code='refactor_brief_required', next_action='telos_project_open_with_refactor_plan')
+            args.get('task') or args.get('requirement')) and not (args.get('refactor_plan') or args.get('refactor_discovery')):
+        raise GateError('Walk the whole program, extract its current PRD and start a read-only refactor discussion.',
+                        code='refactor_brief_required', next_action='telos_meeting_open')
     if name.startswith('telos_meeting_'):
         return meeting_manager().call(name, args, caller)
     if name in ('telos_open', 'telos_project_open'):
@@ -2868,8 +2879,6 @@ def call_tool(name, args, meta=None):
             required |= {'tasks', 'decision_reason'}
         if name == 'telos_project_open' and 'refactor_plan' in args:
             refactor.validate(args['refactor_plan'])
-            if not args.get('meeting_id'):
-                args.setdefault('skip_meeting_reason', 'Supervisor prepared a public refactor brief for user confirmation before delegation.')
         if required <= args.keys():
             meeting_manager().prepare_implementation(args, caller)
     if name == 'telos_cache_manage':

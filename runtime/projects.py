@@ -25,6 +25,7 @@ import continuation
 import check_runtime
 import project_budget
 import refactor
+import refactor_design
 import roles
 
 
@@ -205,6 +206,9 @@ class Projects:
             raise self.b.GateError('Supervisor must explain its execution strategy')
         if refactor_plan is not None:
             refactor.validate(refactor_plan)
+            if not (_planning or {}).get('refactor_design'):
+                raise self.b.GateError('Complete the refactor PRD and architecture discussion first.',
+                                       code='refactor_meeting_required', next_action='telos_meeting_open')
             if not notify or not caller:
                 raise self.b.GateError('A refactor must be bound to the original user conversation.',
                                        code='refactor_owner_required')
@@ -226,6 +230,8 @@ class Projects:
                 if environment_requirements is not None:
                     t.setdefault('environment_requirements', environment_requirements)
         tasks = self.validate_tasks(tasks)
+        if refactor_plan is not None:
+            refactor_design.validate_batches(_planning['refactor_design'], tasks)
         if _planning and _planning.get('meeting_id'):
             for t in tasks:
                 t['context'] = context + '\nTask context:\n' + t['context']
@@ -249,6 +255,14 @@ class Projects:
         repo = Path(b.git(repo, 'rev-parse', '--show-toplevel')).resolve()
         if b.git(repo, 'status', '--porcelain'):
             raise b.GateError('Source repository must be clean; commit/stash explicitly')
+        base_commit = b.git(repo, 'rev-parse', 'HEAD')
+        if refactor_plan is not None:
+            design = _planning['refactor_design']
+            if base_commit != _planning['source_commit']:
+                raise b.GateError('Source changed since the refactor walkthrough; revisit the changed source.')
+            if (not any(refactor_design.owns_index(t, design['index_path']) for t in tasks)
+                    and refactor_design.check_index(repo, design)['status'] != 'passed'):
+                raise b.GateError('Assign the code index path to a batch so the confirmed design can be delivered.')
         if not task or not isinstance(task, str):
             raise b.GateError('Nonempty project task required')
         owner = b.bind_owner(caller) if notify else None
@@ -256,7 +270,7 @@ class Projects:
         contract = {'task': task, 'context': context, 'questions': questions, 'checks': checks,
                     'threshold': 90, 'max_rounds': 5, 'dependency_paths': dependency_paths}
         if refactor_plan is not None:
-            public_brief = b.encoded(refactor_plan)
+            public_brief = b.encoded([refactor_plan, _planning['current_prd'], design])
             for private in [final_contract, *tasks]:
                 b.validate_public_material(private, refactor_plan=public_brief)
             contract['refactor_plan'] = refactor_plan
@@ -266,7 +280,7 @@ class Projects:
             contract['environment_requirements'] = environment_requirements
         if _planning is not None:
             contract['planning'] = _planning
-        p = {'project_id': pid, 'repo': str(repo), 'base_commit': b.git(repo, 'rev-parse', 'HEAD'),
+        p = {'project_id': pid, 'repo': str(repo), 'base_commit': base_commit,
              'owner': owner, 'execution_mode': execution_mode, 'strategy': strategy,
              'decision_reason': decision_reason, 'max_parallel': max_parallel, 'max_jobs': max_jobs,
              'jobs_started': 0, 'phase': 'planned', 'continuation': 'active', 'tasks': tasks, 'use_experience': use_experience,
@@ -440,7 +454,7 @@ class Projects:
         if 'refactor_plan' in p.get('contract', {}):
             result['refactor'] = refactor.proposal(self.b, p)
             if p['continuation'] == 'active' and not result['refactor']['confirmed']:
-                result.update(proceed=False, next_action='ask_user_to_confirm_refactor')
+                result.update(proceed=False, next_action=result['refactor'].get('next_action', 'ask_user_to_confirm_refactor'))
         result['job_budget'] = project_budget.summary(p)
         result['work_turn_budget'] = project_budget.work_turn_summary(
             p, int(self.b.config()['max_turns']))
@@ -852,6 +866,9 @@ class Projects:
                         context = t['context']
                         if 'refactor_plan' in p['contract']:
                             context += '\nConfirmed refactoring brief:\n' + b.encoded(p['contract']['refactor_plan'])
+                            design = p['contract'].get('planning', {}).get('refactor_design')
+                            if design:
+                                context += refactor_design.handoff(b, design, t)
                         b.create_session(repo=p['repo'], task=t['task'], questions=t['questions'], checks=t['checks'],
                                          context=context,
                                          model=t['model'], threshold=t['threshold'], max_rounds=t['max_rounds'],
@@ -1125,6 +1142,11 @@ class Projects:
                             if key in p['contract']:
                                 task.setdefault(key, p['contract'][key])
                 tasks = self.validate_tasks(additions, p['tasks'])
+                if design := p['contract'].get('planning', {}).get('refactor_design'):
+                    refactor_design.validate_batches(design, tasks)
+                    for t in tasks:
+                        self.b.validate_public_material(t, handoff=refactor_design.handoff(self.b, design, t),
+                                                       refactor_plan=self.b.encoded(p['contract']['refactor_plan']))
                 import check_preflight
                 try:
                     for t in tasks:
@@ -1397,6 +1419,8 @@ class Projects:
                     audit_reports[task['id']] = {'evidence': evidence, 'review': child_state['acceptance']['audit_review']}
                     shutil.copytree(evidence['evidence_dir'], target / '.telos-audits' / task['id'])
             checks = b.executable_checks(check_contract, target)
+            if design := check_contract.get('planning', {}).get('refactor_design'):
+                checks.append(refactor_design.check_index(target, design))
             packet = {'project_id': pid, 'commit': commit, 'pins': p['integration']['pins'],
                       'contract_hash': p['contract_hash'], 'checks': checks,
                       'deliveries': deliveries,
