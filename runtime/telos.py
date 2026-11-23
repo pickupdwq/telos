@@ -2658,6 +2658,20 @@ for name in ('telos_open', 'telos_project_open'):
     tool = next(t for t in TOOLS if t['name'] == name)
     tool['inputSchema']['properties'].update({'meeting_id': STR, 'skip_meeting_reason': STR})
 
+import refactor
+project_open_tool = next(t for t in TOOLS if t['name'] == 'telos_project_open')
+project_open_tool['inputSchema']['properties']['refactor_plan'] = obj({
+    key: {'type': 'array', 'items': STR} for key in refactor.FIELDS})
+project_open_tool['description'] += (' For a project refactor (even a single batch), pass refactor_plan: scope and exclusions, '
+    'existing behaviors to preserve, measurable maintainability improvements, and baseline/comparison checks. '
+    'This prepares the proposal; no batch can start until the user confirms this revision.')
+project_start_tool = next(t for t in TOOLS if t['name'] == 'telos_project_start')
+project_start_tool['inputSchema']['properties']['confirm_refactor'] = STR
+project_start_tool['description'] += (' Only after the user approves the displayed refactor brief in the original conversation, '
+    'pass its full revision as confirm_refactor. An ordinary start cannot approve a refactor.')
+next(t for t in TOOLS if t['name'] == 'telos_open')['description'] += (
+    ' For user-requested project refactoring use telos_project_open with refactor_plan, even for a single batch.')
+
 REASONING_POLICY = obj({'allowed_efforts': {'type': 'array', 'items': {'enum': list(providers.EFFORTS)}}})
 OPEN_TOOL = next(t for t in TOOLS if t['name'] == 'telos_open')
 for schema in (OPEN_TOOL['inputSchema'], PROJECT_TASK, MEETING_PARTICIPANT):
@@ -2842,12 +2856,20 @@ def call_tool(name, args, meta=None):
         return result
     if name == 'telos_experience_publish':
         return invoke_tool(experience_manager().shared().publish, args, caller=caller)
+    if name in ('telos_open', 'telos_project_open', 'telos_meeting_open') and refactor.explicit_request(
+            args.get('task') or args.get('requirement')) and not args.get('refactor_plan'):
+        raise GateError('Inspect the repository and prepare the user confirmation points before delegating a refactor.',
+                        code='refactor_brief_required', next_action='telos_project_open_with_refactor_plan')
     if name.startswith('telos_meeting_'):
         return meeting_manager().call(name, args, caller)
     if name in ('telos_open', 'telos_project_open'):
         required = {'repo', 'task', 'questions', 'checks'}
         if name == 'telos_project_open':
             required |= {'tasks', 'decision_reason'}
+        if name == 'telos_project_open' and 'refactor_plan' in args:
+            refactor.validate(args['refactor_plan'])
+            if not args.get('meeting_id'):
+                args.setdefault('skip_meeting_reason', 'Supervisor prepared a public refactor brief for user confirmation before delegation.')
         if required <= args.keys():
             meeting_manager().prepare_implementation(args, caller)
     if name == 'telos_cache_manage':

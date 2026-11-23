@@ -12,6 +12,7 @@ The current conversation is the supervisor. Understand the user's goal, coordina
 ## Route the request
 
 - For advice, explanation or a proposed plan, answer at that level. Loading this skill does not start a task or authorize model calls.
+- If asked to refactor an existing project (e.g. “请使用 Telos 对这个项目进行重构”), use [refactoring](references/refactoring.md) before the general dispatch route. Inspect locally, present the public refactor points and batches, and wait for explicit user confirmation before any implementation dispatch.
 - For a new delegated requirement, begin with [multi-executor meetings](references/meetings.md), then freeze implementation scope using [planning](references/planning.md).
 - For system walkthroughs, code/API/page audits or audit-to-repair work, also read [audits](references/audits.md).
 - Before dispatching a new task, read [executors](references/executors.md) to reuse the installed configuration.
