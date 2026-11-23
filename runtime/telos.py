@@ -63,7 +63,11 @@ DEFAULT = {"model": "deepseek-v4-1-flash-260910", "base_url": "https://ark.cn-be
            "progress_reminder_limit": 3, "infra_retry_limit": 5, "infra_backoff_seconds": 10,
            "review_max_bytes": 200000, "task_budget": None, "task_token_limits_enabled": True,
            "planning_mode": "multi_executor", "dynamic_reasoning_enabled": False,
-           "auto_continue_checkpoints": False, "auto_run_checks": False}
+           "auto_continue_checkpoints": False, "auto_run_checks": False,
+           # Concurrency ceilings (operator-tunable). A project/meeting may ask for
+           # any max_parallel up to max_parallel_limit; provider_max_parallel caps
+           # simultaneous jobs per model channel across all tasks.
+           "max_parallel_limit": 8, "provider_max_parallel": 8, "project_max_jobs": 120}
 _BUDGET_UNSET = object()
 WATCH_EVENTS = ("pending", "sending", "uncertain", "queued", "delivered")
 
@@ -81,6 +85,21 @@ class InfrastructureError(GateError):
 
 def config():
     return {**DEFAULT, **(json.loads(CONFIG.read_text()) if CONFIG.exists() else {})}
+
+
+def parallel_limit(cfg=None):
+    """Largest max_parallel a project or meeting may request."""
+    value = (cfg or config()).get('max_parallel_limit', 8)
+    if type(value) is not int or not 1 <= value <= 32:
+        raise GateError('max_parallel_limit must be an integer from 1 to 32')
+    return value
+
+
+def validate_parallel(value):
+    limit = parallel_limit()
+    if type(value) is not int or not 1 <= value <= limit:
+        raise GateError(f'max_parallel must be 1-{limit} (operator max_parallel_limit)')
+    return value
 
 
 def write_json(path, value):
@@ -2415,7 +2434,8 @@ def doctor():
             "return_channel": "CLI native queue or Desktop IPC; original MCP threadId binding; persistent event receipts",
             "desktop_socket_available": Path(config().get("desktop_socket", HOME / ".codex/ipc/ipc.sock")).exists(),
             "exam_format_attempts": config()["exam_format_attempts"],
-            "project_default_mode": "auto", "project_max_parallel": 3,
+            "project_default_mode": "auto", "project_max_parallel": config()["max_parallel_limit"],
+            "provider_max_parallel": config()["provider_max_parallel"], "project_max_jobs": config()["project_max_jobs"],
             "planning_mode": config().get('planning_mode', 'multi_executor'),
             "experience_enabled": config().get('experience_enabled', True),
             "experience_root": str(STATE / 'experience'),

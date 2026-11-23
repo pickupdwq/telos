@@ -82,7 +82,7 @@ class ProjectTests(unittest.TestCase):
         return b.project_manager().review(pid)
 
     def test_auto_parallel_three_and_fourth_queued(self):
-        pid = self.create([self.task(x) for x in 'abcd'])
+        pid = self.create([self.task(x) for x in 'abcd'], max_parallel=3)
         result = self.start(pid)
         self.assertEqual([t['phase'] for t in result['tasks']], ['running', 'running', 'running', 'pending'])
         self.assertEqual(len({self.child(pid, x)['worktree'] for x in 'abc'}), 3)
@@ -157,6 +157,8 @@ class ProjectTests(unittest.TestCase):
             b.project_manager().control(pid, 'resume')
 
     def test_provider_concurrency_shared_across_projects(self):
+        b.write_json(b.CONFIG, {**b.read_json(b.CONFIG), 'provider_max_parallel': 3} if b.CONFIG.exists()
+                     else {'provider_max_parallel': 3})
         one = self.create(); two = self.create()
         self.start(one); result = self.start(two)
         self.assertTrue(all(t['phase'] == 'pending' for t in result['tasks']))

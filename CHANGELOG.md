@@ -1,3 +1,19 @@
+## 3.14.0 — 2026-11-23
+
+- **Up to 8 executors run at once by default.** The fixed limit of 3 is now
+  configurable: `max_parallel_limit` (default 8, 1–32) is the largest
+  `max_parallel` a project or meeting may request, and also its default;
+  `provider_max_parallel` (default 8) caps simultaneous jobs per model channel
+  across all tasks and projects. Lower either in the installed config.
+- **Projects default to 120 jobs** (`project_max_jobs`, previously a fixed 40;
+  explicit `max_jobs` may be 1–400), so finer splits do not run out of jobs.
+- **Finer task splitting.** The supervisor Skill now asks for small,
+  independently reviewable tasks: one outcome verifiable by one or two checks,
+  normally 3–5 files with disjoint write scopes, finishable within one job,
+  shared interfaces first as a dependency, and explicit `depends_on`.
+  It also says when to run fewer at once (memory-heavy checks, rate limits).
+- Existing projects keep their frozen `max_parallel` and `max_jobs`.
+
 ## 3.13.1 — 2026-11-23
 
 - `codex_login` availability now also requires the profile's model to be in

@@ -292,6 +292,39 @@ class SchedulingTests(ProjectTests):
         with self.assertRaisesRegex(b.GateError, 'concurrency'):
             b.start_job(standalone[1], 'send', 'Work')
 
+    def test_eight_tasks_run_together_by_default_and_the_ninth_waits(self):
+        pid = self.create([self.task('t' + str(i)) for i in range(9)])
+        project = self.state(pid)
+        self.assertEqual((project['max_parallel'], project['max_jobs']), (8, 120))
+        phases = [t['phase'] for t in self.start(pid)['tasks']]
+        self.assertEqual(phases.count('running'), 8)
+        self.assertEqual(phases.count('pending'), 1)
+
+    def test_parallel_limit_is_operator_configurable(self):
+        b.write_json(b.CONFIG, {'max_parallel_limit': 4})
+        with self.assertRaisesRegex(b.GateError, r'max_parallel must be 1-4'):
+            self.create([self.task('a')], max_parallel=5)
+        self.assertEqual(self.state(self.create([self.task('a')]))['max_parallel'], 4)
+        b.write_json(b.CONFIG, {'max_parallel_limit': 12, 'provider_max_parallel': 12})
+        pid = self.create([self.task('t' + str(i)) for i in range(10)], max_parallel=10)
+        self.assertEqual([t['phase'] for t in self.start(pid)['tasks']].count('running'), 10)
+        for bad in (0, 33, '8'):
+            b.write_json(b.CONFIG, {'max_parallel_limit': bad})
+            with self.assertRaises(b.GateError):
+                self.create([self.task('a')])
+
+    def test_project_update_respects_configured_limit(self):
+        pid = self.create([self.task('a')], max_parallel=2)
+        b.project_manager().update(pid, 'Widen to eight', max_parallel=8)
+        self.assertEqual(self.state(pid)['max_parallel'], 8)
+        with self.assertRaisesRegex(b.GateError, 'max_parallel must be 1-8'):
+            b.project_manager().update(pid, 'Too wide', max_parallel=9)
+
+    def test_provider_cap_still_limits_a_wide_project(self):
+        b.write_json(b.CONFIG, {'provider_max_parallel': 5})
+        pid = self.create([self.task('t' + str(i)) for i in range(8)])
+        self.assertEqual([t['phase'] for t in self.start(pid)['tasks']].count('running'), 5)
+
     def test_provider_capacity_is_independent_between_providers(self):
         b.write_json(b.CONFIG, {'provider_max_parallel': 1})
         ids = [b.create_session(str(self.repo), 'Standalone', self.q, self.checks, provider=provider)['session_id']

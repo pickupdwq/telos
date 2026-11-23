@@ -37,7 +37,7 @@ Read left to right: the original supervisor delegates through Telos to a task ex
 - **Evidence before acceptance.** Frozen executable checks run against a pinned Git commit. The supervisor then reviews the code and grades the questionnaire. Default passing score: 90/100, with critical-question minima and no unresolved blockers.
 - **Same-executor closed-book exam.** The executor keeps its work conversation, but receives no new source, private answers or test results. The relay disables tools and rejects tool calls during the exam.
 - **Isolated work.** Git worktrees, macOS Seatbelt restrictions, private evaluation materials and a local credential relay separate implementation from grading.
-- **Project coordination.** The supervisor chooses single, parallel or phased execution; dependencies and allowed write paths are enforced. Up to three jobs can run concurrently. Integrated code receives a separate final evaluation.
+- **Project coordination.** The supervisor chooses single, parallel or phased execution; dependencies and allowed write paths are enforced. Up to 8 jobs can run concurrently by default (configurable). Integrated code receives a separate final evaluation.
 - **Recoverable operations.** Persistent events, receipts, bounded retries, pause/resume/cancel, and dry-run-first archive/cleanup tools.
 - **Preflight and usage control.** Check the work environment before model calls, return compact tool summaries with full evidence available, and persist request/token usage across work and exams. Configured budgets gate subsequent requests; missing usage remains explicitly unknown. See [budget semantics](docs/configuration.md).
 - **Timing and actionable errors.** Separate request durations, lifecycle phases and project wall time; retain incomplete historical data. Structured errors expose stable codes, backoff guidance and available budget evidence. See [timing and errors](docs/configuration.md#timing-and-structured-errors--耗时与结构化错误).
@@ -289,7 +289,7 @@ The supervisor may use your Codex login. The OpenAI **executor** uses a separate
 
 ## How acceptance works
 
-New requirements first use a multi-executor planning meeting. The supervisor chooses the number and roles from complexity, domains and risk; first opinions run in parallel and follow-ups target unresolved disagreements in the original conversations. Additional experts may join or retire. Current capacity is three simultaneous jobs, with additional participants queued.
+New requirements first use a multi-executor planning meeting. The supervisor chooses the number and roles from complexity, domains and risk; first opinions run in parallel and follow-ups target unresolved disagreements in the original conversations. Additional experts may join or retire. Up to 8 run at once by default, with additional participants queued.
 
 Meetings have no default token, turn or job cap; timeouts, pause/cancel and usage accounting remain. Source/Git are read-only and experiments use isolated scratch space. Once requirements, implementation, work ownership and verification are clear, freeze the public conclusion and create a separate implementation contract. Trivial or explicitly directed work can record a direct-work exception. Discussion remains `accepted=false`. See the [meeting workflow](skills/telos/references/meetings.md).
 

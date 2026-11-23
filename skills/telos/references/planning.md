@@ -10,6 +10,18 @@ Use `telos_open` for a concentrated change whose behavior and code are best revi
 
 Concurrent writers need disjoint literal `allowed_paths`. Add dependencies where tasks share writable files or rely on one another's output. Read-only audit tasks may overlap source scope. Splitting by file count alone is insufficient: cross-cutting behavior still needs an owner and final integration checks.
 
+## Split projects into small tasks
+
+Prefer many small, independently reviewable tasks over a few large ones. Up to 8 tasks run at once by default (`max_parallel` up to the operator's `max_parallel_limit`, also bounded by the shared per-channel `provider_max_parallel`); a project holds at most 30 tasks and, by default, 120 jobs. Size each task so that:
+
+- **One outcome.** It delivers one feature point, fix or refactor step that one or two frozen checks can verify directly. If its description needs "and" between unrelated outcomes, split it.
+- **Small write scope.** It normally changes 3–5 files. Tasks that run concurrently never share a writable file; give each its own literal `allowed_paths`.
+- **One job.** An executor can finish it within a single `job_timeout`. Anything larger becomes a phase of smaller tasks.
+- **Contracts first.** When several tasks depend on a shared interface, data model, schema or configuration, make that a first task. Dependents list it in `depends_on`, start from its accepted commit and then run in parallel.
+- **Explicit order.** Use `depends_on` for every real ordering need; leave independent tasks without dependencies so they start together.
+
+Do not split below a reviewable unit: a change that only makes sense with another change, or whose checks need both, stays one task. Each task still needs its own task-specific checks and questions; a shared project-level check runs after integration. Use the default concurrency unless the user, available resources (memory-heavy checks such as browsers or large builds) or account rate limits call for less; lower it with `max_parallel` at creation or `telos_project_update`, and say why.
+
 ## Freeze the contract before sending work
 
 Prepare two separate bodies of material:

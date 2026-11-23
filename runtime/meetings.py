@@ -87,7 +87,7 @@ class Meetings:
             out.append(task)
         return out
 
-    def create(self, repo, requirement, participants, decision_reason, context='', max_parallel=3,
+    def create(self, repo, requirement, participants, decision_reason, context='', max_parallel=None,
                notify=True, caller=None, single_executor_reason=None, dependency_paths=None):
         b = self.b
         if not isinstance(requirement, str) or not requirement.strip() or not isinstance(context, str):
@@ -97,8 +97,7 @@ class Meetings:
         tasks = self.participants(participants)
         if not tasks or len(tasks) < 2 and not (isinstance(single_executor_reason, str) and single_executor_reason.strip()):
             raise b.GateError('Meetings default to multiple participants; explain any single-executor exception')
-        if type(max_parallel) is not int or not 1 <= max_parallel <= 3:
-            raise b.GateError('max_parallel must be 1-3; queue additional participants')
+        max_parallel = b.validate_parallel(b.parallel_limit() if max_parallel is None else max_parallel)
         repo = Path(b.git(repo, 'rev-parse', '--show-toplevel')).resolve()
         if b.git(repo, 'status', '--porcelain'):
             raise b.GateError('Prepare a clean source checkout for a pinned read-only meeting')

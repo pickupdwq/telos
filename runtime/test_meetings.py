@@ -70,14 +70,21 @@ class MeetingTests(unittest.TestCase):
         return b.call_tool('telos_meeting_conclude', {'meeting_id': mid, 'plan': PLAN,
                            'answers': answers or [], 'rationale': 'Independent reports support the plan; verify it during implementation.'}, caller)
 
-    def test_adaptive_participants_use_three_slots_and_no_default_token_round_job_cap(self):
-        mid = self.open(5)
+    def test_adaptive_participants_queue_beyond_slots_and_no_default_token_round_job_cap(self):
+        mid = self.open(5, max_parallel=3)
         p = self.project(mid)
         self.assertIsNone(p['max_jobs'])
         self.start(mid)
         self.assertEqual([t['phase'] for t in self.project(mid)['tasks']], ['running'] * 3 + ['pending'] * 2)
         self.finish(mid, 'p0')
         self.assertEqual(self.child(mid, 'p3')['phase'], 'running')
+        wide = self.open(10)
+        self.assertEqual(self.project(wide)['max_parallel'], 8)
+        self.start(wide)
+        # The first meeting still holds 3 slots of the shared 8-per-channel limit.
+        self.assertEqual([t['phase'] for t in self.project(wide)['tasks']].count('running'), 5)
+        with self.assertRaisesRegex(b.GateError, 'max_parallel must be 1-8'):
+            self.open(2, max_parallel=9)
         contract = b.read_json(b.run_dir(self.child(mid, 'p0')['session_id']) / 'contract.json')
         self.assertIsNone(contract['budget'])
         self.assertEqual(contract['questions'], [])

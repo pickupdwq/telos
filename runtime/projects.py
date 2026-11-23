@@ -196,16 +196,18 @@ class Projects:
         self.b.validate_public_material(private_contract, **fields)
 
     def create(self, repo, task, tasks, questions, checks, decision_reason,
-               execution_mode='auto', strategy='single', max_parallel=3,
-               max_jobs=40, context='', notify=True, caller=None, use_experience=True, dependency_paths=None, environment_requirements=None, auto_continue_checkpoints=None, auto_run_checks=None, _planning=None):
+               execution_mode='auto', strategy='single', max_parallel=None,
+               max_jobs=None, context='', notify=True, caller=None, use_experience=True, dependency_paths=None, environment_requirements=None, auto_continue_checkpoints=None, auto_run_checks=None, _planning=None):
         if execution_mode not in ('auto', 'single', 'parallel') or strategy not in ('single', 'parallel', 'phased'):
             raise self.b.GateError('Invalid execution mode or supervisor strategy')
         if not isinstance(decision_reason, str) or not decision_reason.strip():
             raise self.b.GateError('Supervisor must explain its execution strategy')
-        if type(max_parallel) is not int or not 1 <= max_parallel <= 3:
-            raise self.b.GateError('max_parallel must be 1-3')
-        if type(max_jobs) is not int or not 1 <= max_jobs <= 200:
-            raise self.b.GateError('max_jobs must be 1-200')
+        cfg = self.b.config()
+        max_parallel = self.b.validate_parallel(self.b.parallel_limit(cfg) if max_parallel is None else max_parallel)
+        if max_jobs is None:
+            max_jobs = cfg.get('project_max_jobs', 120)
+        if type(max_jobs) is not int or not 1 <= max_jobs <= 400:
+            raise self.b.GateError('max_jobs must be 1-400')
         import project_environment
         environment_requirements = project_environment.validate(environment_requirements, repo)
         tasks = [dict(t) for t in tasks]
@@ -591,7 +593,7 @@ class Projects:
         child_ids = {t['session_id'] for t in p['tasks']} if p else set()
         if p is not None and sum(s.get('project_id') == p['project_id'] or s.get('session_id') in child_ids for s in running) >= self.limit(p):
             return False
-        if sum(s.get('capacity_unknown') or s.get('active_provider', s.get('provider', 'ark')) == provider for s in running) >= self.b.config().get('provider_max_parallel', 3):
+        if sum(s.get('capacity_unknown') or s.get('active_provider', s.get('provider', 'ark')) == provider for s in running) >= self.b.config().get('provider_max_parallel', 8):
             return False
         if not local_checks and p is not None:
             try:
@@ -1076,9 +1078,7 @@ class Projects:
                     raise self.b.GateError('Invalid strategy')
                 p['strategy'] = strategy
             if max_parallel is not None:
-                if type(max_parallel) is not int or not 1 <= max_parallel <= 3:
-                    raise self.b.GateError('max_parallel must be 1-3')
-                p['max_parallel'] = max_parallel
+                p['max_parallel'] = self.b.validate_parallel(max_parallel)
             if add_tasks:
                 additions = [dict(task) for task in add_tasks]
                 for task in additions:

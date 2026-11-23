@@ -91,7 +91,7 @@ This is a local OS sandbox, not a VM. The original supervisor is trusted to crea
 
 ## Projects and experience
 
-The supervisor selects a strategy based on dependencies and shared files. Up to three jobs run at once. Unordered tasks with overlapping write scopes are rejected. Accepted dependency commits form the baseline for dependent tasks. Accepted children are integrated into a scratch worktree; whole-project checks and the supervisor's final score are required before project acceptance. The source branch is unchanged.
+The supervisor selects a strategy based on dependencies and shared files. Up to 8 jobs run at once by default (`max_parallel_limit`, shared with the per-channel `provider_max_parallel`). Unordered tasks with overlapping write scopes are rejected. Accepted dependency commits form the baseline for dependent tasks. Accepted children are integrated into a scratch worktree; whole-project checks and the supervisor's final score are required before project acceptance. The source branch is unchanged.
 
 Failure metadata and public repair advice can be recorded as candidates. Only accepted standalone work or an accepted overall project supplies reusable lessons. Retrieval is repository- and path-scoped, capped at three entries / 6,000 characters. Private exam answers, check implementations and raw logs are excluded from experience. Provenance is checked; forgetting disables future retrieval while retaining audit history. No model weights are updated.
 

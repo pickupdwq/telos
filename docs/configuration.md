@@ -75,7 +75,7 @@ Only add an alias after checking that its effective Codex configuration uses the
 
 `planning_mode` defaults to `multi_executor`, including upgrades whose preserved config omits this key. New MCP implementation/project creation requires a concluded `meeting_id`, or a concrete `skip_meeting_reason` for a trivial or explicitly directed exception. Set `planning_mode: "direct"` only to opt out globally. Existing frozen tasks continue unchanged.
 
-The supervisor chooses the participant count and roles. `telos_meeting_open` defaults to multiple independent participants; `max_parallel` defaults to 3 and may be 1–3. Additional participants queue (up to 30 registered roles per meeting); the shared provider concurrency limit still applies. Follow-ups preserve the original conversations and can add or retire roles.
+The supervisor chooses the participant count and roles. `telos_meeting_open` defaults to multiple independent participants; `max_parallel` defaults to `max_parallel_limit` (8) and may be 1 to that limit. Additional participants queue (up to 30 registered roles per meeting); the shared provider concurrency limit still applies. Follow-ups preserve the original conversations and can add or retire roles.
 
 Meetings do not inherit `task_budget` and have no default token, turn or job limit. They retain request usage, per-call `job_timeout`, pause/cancel and original-owner callbacks. Source and Git are read-only; temporary experiments use the isolated scratch directory. A hashed public conclusion enters the later implementation contract, whose normal budgets, checks and acceptance remain separate. See the [supervisor meeting workflow](../skills/telos/references/meetings.md).
 
@@ -235,8 +235,10 @@ Merge these entries into the existing configuration; replace the example endpoin
 | `exam_max_tokens` | 8192 | Exam output limit |
 | `exam_format_attempts` | 3 | Bounded answer-format attempts; no private feedback |
 | `experience_enabled` | true | Enable verified experience injection |
-| Project `max_parallel` | up to 3 | Concurrent model jobs, including exams |
-| Implementation project `max_jobs` | 40 | Job budget, not a token/dollar cap |
+| Project `max_parallel` | `max_parallel_limit` (8) | Concurrent model jobs in one project or meeting, including exams |
+| `max_parallel_limit` | 8 | Largest `max_parallel` a project or meeting may request (1–32) |
+| `provider_max_parallel` | 8 | Simultaneous jobs per model channel across all tasks and projects |
+| Implementation project `max_jobs` | `project_max_jobs` (120) | Job budget, not a token/dollar cap; explicit values 1–400 |
 | `task_budget` | unset | Optional default frozen usage budget for new tasks |
 | `task_token_limits_enabled` | true | Allow token limits when freezing new task budgets; false removes them |
 
@@ -322,7 +324,7 @@ task switching, and Ghostty/iTerm2 usage.
 - 凭据依次从环境变量、Telos 凭据文件、地址匹配的 OpenCode 配置读取。使用 `telos auth deepseek`、`telos auth ark` 或 `telos auth openai` 隐藏输入，禁止把 Key 写进任务和仓库。
 - OpenAI 执行者需要自己的 API 凭据，不复用大总管的 ChatGPT/Codex 登录。
 - 本地入口使用 `local_executor`，兼容 Responses 和 Chat Completions，多地址只能选中一个；详见[本地执行者指南](local-executors.md)。其他新增服务商仍通过 `providers` 配置固定 HTTPS Responses 接口。
-- 默认及格线 90、最多五轮评估；项目默认 40 个作业预算、最多三个并发。它们不限制实际费用或 token。
+- 默认及格线 90、最多五轮评估；项目默认 120 个作业预算、最多 8 个并发（`max_parallel_limit`，同一模型通道总计 `provider_max_parallel` 也是 8）。它们不限制实际费用或 token。
 - 可为新任务或项目子任务冻结 `task_budget`（请求数与 token 上限）。请求数上限为硬预留；token 上限在已观测用量达到后阻止下一次请求。评测所需用量未知时停止后续付费请求，不重试、不降级。没有真实价格时不估算费用。
 - `dependency_paths` 只开放依赖目录读取；`command_network` 和检查的 `network` 分别控制工作/检查的网络权限，闭卷阶段不获得这些权限。
 - 旧 `EXAM_LOOP_STATE_DIR` / `EXAM_LOOP_CACHE_DIR` 仍兼容，同名 `TELOS_*` 设置优先；历史合同按原来的绑定执行，不强行迁移。

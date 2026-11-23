@@ -227,7 +227,7 @@ class ProjectIntegrityTests(unittest.TestCase):
             b.call_tool('telos_status', {'session_id': sid})
 
     def test_corrupt_running_child_still_reserves_capacity(self):
-        pid = self.create([self.task('a'), self.task('b'), self.task('c')])
+        pid = self.create([self.task('a'), self.task('b'), self.task('c')], max_parallel=3)
         self.start(pid)
         sid = self.state(pid)['tasks'][0]['session_id']
         (b.run_dir(sid) / 'state.json').write_text('{bad')
@@ -245,7 +245,9 @@ class ProjectIntegrityTests(unittest.TestCase):
 
     def test_jobs_defaults_and_small_explicit_budget_remain_unchanged(self):
         pid = self.create([self.task('t' + str(i)) for i in range(21)])
-        self.assertEqual(self.state(pid)['max_jobs'], 40)
+        self.assertEqual(self.state(pid)['max_jobs'], 120)
+        b.write_json(b.CONFIG, {'project_max_jobs': 40})
+        self.assertEqual(self.state(self.create([self.task('x')]))['max_jobs'], 40)
         small = self.create([self.task('a')], max_jobs=1)
         self.assertEqual(self.state(small)['max_jobs'], 1)
 
