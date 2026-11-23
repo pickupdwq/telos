@@ -63,7 +63,7 @@ DEFAULT = {"model": "deepseek-v4-1-flash-260910", "base_url": "https://ark.cn-be
            "progress_reminder_limit": 3, "infra_retry_limit": 5, "infra_backoff_seconds": 10,
            "review_max_bytes": 200000, "task_budget": None, "task_token_limits_enabled": True,
            "planning_mode": "multi_executor", "dynamic_reasoning_enabled": False,
-           "auto_continue_checkpoints": False, "auto_run_checks": False,
+           "auto_continue_checkpoints": False, "auto_run_checks": False, "auto_evaluate": False,
            # Concurrency ceilings (operator-tunable). A project/meeting may ask for
            # any max_parallel up to max_parallel_limit; provider_max_parallel caps
            # simultaneous jobs per model channel across all tasks.
@@ -320,6 +320,7 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
                    executor_profile=None, exam_profile=None, reasoning_effort=None, exam_reasoning_effort=None,
                    task_type='implementation', audit=None, repair_of=None, allowed_paths=None,
                    budget=None, reasoning_policy=None, auto_continue_checkpoints=None, environment_requirements=None, auto_run_checks=None,
+                   auto_evaluate=None,
                    role_profile=None, experience_tags=None,
                    _session_id=None, _base_commit=None, _project_id=None, _allowed_paths=None, _dependency_pins=None,
                    _usage_id=None, _budget=_BUDGET_UNSET, _reasoning_policy=_BUDGET_UNSET, _owner=None,
@@ -408,6 +409,7 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
     if _workflow_version == 3 and task_type == 'implementation':
         auto_continue_checkpoints = continuation.freeze(auto_continue_checkpoints, cfg)
         auto_run_checks = check_runtime.freeze(auto_run_checks, cfg)
+        auto_evaluate = check_runtime.freeze_evaluate(auto_evaluate, cfg, auto_run_checks)
     if environment_requirements is not None and task_type != 'implementation':
         raise GateError('Project environment preparation is for implementation tasks only')
     repo = Path(repo).resolve()
@@ -474,6 +476,7 @@ def create_session(repo, task, questions, checks, context="", model=None, thresh
         if frozen['work_reply_version'] == 2:
             frozen['auto_continue_checkpoints'] = continuation.freeze(auto_continue_checkpoints, cfg)
             frozen['auto_run_checks'] = auto_run_checks
+            frozen['auto_evaluate'] = auto_evaluate
             frozen['work_reply_format_retries'] = 1
     if task_type == 'audit':
         frozen.update(task_type='audit', audit=audit)
@@ -1278,7 +1281,7 @@ def recover_progress(sid):
     # action event, preserving action deduplication even across receipt/crash gaps.
     with locked(sid) as root:
         state, _ = load_session(root)
-        if continuation.quiet(state) or check_runtime.pending(state):
+        if continuation.quiet(state) or check_runtime.pending(state) or check_runtime.evaluation_pending(state):
             return
 
         event = state.get('events', {}).get(state.get('last_event_id'))
@@ -1398,7 +1401,7 @@ def start_job(sid, kind, message="", event_id=None, reasoning_effort=None, reaso
 
 def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None,
                reasoning_effort=None, reasoning_reason=None, _continuation_id=None, _auto_check_id=None,
-               _work_turns=None):
+               _auto_evaluate_id=None, _work_turns=None):
     with locked(sid) as root:
         state, contract = load_session(root)
         if state.get('archived'):
@@ -1426,6 +1429,11 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
             if kind != 'send' or event_id is not None:
                 raise GateError('Internal continuation can only resume work')
             continuation.authorize(state, contract, _continuation_id)
+            replay = None
+        elif _auto_evaluate_id is not None:
+            if kind != 'evaluate' or event_id is not None:
+                raise GateError('Internal evaluation authorization is evaluate-only')
+            check_runtime.authorize_evaluation(state, contract, _auto_evaluate_id)
             replay = None
         else:
             replay = event_action(state, event_id, kind, arguments)
@@ -1521,6 +1529,19 @@ def _start_job(sid, kind, message="", event_id=None, _discussion_request_id=None
                     timing.end(state, ident)
         if reuse_evidence:
             state['auto_check']['evaluation_job_id'] = job
+            if _auto_evaluate_id is not None:
+                state['auto_check']['auto_evaluate'].update(status='started', job_id=job, started_at=time.time())
+                for ident, interval in (state.get('stage_timeline') or {}).get('intervals', {}).items():
+                    if interval['category'] == 'scheduler_wait':
+                        timing.end(state, ident)
+                # The exam result replaces the pending work/checks notifications.
+                # Retire those internal stage events (never a receipt), like continuations.
+                for ident in (state['auto_check'].get('source_job_id'), state['auto_check'].get('job_id')):
+                    source_event = state.get('events', {}).get(ident)
+                    if source_event and source_event.get('status') in WATCH_EVENTS:
+                        source_event.update(status='superseded', internal_action='auto_evaluate')
+            elif check_runtime.evaluation_pending(state):
+                check_runtime.stop_evaluation(state, 'Superseded by explicit supervisor evaluation')
             if recheck:
                 state['auto_check'].update(recheck_used=True, status='running', job_id=job, started_at=time.time())
         if _continuation_id is not None:
@@ -2099,6 +2120,7 @@ def background_job(sid, job):
             if request['kind'] == 'checks':
                 if 'check_evidence' in locals():
                     check_runtime.finish(bridge_services(), current, check_evidence)
+                    check_runtime.queue_evaluation(current, contract)
                 else:
                     current['auto_check'].update(status='blocked', diagnostic=current.get('last_error'), finished_at=time.time())
                     current['auto_check_history'][current['auto_check']['source_job_id']] = dict(current['auto_check'])
@@ -2118,7 +2140,12 @@ def background_job(sid, job):
             continuation.prepare(current, contract)
             if request['kind'] == 'send':
                 check_runtime.prepare(bridge_services(), current, contract)
-            if continuation.quiet(current):
+            # Stay quiet while an authorized automatic stage follows: with
+            # auto_evaluate the supervisor hears once, when the exam result is
+            # ready, or earlier if checks fail, block or the stage stops.
+            automatic_next = (continuation.quiet(current) or check_runtime.evaluation_pending(current)
+                              or (check_runtime.pending(current) and contract.get('auto_evaluate') is True))
+            if automatic_next:
                 timing.transition(current, timing.waiting_stage(current), current['job_finished'])
             else:
                 record_event(current)
@@ -2140,7 +2167,8 @@ def background_job(sid, job):
         project_manager().continue_pending(sid)
         with locked(sid) as root:
             current, _ = load_session(root)
-        if current.get('owner') and not continuation.quiet(current) and (current['phase'] != 'running' or current.get('job_kind') == 'checks'):
+        if (current.get('owner') and not continuation.quiet(current) and not check_runtime.evaluation_pending(current)
+                and (current['phase'] != 'running' or current.get('job_kind') == 'checks')):
             spawn_dispatch(sid)
 
 
@@ -2213,6 +2241,9 @@ def status(sid, detail='full'):
                       next_action=next_action_for(state['phase']))
         result['task_type'] = contract.get('task_type', 'implementation')
         result['auto_run_checks'] = contract.get('auto_run_checks', False)
+        result['auto_evaluate'] = contract.get('auto_evaluate', False)
+        if check_runtime.evaluation_pending(state) and state.get('continuation', 'active') == 'active':
+            result['next_action'] = 'automatic_evaluation_pending'
         if contract.get('role_snapshot'):
             result['role_snapshot'] = contract['role_snapshot']
         result['experience_refs'] = contract.get('experience_refs', [])
@@ -2699,7 +2730,8 @@ TOOLS += [
 
 for schema in (TOOLS[0]['inputSchema'], PROJECT_TASK,
                next(t for t in TOOLS if t['name'] == 'telos_project_open')['inputSchema']):
-    schema['properties'].update({'auto_run_checks': {'type':'boolean'}, 'auto_continue_checkpoints': {'type':'boolean'},
+    schema['properties'].update({'auto_run_checks': {'type':'boolean'}, 'auto_evaluate': {'type': 'boolean'},
+                                 'auto_continue_checkpoints': {'type':'boolean'},
                                  'environment_requirements': project_environment.schema(obj)})
 for name in ('telos_open', 'telos_project_open'):
     tool = next(t for t in TOOLS if t['name'] == name)
@@ -2716,7 +2748,10 @@ for name in ('telos_open', 'telos_project_open'):
         'It never invokes models/exams, receives events or accepts; existing capacity/control/budget/progress gates apply. '
         'Queued project children freeze the policy at creation. Old contracts keep the original workflow. '
         'Check freshness defaults to never: snapshot explicitly asserts deterministic declared inputs; max_age requires 1-3600 seconds. '
-        'Unverifiable/expired freshness allows one explicit same-round recheck; tampered or changed identity blocks.')
+        'Unverifiable/expired freshness allows one explicit same-round recheck; tampered or changed identity blocks. '
+        'Optional auto_evaluate (requires auto_run_checks) also starts the same-executor closed-book exam once those checks pass, '
+        'reusing their evidence, so the supervisor receives one event at awaiting_review instead of two. It never grades or accepts; '
+        'failed checks, questions, checkpoints, pause/cancel and the no-progress guard still return to the supervisor first.')
 next(t for t in TOOLS if t['name'] == 'telos_evaluate')['description'] += (
     ' For automatic checks: running returns await_checks_completion without another job. Matching complete fresh evidence is reused; '
     'otherwise freshness alone permits one local recheck in the same round. Failed, modified, mismatched or uncertain evidence blocks. '

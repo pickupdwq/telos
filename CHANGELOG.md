@@ -1,3 +1,16 @@
+## 3.15.0 — 2026-11-23
+
+- **Automatic evaluation after passing checks** (`auto_evaluate`, default
+  off, frozen per task, requires `auto_run_checks`). A completed work reply
+  whose automatic checks all pass starts the same-executor closed-book exam on
+  that evidence without waiting for the supervisor, so each round reaches the
+  supervisor once (at `awaiting_review`) instead of twice, and checks run once.
+  Grading and acceptance stay with the supervisor. Failed or blocked checks,
+  clarification, checkpoints, environment/protocol errors, pause/cancel and the
+  no-progress guard still notify the supervisor first; an explicit
+  `telos_evaluate` supersedes the pending automatic one. Status shows
+  `next_action=automatic_evaluation_pending` meanwhile.
+
 ## 3.14.0 — 2026-11-23
 
 - **Up to 8 executors run at once by default.** The fixed limit of 3 is now
