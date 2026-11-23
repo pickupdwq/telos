@@ -1,0 +1,89 @@
+<!doctype html>
+<html lang="zh-CN">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <meta name="color-scheme" content="dark" />
+        <title>运行看板 · Telos</title>
+        <link rel="icon" href="data:," />
+        <link rel="stylesheet" href="/style.css" />
+        <script src="/access.js" defer></script>
+        <script src="/app.js" defer></script>
+    </head>
+    <body>
+        <header class="topbar">
+            <a class="brand" href="/" aria-label="Telos 看板首页"
+                ><i class="logo" aria-hidden="true"></i>Telos</a
+            ><span class="product">本机工作台</span
+            ><span class="connection" role="status"
+                ><i id="light" aria-hidden="true"></i><span id="connection">正在连接</span></span
+            >
+        </header>
+        <main>
+            <div class="heading">
+                <div>
+                    <h1>运行看板</h1>
+                    <p id="summary">正在读取本机的运行记录…</p>
+                </div>
+                <div class="sync">
+                    <span id="synced"></span
+                    ><button id="refresh" type="button" aria-label="立即刷新" title="立即刷新">↻</button>
+                </div>
+            </div>
+            <div id="notice" role="status" hidden></div>
+            <section class="console" aria-labelledby="flow-title">
+                <header class="console-head">
+                    <h2 id="flow-title">实时协作</h2>
+                    <span id="flow-state">等待数据</span>
+                </header>
+                <div id="flows"></div>
+            </section>
+            <section id="priority" class="priority" hidden>
+                <strong>现在等谁</strong><span id="priority-text"></span
+                ><button id="priority-open" type="button">查看详情 →</button>
+            </section>
+            <section class="board" aria-labelledby="board-title">
+                <div class="board-head">
+                    <h2 id="board-title">任务全景 <span id="task-count"></span></h2>
+                    <label class="search"
+                        ><i aria-hidden="true"></i
+                        ><input
+                            id="query"
+                            type="search"
+                            aria-label="搜索任务、项目或模型"
+                            placeholder="搜索任务、项目或模型"
+                            autocomplete="off"
+                    /></label>
+                </div>
+                <div class="toolbar">
+                    <div id="filters" aria-label="按任务状态筛选"></div>
+                    <div class="selectors">
+                        <label
+                            ><span>大总管</span
+                            ><select id="owner" aria-label="按大总管筛选">
+                                <option value="">全部会话</option>
+                            </select></label
+                        ><label
+                            ><span>项目</span
+                            ><select id="project-filter" aria-label="按项目筛选">
+                                <option value="">全部项目</option>
+                            </select></label
+                        >
+                    </div>
+                </div>
+                <div id="cards" class="cards"></div>
+            </section>
+        </main>
+        <dialog id="inspector" aria-labelledby="detail-heading">
+            <header class="dialog-head">
+                <div>
+                    <h2 id="detail-heading">任务详情</h2>
+                    <span id="detail-id"></span>
+                </div>
+                <button type="button" id="close-detail" aria-label="关闭详情" title="关闭详情">×</button>
+            </header>
+            <div id="detail"></div>
+        </dialog>
+        <noscript><p>请启用 JavaScript，查看本机运行状态。</p></noscript>
+    </body>
+</html>

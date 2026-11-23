@@ -59,6 +59,55 @@ def freeze(value, config):
     return value
 
 
+def freeze_evaluate(value, config, auto_run_checks):
+    """Authorize the closed-book exam to follow passing automatic checks.
+
+    Requires auto_run_checks: without frozen checks there is nothing to gate on.
+    The supervisor still reviews and grades; nothing is ever accepted here.
+    """
+    value = config.get('auto_evaluate', False) if value is None else value
+    if type(value) is not bool:
+        raise ProviderError('auto_evaluate must be a boolean')
+    return value and auto_run_checks is True
+
+
+def queue_evaluation(state, contract):
+    """Called under the session lock when automatic checks finish."""
+    row = state.get('auto_check') or {}
+    if (contract.get('auto_evaluate') is not True or row.get('status') != 'passed'
+            or state.get('phase') != 'responded' or state.get('clarification')
+            or state.get('continuation', 'active') != 'active' or progress_guard.blocked(state)
+            or row.get('evaluation_job_id') or row.get('auto_evaluate')):
+        return
+    row['auto_evaluate'] = {'status': 'pending', 'queued_at': time.time(), 'source_job_id': row['source_job_id']}
+    state['auto_check_history'][row['source_job_id']] = dict(row)
+
+
+def evaluation_pending(state):
+    row = state.get('auto_check') or {}
+    return row.get('source_job_id') if (row.get('auto_evaluate') or {}).get('status') == 'pending' else None
+
+
+def authorize_evaluation(state, contract, source):
+    row = state.get('auto_check') or {}
+    if (evaluation_pending(state) != source or contract.get('auto_evaluate') is not True
+            or row.get('status') != 'passed' or state.get('phase') != 'responded'
+            or row.get('delivery_id') != (state.get('delivery') or {}).get('delivery_id')
+            or state.get('continuation', 'active') != 'active' or state.get('archived')
+            or state.get('clarification')):
+        raise ProviderError('Automatic evaluation identity is stale or stopped', code='evaluation_stopped',
+                            next_action='inspect_status_before_retry')
+    progress_guard.check(state)
+    return row
+
+
+def stop_evaluation(state, error):
+    row = state.get('auto_check') or {}
+    if (row.get('auto_evaluate') or {}).get('status') == 'pending':
+        row['auto_evaluate'].update(status='stopped', stopped_at=time.time(), diagnostic=str(error)[:1000])
+        state['auto_check_history'][row['source_job_id']] = dict(row)
+
+
 def validate_freshness(check):
     value = check.get('freshness', {'mode': 'never'})
     if not isinstance(value, dict) or set(value) - {'mode', 'max_age_seconds'}:
@@ -323,7 +372,7 @@ def public(state):
     if not row:
         return None
     return {k: row.get(k) for k in ('status','source_job_id','job_id','commit','tree','round','queued_at',
-                'started_at','finished_at','evidence_hash','diagnostic','evaluation_job_id') if k in row}
+                'started_at','finished_at','evidence_hash','diagnostic','evaluation_job_id','auto_evaluate') if k in row}
 
 
 def ensure_active(b, state):

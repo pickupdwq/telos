@@ -140,6 +140,7 @@ class Projects:
             t['auto_continue_checkpoints'] = continuation.freeze(t.get('auto_continue_checkpoints'), self.b.config())
             if t.get('task_type', 'implementation') == 'implementation':
                 t['auto_run_checks'] = check_runtime.freeze(t.get('auto_run_checks'), self.b.config())
+                t['auto_evaluate'] = check_runtime.freeze_evaluate(t.get('auto_evaluate'), self.b.config(), t['auto_run_checks'])
             t['reasoning_policy'] = effort_policy.freeze(t['executor'], self.b.config(), t.get('reasoning_policy'))
             self.backend_fields(t)
             t.setdefault('threshold', self.b.config()['threshold'])
@@ -199,7 +200,9 @@ class Projects:
 
     def create(self, repo, task, tasks, questions, checks, decision_reason,
                execution_mode='auto', strategy='single', max_parallel=None,
-               max_jobs=None, context='', notify=True, caller=None, use_experience=True, dependency_paths=None, environment_requirements=None, auto_continue_checkpoints=None, auto_run_checks=None, refactor_plan=None, _planning=None):
+               max_jobs=None, context='', notify=True, caller=None, use_experience=True, dependency_paths=None,
+               environment_requirements=None, auto_continue_checkpoints=None, auto_run_checks=None,
+               auto_evaluate=None, refactor_plan=None, _planning=None):
         if execution_mode not in ('auto', 'single', 'parallel') or strategy not in ('single', 'parallel', 'phased'):
             raise self.b.GateError('Invalid execution mode or supervisor strategy')
         if not isinstance(decision_reason, str) or not decision_reason.strip():
@@ -227,6 +230,8 @@ class Projects:
                     t.setdefault('auto_run_checks', auto_run_checks)
                 if auto_continue_checkpoints is not None:
                     t.setdefault('auto_continue_checkpoints', auto_continue_checkpoints)
+                if auto_evaluate is not None:
+                    t.setdefault('auto_evaluate', auto_evaluate)
                 if environment_requirements is not None:
                     t.setdefault('environment_requirements', environment_requirements)
         tasks = self.validate_tasks(tasks)
@@ -276,6 +281,7 @@ class Projects:
             contract['refactor_plan'] = refactor_plan
         contract['auto_continue_checkpoints'] = continuation.freeze(auto_continue_checkpoints, b.config())
         contract['auto_run_checks'] = check_runtime.freeze(auto_run_checks, b.config())
+        contract['auto_evaluate'] = check_runtime.freeze_evaluate(auto_evaluate, b.config(), contract['auto_run_checks'])
         if environment_requirements is not None:
             contract['environment_requirements'] = environment_requirements
         if _planning is not None:
@@ -339,7 +345,8 @@ class Projects:
                     observations[t['session_id']] = stat
                 t['phase'] = stat['phase']
                 t['progress_guard'] = stat.get('progress_guard')
-                t['auto_continue_pending'] = stat.get('auto_continue_pending')
+                t['auto_continue_pending'] = stat.get('auto_continue_pending') or (
+                    'auto_evaluate' if stat.get('next_action') == 'automatic_evaluation_pending' else None)
                 t['automatic_checks'] = stat.get('automatic_checks')
                 t['audit_check_correction'] = stat.get('audit_check_correction')
                 t['test_path_correction'] = stat.get('test_path_correction')
@@ -708,7 +715,8 @@ class Projects:
         return snapshot or {'unknown': None}
 
     def launch(self, p, sid, kind, message='', event_id=None, discussion_request_id=None,
-               reasoning_effort=None, reasoning_reason=None, automatic=False, continuation_id=None):
+               reasoning_effort=None, reasoning_reason=None, automatic=False, continuation_id=None,
+               auto_evaluate_id=None):
         """Reserve before spawning; refund only when no new job was persisted."""
         if refactor.waiting(self.b, p):
             raise self.b.GateError('This refactor revision has not been confirmed by the user.',
@@ -720,6 +728,8 @@ class Projects:
             extra = {'_discussion_request_id': discussion_request_id} if discussion_request_id is not None else {}
             if continuation_id is not None:
                 extra['_continuation_id'] = continuation_id
+            if auto_evaluate_id is not None:
+                extra['_auto_evaluate_id'] = auto_evaluate_id
             if reasoning_effort is not None or reasoning_reason is not None:
                 extra.update(reasoning_effort=reasoning_effort, reasoning_reason=reasoning_reason)
             try:
@@ -840,7 +850,8 @@ class Projects:
                             t['start_error'] = errors.payload(error)['error']
                         self.save(p)
                         continue
-                if (t.get('automatic_checks') or {}).get('status') == 'queued':
+                if ((t.get('automatic_checks') or {}).get('status') == 'queued'
+                        or ((t.get('automatic_checks') or {}).get('auto_evaluate') or {}).get('status') == 'pending'):
                     self._continue_pending(t['session_id'], p)
                     continue
                 if t['phase'] in ('checkpoint', 'protocol_error'):
@@ -885,6 +896,7 @@ class Projects:
                                          _role_snapshot=t.get('role_snapshot'), experience_tags=t.get('experience_tags'),
                                           auto_continue_checkpoints=t.get('auto_continue_checkpoints', False),
                                           auto_run_checks=t.get('auto_run_checks', False),
+                                          auto_evaluate=t.get('auto_evaluate', False),
                                           _work_reply_version=t.get('work_reply_version', 1),
                                           environment_requirements=t.get('environment_requirements'),
                                          _allowed_paths=t['allowed_paths'], _dependency_pins=pins,
@@ -929,6 +941,9 @@ class Projects:
             state, contract = b.load_session(root)
             source = check_runtime.pending(state)
             checks = source is not None
+            evaluate = False
+            if source is None and check_runtime.evaluation_pending(state):
+                source, evaluate = check_runtime.evaluation_pending(state), True
             source = source or continuation.pending(state)
             if not source or state.get('continuation', 'active') != 'active':
                 return
@@ -937,25 +952,34 @@ class Projects:
             try:
                 if checks:
                     check_runtime.authorize(b, state, contract, source)
+                elif evaluate:
+                    check_runtime.authorize_evaluation(state, contract, source)
                 else:
                     continuation.authorize(state, contract, source)
                 # Reconcile persisted pending work as well as fresh checkpoints.
                 # Repeated recovery keeps the same interval; no launch or receipt.
                 import timing
                 timing.transition(state, timing.waiting_stage(state))
-                timing.begin(state, 'scheduler_wait', ('checks:' if checks else 'continuation:') + source + ':control:' + str(state.get('control_revision', 0)))
+                timing.begin(state, 'scheduler_wait', ('checks:' if checks else 'evaluate:' if evaluate else 'continuation:')
+                             + source + ':control:' + str(state.get('control_revision', 0)))
                 b.write_json(root / 'state.json', state)
-                message = '' if checks else continuation.message(state)
+                message = '' if checks or evaluate else continuation.message(state)
             except b.GateError as error:
                 if checks:
                     state['auto_check'].update(status='blocked', diagnostic=str(error)[:1000])
+                elif evaluate:
+                    check_runtime.stop_evaluation(state, error)
                 else:
                     continuation.stop(state, source, error)
                 b.record_event(state); b.write_json(root / 'state.json', state)
                 return
         try:
-            if not (self.capacity(p, state['provider'], local_checks=True) if checks else self.capacity(p, state['provider'])):
+            provider = state.get('exam_provider', state.get('provider', 'ark')) if evaluate else state['provider']
+            if not (self.capacity(p, state['provider'], local_checks=True) if checks else self.capacity(p, provider)):
                 return
+            if evaluate:
+                return (self.launch(p, sid, 'evaluate', auto_evaluate_id=source) if p is not None
+                        else b._start_job(sid, 'evaluate', _auto_evaluate_id=source))
             if checks:
                 result = b._start_job(sid, 'checks', _auto_check_id=source)
                 if p is not None:
@@ -970,6 +994,8 @@ class Projects:
                 current, _ = b.load_session(root)
                 if checks and (current.get('auto_check') or {}).get('status') == 'queued':
                     current['auto_check'].update(status='blocked', diagnostic=str(error)[:1000])
+                elif evaluate:
+                    check_runtime.stop_evaluation(current, error)
                 else:
                     continuation.stop(current, source, error)
                 if current['phase'] != 'running':
@@ -1020,7 +1046,8 @@ class Projects:
         quiet = (p.get('phase') == 'running' and p.get('continuation') == 'active'
                  and any(t.get('phase') == 'running' or t.get('auto_continue_pending') for t in p['tasks'])
                  and all(t.get('phase') in ('pending', 'starting', 'running', 'accepted') or t.get('auto_continue_pending') for t in p['tasks'])
-                 and not any(t.get('error') or (t.get('automatic_checks') and t.get('event_id')) for t in p['tasks']))
+                 and not any(t.get('error') or (t.get('automatic_checks') and t.get('event_id')
+                                                and not t.get('auto_continue_pending')) for t in p['tasks']))
         # Never overwrite an in-flight courier event: receive always gathers the
         # latest project state, so one outstanding wake-up covers all completions.
         with b.locked(p['project_id']) as root:
@@ -1138,7 +1165,7 @@ class Projects:
                 additions = [dict(task) for task in add_tasks]
                 for task in additions:
                     if task.get('task_type', 'implementation') == 'implementation':
-                        for key in ('environment_requirements', 'auto_continue_checkpoints', 'auto_run_checks'):
+                        for key in ('environment_requirements', 'auto_continue_checkpoints', 'auto_run_checks', 'auto_evaluate'):
                             if key in p['contract']:
                                 task.setdefault(key, p['contract'][key])
                 tasks = self.validate_tasks(additions, p['tasks'])

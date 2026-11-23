@@ -92,6 +92,15 @@ class BridgeTests(unittest.TestCase):
         return [{"id": "q1", "points": a, "rationale": "Reviewed result."},
                 {"id": "q2", "points": c, "rationale": "Reviewed result."}]
 
+    def test_dashboard_identifies_new_standalone_assignment_before_dispatch(self):
+        from dashboard_data import DashboardData
+        sid = self.create(task="Implement addition.", role_profile='developer')
+        project, = DashboardData(b.STATE).snapshot()['projects']
+        self.assertEqual(project['id'], sid)
+        self.assertEqual(project['title'], 'Implement addition.')
+        self.assertEqual(project['tasks'][0]['role'], '资深程序员')
+        self.assertEqual(project['tasks'][0]['phase'], 'ready')
+
     def test_open_reports_unresolved_test_paths_as_advisory_warnings(self):
         missing = [{"id": "add", "argv": ["{python}", "-c",
                     "import subprocess\nsubprocess.run(['pytest', 'tests/test_missing_case.py'])\n"]}]

@@ -96,6 +96,11 @@ class InstallerTests(unittest.TestCase):
                                   capture_output=True, text=True, check=True, timeout=10, env=env)
         self.assertIn("--history", observer.stdout)
         self.assertIn("--pane", observer.stdout)
+        dashboard = subprocess.run([str(self.bin_dir / "telos"), "dashboard", "--help"],
+                                   capture_output=True, text=True, check=True, timeout=10, env=env)
+        self.assertIn("--open", dashboard.stdout)
+        for asset in ("index.html", "style.css", "access.js", "app.js"):
+            self.assertIn("dashboard_web/" + asset, manifest["files"])
 
     def test_existing_install_is_never_overwritten(self):
         self.prefix.mkdir()

@@ -188,3 +188,7 @@ and pinned source before grading. Projects still require final integration and
 project-level acceptance. An unchanged historical task without this correction
 keeps its original semantics. The audit-status spelling correction is separate;
 these corrections may not be stacked on one task.
+
+## Automatic evaluation (3.15)
+
+When a task froze `auto_evaluate=true`, a completed reply whose automatic checks pass goes straight into the closed-book exam. Your first event for that round is already `awaiting_review`: receive it, review the evidence and grade as usual. Do not call `telos_evaluate` while status shows `automatic_evaluation_pending`; it would only replace the automatic step. Failed checks, questions, checkpoints and control stops still reach you before any exam.

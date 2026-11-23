@@ -362,6 +362,16 @@ Inspect `automatic_checks` and `timing.stages`; distinguish cumulative/overlap t
 from lifecycle wall time. Follow existing pause/cancel, capacity, budgets and
 no-progress gates; never forward private check programs or raw failures.
 
+## Automatic evaluation after passing checks (3.15)
+
+`auto_evaluate` (default `false`; frozen per task like `auto_run_checks`, and only effective together with it) lets a completed work reply flow straight through: automatic checks run, and if they all pass, the same-executor closed-book exam starts on that exact evidence. The supervisor receives **one** event, at `awaiting_review`, instead of one after the checks and another after the exam. It still reviews the evidence and grades; nothing is accepted automatically.
+
+The supervisor is told earlier, exactly as before, whenever the chain cannot continue: failed or blocked checks, `needs_clarification`, a `checkpoint`, `blocked_environment`, a protocol error, pause/cancel, the no-progress guard or an exam infrastructure error. An explicit `telos_evaluate` from the supervisor supersedes a pending automatic evaluation. The exam reuses the checks round, so it does not consume an extra evaluation round.
+
+Set `"auto_evaluate": true` together with `"auto_run_checks": true` in the installed configuration to make it the default for new tasks, or pass `auto_evaluate` on `telos_open`, `telos_project_open` or a project task.
+
+检查通过后自动考试：开启 `auto_evaluate`（需同时开启 `auto_run_checks`）后，执行者交活、自动检查全部通过时，直接接着闭卷考试，大总管只在考完时收到一次通知，再审核打分；不会自动验收。检查没过、执行者提问、只交阶段成果、暂停取消等情况仍先通知大总管。
+
 ## Project job-budget policy / 项目作业预算策略
 
 `telos_project_budget` is the only audited entry point for changing a project's
