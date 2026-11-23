@@ -247,6 +247,12 @@ def _run(b, state, contract, message, endpoint, key, relay_port, phase="work", p
     if binding['provider'] == 'codex_login':
         # The relay only forwards /responses; history stays in the CLI (store=false).
         settings += ['features.remote_compaction=false']
+        # Fast tier: this login's own model catalog lists gpt-6.2-sol with
+        # service_tiers id "priority" (2x speed, increased plan usage). The
+        # request is forwarded by the relay; other models/providers keep the
+        # account default so their acceptance contracts are unchanged.
+        if binding['model'] == 'gpt-6.2-sol':
+            settings += ['service_tier="priority"']
     if contract.get('reasoning_policy') and binding['provider'] not in ('local', 'bailian'):
         settings += ['features.remote_compaction=false']
     local_config = Path(state["worktree"]) / ".codex/config.toml"

@@ -1,3 +1,14 @@
+## 3.17.1 — 2026-11-23
+
+- **Fast tier for the local Codex login on `gpt-6.2-sol`**: executors that use
+  this Mac's own ChatGPT login request Codex's `service_tier="priority"` (the
+  account catalog's "Fast": 2x speed, increased plan usage) only for that model.
+  Other models and providers keep the account default, so their frozen
+  acceptance contracts and quota behaviour are unchanged. The setting rides on
+  the same per-launch `-c` block, so work, repair and closed-book exam requests
+  all use it; `--ignore-user-config` still isolates executors from the user's
+  own Codex config.
+
 ## 3.17.0 — 2026-11-23
 
 - **Project refactoring mode** (merged from `feat/refactor-mode`; ask for it
