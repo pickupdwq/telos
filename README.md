@@ -35,7 +35,7 @@ Read left to right: the original supervisor delegates through Telos to a task ex
 
 ## What it does
 
-- **Configurable executor.** DeepSeek official API by default; Volcengine Ark Coding Plan, OpenAI API and local endpoints are supported. Save several local endpoints and activate exactly one, using Responses or Chat Completions.
+- **Configurable executor.** DeepSeek is the default. You can also use this Mac's [Codex ChatGPT login with Fast mode](#fast-mode-with-a-codex-chatgpt-login), the OpenAI API, Volcengine Ark, Alibaba Cloud Bailian, or a local endpoint. Save several local endpoints and activate one at a time, using Responses or Chat Completions.
 - **Evidence before acceptance.** Frozen executable checks run against a pinned Git commit. The supervisor then reviews the code and grades the questionnaire. Default passing score: 90/100, with critical-question minima and no unresolved blockers.
 - **Same-executor closed-book exam.** The executor keeps its work conversation, but receives no new source, private answers or test results. The relay disables tools and rejects tool calls during the exam.
 - **Isolated work.** Git worktrees, macOS Seatbelt restrictions, private evaluation materials and a local credential relay separate implementation from grading.
@@ -194,6 +194,7 @@ To upgrade an existing managed installation from a checked-out release:
 
 ```sh
 npm install --prefix "$HOME/.local/share/telos-cli" @openai/codex@0.171.0
+"$HOME/.local/share/telos-cli/node_modules/.bin/codex" --version  # expected: codex-cli 0.171.0
 python3 install.py --upgrade --dry-run
 python3 install.py --upgrade
 ```
@@ -205,6 +206,8 @@ backs up Codex's config and adds dynamic `TMUX`/`TMUX_PANE` forwarding to the
 Telos entry. Restart Codex inside tmux afterward. [Observer setup →](docs/watch.md)
 
 ### 3. Add the executor credential
+
+For the default DeepSeek executor, run the commands below. If you use the [Codex login executor](#fast-mode-with-a-codex-chatgpt-login) instead, sign in to Codex with ChatGPT; that profile does not need an API key.
 
 ```sh
 "$HOME/.local/bin/telos" auth deepseek
@@ -243,8 +246,6 @@ telos claude run              # same as: claude --model opus --effort xhigh
 
 Restart an already-open Claude Code afterwards. Plugin hooks attest that each Telos call comes from this Claude session, with its current model and effort (by default only Opus 5.5 at `xhigh`/`max`; change `claude_supervisor`, or set it to `null` to disable). Subagents cannot call Telos. When a task event is ready, the plugin's background hook wakes Claude; no polling. Events survive closing Claude: resume with `telos claude run --resume <session id>`. See [Claude Code supervision](skills/telos/references/claude-code.md).
 
-To run executors on this Mac's own Codex ChatGPT plan, use a `codex_login` profile with a `fallback_profile` (for example the 14000 local endpoint) for when the login is unavailable; see [configuration](docs/configuration.md#codex-login-executor-and-fallback--本机-codex-登录执行者与备选).
-
 ### 6. Ask for a task
 
 > $telos Implement this feature: [requirements]. Reuse the configured default executor. Freeze relevant executable checks and the private questionnaire before sending work. Review the resulting code and test evidence, and continue until accepted or the configured budget is exhausted. Report the worktree and commit.
@@ -271,6 +272,7 @@ The installed example selects:
 | Default: `deepseek_official` | DeepSeek official | `deepseek-flash` | `max` |
 | Optional: `ark_coding_plan` | Volcengine Ark Coding Plan | `glm-5.3-flash` | `max` |
 | Optional: `openai_executor` | OpenAI API | `gpt-6.1-sol` | `xhigh` (explicit example override) |
+| Optional: `gpt_codex` | This Mac's Codex ChatGPT login | `gpt-6.1-sol` | `high` |
 | Optional: `bailian_deepseek` | Alibaba Cloud Bailian, Beijing | `deepseek-v4.1-flash-1017` | `max` |
 | Optional: `local` | Active local endpoint | Locally configured model ID | `none` by default; reasoning parameter omitted upstream |
 
@@ -288,7 +290,16 @@ Bailian uses its own `DASHSCOPE_API_KEY` / `telos auth bailian` credential and t
 
 Save local endpoints with `telos local add`, activate one with `telos local select`, and choose `executor_profile=local` for tasks. Ark and DeepSeek profiles remain available. Existing local tasks retain their original address/model and require that endpoint to be selected again before resuming. [Local executor setup and examples →](docs/local-executors.md)
 
-The supervisor may use your Codex login. The OpenAI **executor** uses a separate API credential; this release does not route executor requests through your ChatGPT/Codex subscription. Telos itself is free software, while provider inference and subscriptions may incur charges. Job limits are not monetary spending caps.
+### Fast mode with a Codex ChatGPT login
+
+`gpt_codex` uses your ChatGPT plan; `openai_executor` uses a separate API key and API billing. To use Fast with Telos 3.17.2:
+
+1. In `~/.local/share/telos/config.json`, set `profiles.gpt_codex.model` to `gpt-6.2-sol` and keep `provider` set to `codex_login`. If an older installation has no `gpt_codex` profile, copy that entry from [the example configuration](config.example.json) first.
+2. Reload the Telos MCP server and ask the supervisor: “Use Telos with `executor_profile=gpt_codex` for this task.” If your account does not offer the model, Telos tries the profile's [configured fallback](docs/configuration.md#codex-login-executor-and-fallback--本机-codex-登录执行者与备选) when creating the task.
+
+When the task uses `codex_login` with `gpt-6.2-sol`, Telos automatically requests `service_tier="priority"` for work, retries and closed-book exams. Fast uses more of the plan allowance and does not change the reasoning effort. Other models and providers keep their default tier. If the dedicated CLI is older than 0.169.1, Telos stops before sending the model request and prints the upgrade command; the tested installation baseline is 0.171.0.
+
+Telos itself is free software, while provider inference and subscriptions may incur charges. Job limits are not monetary spending caps.
 
 ## How acceptance works
 
