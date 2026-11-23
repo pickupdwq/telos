@@ -341,7 +341,7 @@ def project(full):
         'project_id', 'phase', 'accepted', 'continuation', 'execution_mode', 'strategy',
         'effective_parallel', 'max_parallel', 'max_jobs', 'jobs_started', 'local_checks_started', 'base_commit',
         'decision_reason', 'return_health', 'return_error', 'usage', 'timing', 'contract_hash', 'kind', 'discussion',
-        'job_budget') if key in full}
+        'job_budget', 'refactor', 'proceed', 'next_action') if key in full}
     if 'timing' in result:
         result['timing'] = _timing(result['timing'])
     result['return_event'] = _return_event(full.get('return_event'))

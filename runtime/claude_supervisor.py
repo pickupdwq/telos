@@ -283,7 +283,8 @@ def pre_tool_use(b, data, environ, out):
         'tool_use_id': tool_use, 'claude_pid': os.getppid(), 'session_id': session_id(data.get('session_id')),
         'env_session': session_id(environ.get('CLAUDE_CODE_SESSION_ID')), 'agent_id': data.get('agent_id'),
         'effort': effort.get('level') if isinstance(effort, dict) else None,
-        'model': current_model(b, data), 'tool_name': data.get('tool_name'), 'at': time.time()})
+        'model': current_model(b, data), 'transcript_path': data.get('transcript_path'),
+        'tool_name': data.get('tool_name'), 'at': time.time()})
     _prune(folder)
     return 0
 

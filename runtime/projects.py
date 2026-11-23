@@ -24,6 +24,8 @@ import progress_guard
 import continuation
 import check_runtime
 import project_budget
+import refactor
+import refactor_design
 import roles
 
 
@@ -198,11 +200,21 @@ class Projects:
 
     def create(self, repo, task, tasks, questions, checks, decision_reason,
                execution_mode='auto', strategy='single', max_parallel=None,
-               max_jobs=None, context='', notify=True, caller=None, use_experience=True, dependency_paths=None, environment_requirements=None, auto_continue_checkpoints=None, auto_run_checks=None, auto_evaluate=None, _planning=None):
+               max_jobs=None, context='', notify=True, caller=None, use_experience=True, dependency_paths=None,
+               environment_requirements=None, auto_continue_checkpoints=None, auto_run_checks=None,
+               auto_evaluate=None, refactor_plan=None, _planning=None):
         if execution_mode not in ('auto', 'single', 'parallel') or strategy not in ('single', 'parallel', 'phased'):
             raise self.b.GateError('Invalid execution mode or supervisor strategy')
         if not isinstance(decision_reason, str) or not decision_reason.strip():
             raise self.b.GateError('Supervisor must explain its execution strategy')
+        if refactor_plan is not None:
+            refactor.validate(refactor_plan)
+            if not (_planning or {}).get('refactor_design'):
+                raise self.b.GateError('Complete the refactor PRD and architecture discussion first.',
+                                       code='refactor_meeting_required', next_action='telos_meeting_open')
+            if not notify or not caller:
+                raise self.b.GateError('A refactor must be bound to the original user conversation.',
+                                       code='refactor_owner_required')
         cfg = self.b.config()
         max_parallel = self.b.validate_parallel(self.b.parallel_limit(cfg) if max_parallel is None else max_parallel)
         if max_jobs is None:
@@ -223,6 +235,8 @@ class Projects:
                 if environment_requirements is not None:
                     t.setdefault('environment_requirements', environment_requirements)
         tasks = self.validate_tasks(tasks)
+        if refactor_plan is not None:
+            refactor_design.validate_batches(_planning['refactor_design'], tasks)
         if _planning and _planning.get('meeting_id'):
             for t in tasks:
                 t['context'] = context + '\nTask context:\n' + t['context']
@@ -246,12 +260,25 @@ class Projects:
         repo = Path(b.git(repo, 'rev-parse', '--show-toplevel')).resolve()
         if b.git(repo, 'status', '--porcelain'):
             raise b.GateError('Source repository must be clean; commit/stash explicitly')
+        base_commit = b.git(repo, 'rev-parse', 'HEAD')
+        if refactor_plan is not None:
+            design = _planning['refactor_design']
+            if base_commit != _planning['source_commit']:
+                raise b.GateError('Source changed since the refactor walkthrough; revisit the changed source.')
+            if (not any(refactor_design.owns_index(t, design['index_path']) for t in tasks)
+                    and refactor_design.check_index(repo, design)['status'] != 'passed'):
+                raise b.GateError('Assign the code index path to a batch so the confirmed design can be delivered.')
         if not task or not isinstance(task, str):
             raise b.GateError('Nonempty project task required')
         owner = b.bind_owner(caller) if notify else None
         pid = uuid.uuid4().hex
         contract = {'task': task, 'context': context, 'questions': questions, 'checks': checks,
                     'threshold': 90, 'max_rounds': 5, 'dependency_paths': dependency_paths}
+        if refactor_plan is not None:
+            public_brief = b.encoded([refactor_plan, _planning['current_prd'], design])
+            for private in [final_contract, *tasks]:
+                b.validate_public_material(private, refactor_plan=public_brief)
+            contract['refactor_plan'] = refactor_plan
         contract['auto_continue_checkpoints'] = continuation.freeze(auto_continue_checkpoints, b.config())
         contract['auto_run_checks'] = check_runtime.freeze(auto_run_checks, b.config())
         contract['auto_evaluate'] = check_runtime.freeze_evaluate(auto_evaluate, b.config(), contract['auto_run_checks'])
@@ -259,7 +286,7 @@ class Projects:
             contract['environment_requirements'] = environment_requirements
         if _planning is not None:
             contract['planning'] = _planning
-        p = {'project_id': pid, 'repo': str(repo), 'base_commit': b.git(repo, 'rev-parse', 'HEAD'),
+        p = {'project_id': pid, 'repo': str(repo), 'base_commit': base_commit,
              'owner': owner, 'execution_mode': execution_mode, 'strategy': strategy,
              'decision_reason': decision_reason, 'max_parallel': max_parallel, 'max_jobs': max_jobs,
              'jobs_started': 0, 'phase': 'planned', 'continuation': 'active', 'tasks': tasks, 'use_experience': use_experience,
@@ -431,6 +458,10 @@ class Projects:
         result = {k: p[k] for k in ('project_id', 'phase', 'continuation', 'execution_mode', 'strategy',
                                    'decision_reason', 'max_parallel', 'max_jobs', 'jobs_started', 'base_commit')}
         result['contract_hash'] = p.get('contract_hash')
+        if 'refactor_plan' in p.get('contract', {}):
+            result['refactor'] = refactor.proposal(self.b, p)
+            if p['continuation'] == 'active' and not result['refactor']['confirmed']:
+                result.update(proceed=False, next_action=result['refactor'].get('next_action', 'ask_user_to_confirm_refactor'))
         result['job_budget'] = project_budget.summary(p)
         result['work_turn_budget'] = project_budget.work_turn_summary(
             p, int(self.b.config()['max_turns']))
@@ -687,6 +718,9 @@ class Projects:
                reasoning_effort=None, reasoning_reason=None, automatic=False, continuation_id=None,
                auto_evaluate_id=None):
         """Reserve before spawning; refund only when no new job was persisted."""
+        if refactor.waiting(self.b, p):
+            raise self.b.GateError('This refactor revision has not been confirmed by the user.',
+                                   code='refactor_confirmation_required', next_action='ask_user_to_confirm_refactor')
         before = self.b.read_json(self.b.run_dir(sid) / 'state.json')
         p['jobs_started'] += 1
         self.save(p)
@@ -778,10 +812,24 @@ class Projects:
             visit(tid)
         return pins
 
-    def tick(self, pid):
+    def tick(self, pid, confirm_refactor=None):
         b = self.b
+        exchange = None
+        if confirm_refactor is not None:
+            # Reading the conversation may wait on the host. Other projects
+            # remain schedulable; recheck the revision and pause state below.
+            snapshot = self.load(pid)
+            self.active(snapshot)
+            if not refactor.check_revision(b, snapshot, confirm_refactor)['confirmed']:
+                exchange = refactor.read_reply(b, snapshot['owner'])
         with self.lock():
             p = self.refresh(self.load(pid))
+            if confirm_refactor is not None:
+                self.active(p)
+                refactor.confirm(b, p, confirm_refactor, exchange)
+                self.save(p)
+            if refactor.waiting(b, p):
+                return self.view(p)
             if p['continuation'] != 'active' or p['phase'] not in ('running', 'planned'):
                 self.save(p); return self.view(p)
             p['phase'] = 'running'
@@ -826,8 +874,15 @@ class Projects:
                                 t.update(phase='setup_error', error='Dependency integration conflict', conflict_worktree=tree)
                                 self.save(p); continue
                             base = b.git(tree, 'rev-parse', 'HEAD')
+                        context = t['context']
+                        if 'refactor_plan' in p['contract']:
+                            context += '\nConfirmed refactoring brief:\n' + b.encoded(p['contract']['refactor_plan'])
+                            design = p['contract'].get('planning', {}).get('refactor_design')
+                            if design:
+                                context += refactor_design.handoff(b, design, t)
                         b.create_session(repo=p['repo'], task=t['task'], questions=t['questions'], checks=t['checks'],
-                                         context=t['context'], model=t['model'], threshold=t['threshold'], max_rounds=t['max_rounds'],
+                                         context=context,
+                                         model=t['model'], threshold=t['threshold'], max_rounds=t['max_rounds'],
                                          notify=bool(p['owner']), owner_thread_id=p['owner']['thread_id'] if p['owner'] else None,
                                          _owner=p['owner'],
                                          provider=t['provider'], exam_provider=t.get('exam_provider'), exam_model=t.get('exam_model'),
@@ -880,6 +935,8 @@ class Projects:
     def _continue_pending(self, sid, p=None):
         """Coordinator lock -> session lock. Admission uses the existing launch path."""
         b = self.b
+        if p is not None and refactor.waiting(b, p):
+            return
         with b.locked(sid) as root:
             state, contract = b.load_session(root)
             source = check_runtime.pending(state)
@@ -1112,6 +1169,11 @@ class Projects:
                             if key in p['contract']:
                                 task.setdefault(key, p['contract'][key])
                 tasks = self.validate_tasks(additions, p['tasks'])
+                if design := p['contract'].get('planning', {}).get('refactor_design'):
+                    refactor_design.validate_batches(design, tasks)
+                    for t in tasks:
+                        self.b.validate_public_material(t, handoff=refactor_design.handoff(self.b, design, t),
+                                                       refactor_plan=self.b.encoded(p['contract']['refactor_plan']))
                 import check_preflight
                 try:
                     for t in tasks:
@@ -1384,6 +1446,9 @@ class Projects:
                     audit_reports[task['id']] = {'evidence': evidence, 'review': child_state['acceptance']['audit_review']}
                     shutil.copytree(evidence['evidence_dir'], target / '.telos-audits' / task['id'])
             checks = b.executable_checks(check_contract, target)
+            if design := check_contract.get('planning', {}).get('refactor_design'):
+                checks.append(refactor_design.check_index(target, design))
+                checks.append(refactor_design.check_structure(target, design))
             packet = {'project_id': pid, 'commit': commit, 'pins': p['integration']['pins'],
                       'contract_hash': p['contract_hash'], 'checks': checks,
                       'deliveries': deliveries,
